@@ -21,6 +21,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ai-memory-embedding-ollama"
+version = "0.1.0"
+dependencies = [
+ "ai-memory-core",
+ "log",
+ "reqwest",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "ai-memory-neo4j"
 version = "0.1.0"
 dependencies = [
@@ -34,17 +45,6 @@ dependencies = [
  "testcontainers-modules",
  "tokio",
  "uuid",
-]
-
-[[package]]
-name = "ai-memory-ollama"
-version = "0.1.0"
-dependencies = [
- "ai-memory-core",
- "log",
- "reqwest",
- "serde",
- "serde_json",
 ]
 
 [[package]]
