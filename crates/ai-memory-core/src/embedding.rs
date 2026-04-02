@@ -1,3 +1,5 @@
+use crate::EmbeddingError;
+
 /// An embedding vector represented as a sequence of `f32` values.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Embedding(Vec<f32>);
@@ -23,6 +25,17 @@ impl From<Vec<f32>> for Embedding {
     fn from(values: Vec<f32>) -> Self {
         Self::new(values)
     }
+}
+
+/// Computes embedding vectors for text input.
+pub trait TextEmbedder: Send + Sync {
+    /// Returns the fixed number of dimensions this embedder produces.
+    fn embedding_dimension(&self) -> usize;
+
+    fn embed(
+        &self,
+        text: &str,
+    ) -> impl Future<Output = Result<Embedding, EmbeddingError>> + Send + '_;
 }
 
 #[cfg(test)]
