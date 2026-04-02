@@ -2,12 +2,16 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
 
-use ai_memory_core::{Embedding, EmbeddingError, MemoryInput, MemoryQuery, MemoryStore, TextEmbedder};
+use ai_memory_core::{
+    Embedding, EmbeddingError, MemoryInput, MemoryQuery, MemoryStore, MemoryStoreError, Score,
+    TextEmbedder,
+};
 use ai_memory_neo4j::{Neo4jConfig, Neo4jMemoryStore};
 use neo4rs::Graph;
-use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
+use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::neo4j::{Neo4j, Neo4jImage};
+use uuid::Uuid;
 
 const DIM: usize = 4;
 
@@ -21,7 +25,9 @@ struct FakeTextEmbedder {
 
 impl FakeTextEmbedder {
     fn new() -> Self {
-        Self { mappings: HashMap::new() }
+        Self {
+            mappings: HashMap::new(),
+        }
     }
 
     fn with(mut self, text: &str, values: Vec<f32>) -> Self {
@@ -35,7 +41,10 @@ impl TextEmbedder for FakeTextEmbedder {
         DIM
     }
 
-    fn embed(&self, text: &str) -> impl Future<Output = Result<Embedding, EmbeddingError>> + Send + '_ {
+    fn embed(
+        &self,
+        text: &str,
+    ) -> impl Future<Output = Result<Embedding, EmbeddingError>> + Send + '_ {
         let values = self
             .mappings
             .get(text)
@@ -57,7 +66,10 @@ fn unit_vec(index: usize) -> Vec<f32> {
 async fn start_store(
     embedder: FakeTextEmbedder,
     similarity_threshold: Option<f64>,
-) -> (Neo4jMemoryStore<FakeTextEmbedder>, ContainerAsync<Neo4jImage>) {
+) -> (
+    Neo4jMemoryStore<FakeTextEmbedder>,
+    ContainerAsync<Neo4jImage>,
+) {
     let container: ContainerAsync<Neo4jImage> = Neo4j::default()
         .start()
         .await
@@ -72,10 +84,16 @@ async fn start_store(
         .await
         .expect("failed to connect to Neo4j");
 
-    let config = Neo4jConfig { database: "neo4j".to_string(), similarity_threshold };
+    let config = Neo4jConfig {
+        database: "neo4j".to_string(),
+        similarity_threshold,
+    };
 
     let store = Neo4jMemoryStore::new(Arc::new(graph), config, embedder);
-    store.initialize().await.expect("failed to initialize Neo4j vector index");
+    store
+        .initialize()
+        .await
+        .expect("failed to initialize Neo4j vector index");
 
     (store, container)
 }
@@ -92,7 +110,7 @@ fn query(topic: &str, max_results: usize) -> MemoryQuery {
     MemoryQuery {
         topic: topic.to_string(),
         max_results,
-        min_score: 0.0,
+        min_score: Score::ZERO,
         filters: HashMap::new(),
     }
 }
@@ -187,11 +205,17 @@ async fn test_query_filters_by_metadata() {
     let (store, _container) = start_store(embedder, None).await;
 
     store
-        .save(input_with_metadata("doc en", HashMap::from([("lang".to_string(), "en".to_string())])))
+        .save(input_with_metadata(
+            "doc en",
+            HashMap::from([("lang".to_string(), "en".to_string())]),
+        ))
         .await
         .unwrap();
     store
-        .save(input_with_metadata("doc de", HashMap::from([("lang".to_string(), "de".to_string())])))
+        .save(input_with_metadata(
+            "doc de",
+            HashMap::from([("lang".to_string(), "de".to_string())]),
+        ))
         .await
         .unwrap();
 
@@ -199,7 +223,7 @@ async fn test_query_filters_by_metadata() {
         .query(MemoryQuery {
             topic: "topic".to_string(),
             max_results: 10,
-            min_score: 0.0,
+            min_score: Score::ZERO,
             filters: HashMap::from([("lang".to_string(), "en".to_string())]),
         })
         .await
@@ -227,7 +251,7 @@ async fn test_query_respects_min_score() {
         .query(MemoryQuery {
             topic: "query".to_string(),
             max_results: 10,
-            min_score: 0.9,
+            min_score: Score::new(0.9).unwrap(),
             filters: HashMap::new(),
         })
         .await
@@ -297,6 +321,63 @@ async fn test_deduplication_stores_new_memory_when_score_below_threshold() {
 
     let first = store.save(input("x-axis topic")).await.unwrap();
     let second = store.save(input("y-axis topic")).await.unwrap();
+
+    assert_ne!(second.memory.id, first.memory.id);
+}
+
+#[tokio::test]
+#[ignore = "requires Docker"]
+async fn test_update_changes_content_and_returns_updated_entry() {
+    let embedder = FakeTextEmbedder::new()
+        .with("original content", unit_vec(0))
+        .with("updated content", unit_vec(1));
+    let (store, _container) = start_store(embedder, None).await;
+
+    let saved = store.save(input("original content")).await.unwrap();
+    let updated = store
+        .update(saved.memory.id, input("updated content"))
+        .await
+        .unwrap();
+
+    assert_eq!(updated.memory.id, saved.memory.id);
+    assert_eq!(updated.memory.content, "updated content");
+}
+
+#[tokio::test]
+#[ignore = "requires Docker"]
+async fn test_update_returns_not_found_for_unknown_id() {
+    let embedder = FakeTextEmbedder::new().with("anything", unit_vec(0));
+    let (store, _container) = start_store(embedder, None).await;
+
+    let unknown_id = Uuid::new_v4();
+    let result = store.update(unknown_id, input("anything")).await;
+
+    assert!(matches!(result, Err(MemoryStoreError::NotFound(id)) if id == unknown_id));
+}
+
+#[tokio::test]
+#[ignore = "requires Docker"]
+async fn test_deduplication_does_not_collapse_different_metadata() {
+    // Same embedding but different metadata → must produce two distinct entries
+    let embedder = FakeTextEmbedder::new()
+        .with("same content a", unit_vec(0))
+        .with("same content b", unit_vec(0));
+    let (store, _container) = start_store(embedder, Some(0.9)).await;
+
+    let first = store
+        .save(input_with_metadata(
+            "same content a",
+            HashMap::from([("source".to_string(), "a".to_string())]),
+        ))
+        .await
+        .unwrap();
+    let second = store
+        .save(input_with_metadata(
+            "same content b",
+            HashMap::from([("source".to_string(), "b".to_string())]),
+        ))
+        .await
+        .unwrap();
 
     assert_ne!(second.memory.id, first.memory.id);
 }

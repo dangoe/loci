@@ -1,11 +1,15 @@
 use std::fmt;
 
+use uuid::Uuid;
+
 /// Errors produced by a [`MemoryStore`][crate::MemoryStore] implementation.
 #[derive(Debug)]
 pub enum MemoryStoreError {
     Connection(String),
     Query(String),
     Embedding(EmbeddingError),
+    /// No memory with the given ID exists in the store.
+    NotFound(Uuid),
 }
 
 impl fmt::Display for MemoryStoreError {
@@ -14,6 +18,7 @@ impl fmt::Display for MemoryStoreError {
             Self::Connection(msg) => write!(f, "connection error: {msg}"),
             Self::Query(msg) => write!(f, "query error: {msg}"),
             Self::Embedding(e) => write!(f, "embedding error: {e}"),
+            Self::NotFound(id) => write!(f, "memory not found: {id}"),
         }
     }
 }

@@ -44,7 +44,10 @@ impl TextEmbedder for OllamaTextEmbedder {
         self.dimension
     }
 
-    fn embed(&self, text: &str) -> impl Future<Output = Result<Embedding, EmbeddingError>> + Send + '_ {
+    fn embed(
+        &self,
+        text: &str,
+    ) -> impl Future<Output = Result<Embedding, EmbeddingError>> + Send + '_ {
         let text = text.to_owned();
         async move {
             log::debug!("embedding {} chars via Ollama ({})", text.len(), self.model);
@@ -52,7 +55,10 @@ impl TextEmbedder for OllamaTextEmbedder {
             let response = self
                 .client
                 .post(format!("{}/api/embed", self.base_url))
-                .json(&EmbedRequest { model: &self.model, input: &text })
+                .json(&EmbedRequest {
+                    model: &self.model,
+                    input: &text,
+                })
                 .send()
                 .await
                 .map_err(|e| EmbeddingError::Http(e.to_string()))?;
@@ -69,16 +75,12 @@ impl TextEmbedder for OllamaTextEmbedder {
                 .await
                 .map_err(|e| EmbeddingError::Parse(e.to_string()))?;
 
-            let raw = body
-                .embeddings
-                .into_iter()
-                .next()
-                .ok_or_else(|| EmbeddingError::Parse("embeddings array is empty".to_string()))?;
+            let raw =
+                body.embeddings.into_iter().next().ok_or_else(|| {
+                    EmbeddingError::Parse("embeddings array is empty".to_string())
+                })?;
 
-            let values = raw
-                .into_iter()
-                .map(|v| v as f32)
-                .collect();
+            let values = raw.into_iter().map(|v| v as f32).collect();
 
             Ok(Embedding::new(values))
         }

@@ -24,6 +24,9 @@ impl MemoryInput {
 pub struct Score(f64);
 
 impl Score {
+    /// The minimum possible score (0.0).
+    pub const ZERO: Score = Score(0.0);
+
     /// Creates a new `Score`. Returns [`InvalidScore`] if `value` is outside [0.0, 1.0].
     pub fn new(value: f64) -> Result<Self, InvalidScore> {
         if !(0.0..=1.0).contains(&value) {
@@ -86,7 +89,7 @@ pub struct MemoryQuery {
     pub topic: String,
     pub max_results: usize,
     /// Minimum similarity score a result must reach to be included. In [0.0, 1.0].
-    pub min_score: f64,
+    pub min_score: Score,
     /// Only return entries whose metadata contains all of these key/value pairs.
     pub filters: HashMap<String, String>,
 }
