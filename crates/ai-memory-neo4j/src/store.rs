@@ -1,0 +1,157 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use chrono::{DateTime, Utc};
+use neo4rs::Graph;
+use uuid::Uuid;
+
+use ai_memory_core::{Embedding, Memory, MemoryEntry, MemoryQuery, MemoryStore, MemoryStoreError, Score};
+
+use crate::config::Neo4jConfig;
+
+const INDEX_NAME: &str = "memory_embedding_idx";
+const NODE_LABEL: &str = "Memory";
+
+/// [`MemoryStore`] implementation backed by Neo4j using cosine vector similarity.
+pub struct Neo4jMemoryStore {
+    graph: Arc<Graph>,
+    config: Neo4jConfig,
+}
+
+impl Neo4jMemoryStore {
+    pub fn new(graph: Arc<Graph>, config: Neo4jConfig) -> Self {
+        Self { graph, config }
+    }
+
+    /// Creates the vector index in Neo4j. Must be called once before using the store.
+    pub async fn initialize(&self) -> Result<(), MemoryStoreError> {
+        let cypher = format!(
+            "CREATE VECTOR INDEX {INDEX_NAME} IF NOT EXISTS \
+             FOR (m:{NODE_LABEL}) ON (m.embedding) \
+             OPTIONS {{indexConfig: {{`vector.dimensions`: {dim}, `vector.similarity_function`: 'cosine'}}}}",
+            dim = self.config.embedding_dimension,
+        );
+        self.graph
+            .run(neo4rs::query(&cypher))
+            .await
+            .map_err(|e| MemoryStoreError::Connection(e.to_string()))
+    }
+
+    async fn do_save(&self, memory: Memory) -> Result<Uuid, MemoryStoreError> {
+        let embedding = to_f64_vec(memory.embedding.values());
+        let metadata_json = serde_json::to_string(&memory.metadata)
+            .map_err(|e| MemoryStoreError::Query(e.to_string()))?;
+
+        let q = neo4rs::query(&format!(
+            "CREATE (m:{NODE_LABEL} {{id: $id, content: $content, embedding: $embedding, \
+             metadata: $metadata, createdAt: $createdAt}}) \
+             RETURN m.id AS id"
+        ))
+        .param("id", memory.id.to_string())
+        .param("content", memory.content)
+        .param("embedding", embedding)
+        .param("metadata", metadata_json)
+        .param("createdAt", memory.created_at.to_rfc3339());
+
+        let mut result = self
+            .graph
+            .execute(q)
+            .await
+            .map_err(|e| MemoryStoreError::Query(e.to_string()))?;
+
+        let row = result
+            .next()
+            .await
+            .map_err(|e| MemoryStoreError::Query(e.to_string()))?
+            .ok_or_else(|| MemoryStoreError::Query("CREATE returned no rows".to_string()))?;
+
+        let id_str: String = row
+            .get("id")
+            .map_err(|e| MemoryStoreError::Query(e.to_string()))?;
+
+        Uuid::parse_str(&id_str).map_err(|e| MemoryStoreError::Query(e.to_string()))
+    }
+
+    fn parse_entry(row: &neo4rs::Row) -> Result<MemoryEntry, MemoryStoreError> {
+        let id_str: String = row.get("id").map_err(|e| MemoryStoreError::Query(e.to_string()))?;
+        let content: String = row.get("content").map_err(|e| MemoryStoreError::Query(e.to_string()))?;
+        let embedding_f64: Vec<f64> = row.get("embedding").map_err(|e| MemoryStoreError::Query(e.to_string()))?;
+        let metadata_json: String = row.get("metadata").unwrap_or_else(|_| "{}".to_string());
+        let created_at_str: String = row.get("createdAt").map_err(|e| MemoryStoreError::Query(e.to_string()))?;
+        let score_val: f64 = row.get("score").map_err(|e| MemoryStoreError::Query(e.to_string()))?;
+
+        let id = Uuid::parse_str(&id_str).map_err(|e| MemoryStoreError::Query(e.to_string()))?;
+        let embedding = Embedding::new(embedding_f64.iter().map(|&v| v as f32).collect());
+        let metadata: HashMap<String, String> =
+            serde_json::from_str(&metadata_json).unwrap_or_default();
+        let created_at: DateTime<Utc> = DateTime::parse_from_rfc3339(&created_at_str)
+            .map_err(|e| MemoryStoreError::Query(e.to_string()))?
+            .into();
+        let score =
+            Score::new(score_val).map_err(|e| MemoryStoreError::Query(e.to_string()))?;
+
+        Ok(MemoryEntry {
+            memory: Memory { id, content, embedding, metadata, created_at },
+            score,
+        })
+    }
+}
+
+impl MemoryStore for Neo4jMemoryStore {
+    async fn save(&self, memory: Memory) -> Result<Uuid, MemoryStoreError> {
+        if let Some(threshold) = self.config.similarity_threshold {
+            let candidates = self
+                .query(MemoryQuery { embedding: memory.embedding.clone(), max_results: 1 })
+                .await?;
+            if let Some(entry) = candidates.first() {
+                if entry.score.value() >= threshold {
+                    log::debug!(
+                        "deduplication: reusing memory {} (score {:.4})",
+                        entry.memory.id,
+                        entry.score.value()
+                    );
+                    return Ok(entry.memory.id);
+                }
+            }
+        }
+        self.do_save(memory).await
+    }
+
+    async fn query(&self, query: MemoryQuery) -> Result<Vec<MemoryEntry>, MemoryStoreError> {
+        let embedding = to_f64_vec(query.embedding.values());
+        let q = neo4rs::query(
+            "CALL db.index.vector.queryNodes($index, $maxResults, $embedding) \
+             YIELD node AS m, score \
+             RETURN m.id AS id, m.content AS content, m.embedding AS embedding, \
+                    m.metadata AS metadata, m.createdAt AS createdAt, score",
+        )
+        .param("index", INDEX_NAME)
+        .param("maxResults", query.max_results as i64)
+        .param("embedding", embedding);
+
+        let mut result = self
+            .graph
+            .execute(q)
+            .await
+            .map_err(|e| MemoryStoreError::Query(e.to_string()))?;
+
+        let mut entries = Vec::new();
+        while let Ok(Some(row)) = result.next().await {
+            entries.push(Self::parse_entry(&row)?);
+        }
+        Ok(entries)
+    }
+
+    async fn delete(&self, id: Uuid) -> Result<(), MemoryStoreError> {
+        let q = neo4rs::query(&format!("MATCH (m:{NODE_LABEL} {{id: $id}}) DELETE m"))
+            .param("id", id.to_string());
+        self.graph
+            .run(q)
+            .await
+            .map_err(|e| MemoryStoreError::Query(e.to_string()))
+    }
+}
+
+fn to_f64_vec(values: &[f32]) -> Vec<f64> {
+    values.iter().map(|&v| v as f64).collect()
+}

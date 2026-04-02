@@ -32,6 +32,14 @@ Check for a project-specific extension at `.github/skills/rust-development.exten
 - Provide a `Native` production implementation and a `Mock` test implementation for each trait
 - Pass trait objects or generics to functions and structs — not concrete types — so tests can inject mocks
 - Name traits after the capability they represent: `FileRead`, `FileWrite`, `ShellCommand`
+- For public async traits, use explicit RPITIT instead of `async fn` to allow `Send` bounds:
+  ```rust
+  // trait — explicit so callers can rely on Send
+  fn save(&self, x: T) -> impl Future<Output = Result<U, E>> + Send + '_;
+
+  // impl — async fn is accepted as equivalent
+  async fn save(&self, x: T) -> Result<U, E> { ... }
+  ```
 
 ## 5. Dependencies
 

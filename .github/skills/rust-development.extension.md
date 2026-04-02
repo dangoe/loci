@@ -5,28 +5,49 @@ Project-specific overrides and additions to `.github/skills/rust-development.md`
 ## Build & Test Commands
 
 ```bash
-cargo build               # debug build
-cargo build --release     # release build
-cargo check               # fast type-check
-cargo test                # run all tests
-cargo test <name>         # run a single test by name (substring match)
-cargo clippy              # lint — must pass with zero warnings
-cargo fmt                 # format code
-cargo fmt --check         # verify formatting (CI)
+cargo build                            # debug build (all crates)
+cargo build --release                  # release build
+cargo check                            # fast type-check
+cargo test                             # run all tests
+cargo test -p ai-memory-core           # run tests for a single crate
+cargo test -p ai-memory-core <name>    # run a single test by name (substring match)
+cargo clippy                           # lint — must pass with zero warnings
+cargo fmt                              # format code
+cargo fmt --check                      # verify formatting (CI)
 ```
 
-## Module Structure
+## Workspace Structure
 
-> Update this section as the project grows.
+| Crate | Path | Purpose |
+|-------|------|---------|
+| `ai-memory-core` | `crates/ai-memory-core` | `MemoryStore` trait, `EmbeddingPort` trait, domain types, `MemoryService<S,E>` |
+| `ai-memory-neo4j` | `crates/ai-memory-neo4j` | `Neo4jMemoryStore` — `impl MemoryStore` backed by Neo4j vector index |
 
-| Module | Purpose |
-|--------|---------|
-| `main.rs` | CLI entry point |
+## Domain Types (ai-memory-core)
+
+| Type | Description |
+|------|-------------|
+| `Embedding` | Newtype over `Vec<f32>`; use `.values()` / `.dimension()` |
+| `Memory` | `id`, `content`, `embedding`, `metadata`, `created_at` |
+| `MemoryEntry` | Query result: `Memory` + `Score` |
+| `MemoryQuery` | Pre-computed `Embedding` + `max_results` |
+| `Score` | Validated `f64` in [0.0, 1.0]; constructed with `Score::new(v)?` |
+| `MemoryService<S, E>` | Composes store + embedding; call `.memorize()`, `.retrieve()`, `.forget()` |
+
+## Trait Design Rules
+
+- `MemoryStore` and `EmbeddingPort` use native AFIT (`async fn` directly in trait).
+- Both traits are `Send + Sync` supertrait-bounded.
+- Production types are prefixed `Native`; test doubles are prefixed `Mock`.
+- New backend crates follow the same pattern as `ai-memory-neo4j`: one `Config` struct, one store struct, `impl MemoryStore for ...` in `store.rs`.
 
 ## Dependencies in Use
 
-> Update this section when dependencies are added to `Cargo.toml`.
-
-| Crate | Purpose |
-|-------|---------|
-| _(none yet)_ | — |
+| Crate | Used in | Purpose |
+|-------|---------|---------|
+| `chrono` | both | `DateTime<Utc>` timestamps |
+| `serde` | core | derive `Serialize`/`Deserialize` on domain types |
+| `serde_json` | neo4j | metadata serialisation to/from JSON string node property |
+| `uuid` | both | `Uuid::new_v4()` for memory IDs |
+| `neo4rs` | neo4j | async Neo4j driver |
+| `log` | neo4j | deduplication debug logging |

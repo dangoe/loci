@@ -4,20 +4,24 @@ applyTo: "**"
 
 # Project Context: ai-memory
 
-> Update this file as the project's purpose and structure become defined.
+A Rust library for semantic memory storage and retrieval. Text is embedded into vectors and stored
+in a backend (currently Neo4j); retrieval uses cosine vector similarity.
 
-## Description
+## Workspace
 
-`ai-memory` is an early-stage Rust project (edition 2024).
+| Crate | Purpose |
+|-------|---------|
+| `ai-memory-core` | Traits, domain types, `MemoryService<S,E>` |
+| `ai-memory-neo4j` | Neo4j-backed `MemoryStore` implementation |
 
 ## Quick Reference
 
 ```bash
-cargo build            # debug build
-cargo test             # run all tests
-cargo test <name>      # run a single test
-cargo clippy           # lint
-cargo fmt              # format
+cargo check                          # type-check workspace
+cargo test                           # run all tests
+cargo test -p ai-memory-core <name>  # run a single test
+cargo clippy                         # lint
+cargo fmt                            # format
 ```
 
 ## Key References
