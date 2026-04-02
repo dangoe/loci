@@ -12,6 +12,7 @@ use testcontainers::ContainerAsync;
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::neo4j::{Neo4j, Neo4jImage};
 use uuid::Uuid;
+use serial_test::serial;
 
 const DIM: usize = 4;
 
@@ -70,10 +71,7 @@ async fn start_store(
     Neo4jMemoryStore<FakeTextEmbedder>,
     ContainerAsync<Neo4jImage>,
 ) {
-    let container: ContainerAsync<Neo4jImage> = Neo4j::default()
-        .start()
-        .await
-        .expect("Docker must be available to run Neo4j integration tests");
+    let container: ContainerAsync<Neo4jImage> = Neo4j::default().start().await.unwrap();
 
     let host = container.get_host().await.unwrap();
     let port = container.image().bolt_port_ipv4().unwrap();
@@ -118,6 +116,7 @@ fn query(topic: &str, max_results: usize) -> MemoryQuery {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[tokio::test]
+#[serial]
 #[ignore = "requires Docker"]
 async fn test_saved_memory_is_returned_by_query() {
     let embedder = FakeTextEmbedder::new()
@@ -136,6 +135,7 @@ async fn test_saved_memory_is_returned_by_query() {
 }
 
 #[tokio::test]
+#[serial]
 #[ignore = "requires Docker"]
 async fn test_query_ranks_results_by_similarity() {
     let embedder = FakeTextEmbedder::new()
@@ -156,6 +156,7 @@ async fn test_query_ranks_results_by_similarity() {
 }
 
 #[tokio::test]
+#[serial]
 #[ignore = "requires Docker"]
 async fn test_query_respects_max_results() {
     let mut embedder = FakeTextEmbedder::new().with("query", unit_vec(0));
@@ -174,6 +175,7 @@ async fn test_query_respects_max_results() {
 }
 
 #[tokio::test]
+#[serial]
 #[ignore = "requires Docker"]
 async fn test_metadata_is_persisted_and_restored() {
     let embedder = FakeTextEmbedder::new()
@@ -196,6 +198,7 @@ async fn test_metadata_is_persisted_and_restored() {
 }
 
 #[tokio::test]
+#[serial]
 #[ignore = "requires Docker"]
 async fn test_query_filters_by_metadata() {
     let embedder = FakeTextEmbedder::new()
@@ -234,6 +237,7 @@ async fn test_query_filters_by_metadata() {
 }
 
 #[tokio::test]
+#[serial]
 #[ignore = "requires Docker"]
 async fn test_query_respects_min_score() {
     // x-axis and y-axis are orthogonal → cosine = 0
@@ -262,6 +266,7 @@ async fn test_query_respects_min_score() {
 }
 
 #[tokio::test]
+#[serial]
 #[ignore = "requires Docker"]
 async fn test_deleted_memory_is_not_returned_by_query() {
     let embedder = FakeTextEmbedder::new()
@@ -278,6 +283,7 @@ async fn test_deleted_memory_is_not_returned_by_query() {
 }
 
 #[tokio::test]
+#[serial]
 #[ignore = "requires Docker"]
 async fn test_clear_removes_all_memories() {
     let embedder = FakeTextEmbedder::new()
@@ -296,6 +302,7 @@ async fn test_clear_removes_all_memories() {
 }
 
 #[tokio::test]
+#[serial]
 #[ignore = "requires Docker"]
 async fn test_deduplication_reuses_id_when_score_meets_threshold() {
     // Both "original" and "near-duplicate" map to the same vector → cosine = 1.0 ≥ 0.9
@@ -311,6 +318,7 @@ async fn test_deduplication_reuses_id_when_score_meets_threshold() {
 }
 
 #[tokio::test]
+#[serial]
 #[ignore = "requires Docker"]
 async fn test_deduplication_stores_new_memory_when_score_below_threshold() {
     // Orthogonal vectors → cosine ≈ 0 < 0.9 → stored separately
@@ -326,6 +334,7 @@ async fn test_deduplication_stores_new_memory_when_score_below_threshold() {
 }
 
 #[tokio::test]
+#[serial]
 #[ignore = "requires Docker"]
 async fn test_update_changes_content_and_returns_updated_entry() {
     let embedder = FakeTextEmbedder::new()
@@ -344,6 +353,7 @@ async fn test_update_changes_content_and_returns_updated_entry() {
 }
 
 #[tokio::test]
+#[serial]
 #[ignore = "requires Docker"]
 async fn test_update_returns_not_found_for_unknown_id() {
     let embedder = FakeTextEmbedder::new().with("anything", unit_vec(0));
@@ -356,6 +366,7 @@ async fn test_update_returns_not_found_for_unknown_id() {
 }
 
 #[tokio::test]
+#[serial]
 #[ignore = "requires Docker"]
 async fn test_deduplication_does_not_collapse_different_metadata() {
     // Same embedding but different metadata → must produce two distinct entries
