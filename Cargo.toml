@@ -1,5 +1,9 @@
 [workspace]
-members = ["crates/ai-memory-core", "crates/ai-memory-neo4j"]
+members = [
+    "crates/ai-memory-core",
+    "crates/ai-memory-neo4j",
+    "crates/ai-memory-ollama",
+]
 resolver = "2"
 
 [workspace.package]

@@ -1,0 +1,11 @@
+[package]
+name = "ai-memory-ollama"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ai-memory-core = { path = "../ai-memory-core" }
+log.workspace = true
+reqwest = { version = "0.12", features = ["json"] }
+serde.workspace = true
+serde_json.workspace = true

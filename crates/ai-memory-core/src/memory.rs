@@ -4,7 +4,20 @@ use std::fmt;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-use crate::Embedding;
+/// Input passed to [`crate::MemoryStore::save`].
+///
+/// The store assigns an ID and timestamp; callers only supply content and metadata.
+#[derive(Debug, Clone)]
+pub struct MemoryInput {
+    pub content: String,
+    pub metadata: HashMap<String, String>,
+}
+
+impl MemoryInput {
+    pub fn new(content: String, metadata: HashMap<String, String>) -> Self {
+        Self { content, metadata }
+    }
+}
 
 /// A similarity score in the range [0.0, 1.0].
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
@@ -37,23 +50,22 @@ impl fmt::Display for InvalidScore {
 
 impl std::error::Error for InvalidScore {}
 
-/// A stored memory with its pre-computed embedding and metadata.
+/// A stored memory. Intentionally embedding-free — backends that require
+/// vector similarity compute embeddings internally.
 #[derive(Debug, Clone)]
 pub struct Memory {
     pub id: Uuid,
     pub content: String,
-    pub embedding: Embedding,
     pub metadata: HashMap<String, String>,
     pub created_at: DateTime<Utc>,
 }
 
 impl Memory {
     /// Creates a new `Memory` with a generated ID and the current UTC timestamp.
-    pub fn new(content: String, embedding: Embedding, metadata: HashMap<String, String>) -> Self {
+    pub fn new(content: String, metadata: HashMap<String, String>) -> Self {
         Self {
             id: Uuid::new_v4(),
             content,
-            embedding,
             metadata,
             created_at: Utc::now(),
         }
@@ -67,11 +79,16 @@ pub struct MemoryEntry {
     pub score: Score,
 }
 
-/// Input to [`MemoryStore::query`], carrying a pre-computed embedding.
+/// Input to [`crate::MemoryStore::query`]. Backends decide how to interpret the topic
+/// (vector similarity, keyword search, etc.).
 #[derive(Debug, Clone)]
 pub struct MemoryQuery {
-    pub embedding: Embedding,
+    pub topic: String,
     pub max_results: usize,
+    /// Minimum similarity score a result must reach to be included. In [0.0, 1.0].
+    pub min_score: f64,
+    /// Only return entries whose metadata contains all of these key/value pairs.
+    pub filters: HashMap<String, String>,
 }
 
 #[cfg(test)]
@@ -93,8 +110,8 @@ mod tests {
 
     #[test]
     fn test_memory_new_generates_unique_ids() {
-        let m1 = Memory::new("hello".to_string(), Embedding::new(vec![]), HashMap::new());
-        let m2 = Memory::new("hello".to_string(), Embedding::new(vec![]), HashMap::new());
+        let m1 = Memory::new("hello".to_string(), HashMap::new());
+        let m2 = Memory::new("hello".to_string(), HashMap::new());
         assert_ne!(m1.id, m2.id);
     }
 }

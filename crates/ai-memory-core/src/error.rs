@@ -5,6 +5,7 @@ use std::fmt;
 pub enum MemoryStoreError {
     Connection(String),
     Query(String),
+    Embedding(EmbeddingError),
 }
 
 impl fmt::Display for MemoryStoreError {
@@ -12,13 +13,21 @@ impl fmt::Display for MemoryStoreError {
         match self {
             Self::Connection(msg) => write!(f, "connection error: {msg}"),
             Self::Query(msg) => write!(f, "query error: {msg}"),
+            Self::Embedding(e) => write!(f, "embedding error: {e}"),
         }
     }
 }
 
-impl std::error::Error for MemoryStoreError {}
+impl std::error::Error for MemoryStoreError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Embedding(e) => Some(e),
+            _ => None,
+        }
+    }
+}
 
-/// Errors produced by an [`EmbeddingPort`][crate::EmbeddingPort] implementation.
+/// Errors produced by a [`TextEmbedder`][crate::TextEmbedder] implementation.
 #[derive(Debug)]
 pub enum EmbeddingError {
     Http(String),
@@ -35,28 +44,3 @@ impl fmt::Display for EmbeddingError {
 }
 
 impl std::error::Error for EmbeddingError {}
-
-/// Errors produced by [`MemoryService`][crate::MemoryService].
-#[derive(Debug)]
-pub enum MemoryServiceError {
-    Store(MemoryStoreError),
-    Embedding(EmbeddingError),
-}
-
-impl fmt::Display for MemoryServiceError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Store(e) => write!(f, "store error: {e}"),
-            Self::Embedding(e) => write!(f, "embedding error: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for MemoryServiceError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Store(e) => Some(e),
-            Self::Embedding(e) => Some(e),
-        }
-    }
-}
