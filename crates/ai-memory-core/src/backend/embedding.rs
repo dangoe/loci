@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, pin::Pin};
 
 use serde::{Deserialize, Serialize};
 
@@ -18,27 +18,41 @@ pub struct EmbeddingRequest {
     /// transparently and concatenate the results.
     pub input: Vec<String>,
 
+    /// Optional output dimension hint forwarded to the backend when supported.
+    pub embedding_dimension: Option<usize>,
+
     /// Pass-through map for backend-specific options.
     pub extra_params: BackendParams,
 }
 
 impl EmbeddingRequest {
+    /// Creates a single-input embedding request.
     pub fn new(model: impl Into<String>, input: impl Into<String>) -> Self {
         Self {
             model: model.into(),
             input: vec![input.into()],
+            embedding_dimension: None,
             extra_params: HashMap::new(),
         }
     }
 
+    /// Creates a batch embedding request.
     pub fn new_batch(model: impl Into<String>, inputs: Vec<String>) -> Self {
         Self {
             model: model.into(),
             input: inputs,
+            embedding_dimension: None,
             extra_params: HashMap::new(),
         }
     }
 
+    /// Sets the desired output embedding dimension.
+    pub fn with_embedding_dimension(mut self, dim: usize) -> Self {
+        self.embedding_dimension = Some(dim);
+        self
+    }
+
+    /// Adds a backend-specific extra parameter.
     pub fn with_extra(mut self, key: impl Into<String>, value: serde_json::Value) -> Self {
         self.extra_params.insert(key.into(), value);
         self
@@ -62,5 +76,5 @@ pub trait EmbeddingBackend: Send + Sync {
     fn embed(
         &self,
         req: EmbeddingRequest,
-    ) -> impl Future<Output = BackendResult<EmbeddingResponse>> + Send + '_;
+    ) -> Pin<Box<dyn Future<Output = BackendResult<EmbeddingResponse>> + Send + '_>>;
 }

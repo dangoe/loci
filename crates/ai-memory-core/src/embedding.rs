@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{pin::Pin, sync::Arc};
 
 use crate::{
     backend::embedding::{EmbeddingBackend, EmbeddingRequest},
@@ -40,13 +40,29 @@ pub trait TextEmbedder: Send + Sync {
     fn embed(
         &self,
         text: &str,
-    ) -> impl Future<Output = Result<Embedding, EmbeddingError>> + Send + '_;
+    ) -> Pin<Box<dyn Future<Output = Result<Embedding, EmbeddingError>> + Send + '_>>;
 }
 
-struct DefaultTextEmbedder {
-    backend: Box<dyn EmbeddingBackend>,
+/// Default [`TextEmbedder`] implementation backed by any [`EmbeddingBackend`].
+pub struct DefaultTextEmbedder {
+    backend: Arc<dyn EmbeddingBackend>,
     model: String,
     embedding_dimension: usize,
+}
+
+impl DefaultTextEmbedder {
+    /// Creates a new `DefaultTextEmbedder`.
+    pub fn new(
+        backend: Arc<dyn EmbeddingBackend>,
+        model: impl Into<String>,
+        embedding_dimension: usize,
+    ) -> Self {
+        Self {
+            backend,
+            model: model.into(),
+            embedding_dimension,
+        }
+    }
 }
 
 impl TextEmbedder for DefaultTextEmbedder {
@@ -57,9 +73,20 @@ impl TextEmbedder for DefaultTextEmbedder {
     fn embed(
         &self,
         text: &str,
-    ) -> impl Future<Output = Result<Embedding, EmbeddingError>> + Send + '_ {
-        self.backend
-            .embed(EmbeddingRequest::new(self.model.as_str(), text))
+    ) -> Pin<Box<dyn Future<Output = Result<Embedding, EmbeddingError>> + Send + '_>> {
+        let req = EmbeddingRequest::new(self.model.as_str(), text)
+            .with_embedding_dimension(self.embedding_dimension);
+        Box::pin(async move {
+            self.backend
+                .embed(req)
+                .await
+                .map_err(EmbeddingError::TargetModel)?
+                .embeddings
+                .into_iter()
+                .next()
+                .map(Embedding::from)
+                .ok_or(EmbeddingError::EmptyResponse)
+        })
     }
 }
 

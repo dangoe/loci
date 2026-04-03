@@ -10,7 +10,7 @@ use reqwest::{Client, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use std::time::Duration;
+use std::{future::Future, pin::Pin, time::Duration};
 
 /// Configuration for the Ollama backend.
 #[derive(Debug, Clone)]
@@ -63,6 +63,8 @@ struct OllamaTextGenerationResponse {
 struct OllamaEmbeddingRequest<'a> {
     model: &'a str,
     input: &'a Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dimensions: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     options: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -117,8 +119,8 @@ impl TextGenerationBackend for OllamaBackend {
     fn generate(
         &self,
         req: TextGenerationRequest,
-    ) -> impl Future<Output = BackendResult<TextGenerationResponse>> + Send + '_ {
-        async move {
+    ) -> Pin<Box<dyn Future<Output = BackendResult<TextGenerationResponse>> + Send + '_>> {
+        Box::pin(async move {
             let body = OllamaTextGenerationRequest {
                 model: &req.model,
                 prompt: &req.prompt,
@@ -165,7 +167,7 @@ impl TextGenerationBackend for OllamaBackend {
                 }),
                 done: true,
             })
-        }
+        })
     }
 }
 
@@ -174,11 +176,12 @@ impl EmbeddingBackend for OllamaBackend {
     fn embed(
         &self,
         req: EmbeddingRequest,
-    ) -> impl Future<Output = BackendResult<EmbeddingResponse>> + Send + '_ {
-        async move {
+    ) -> Pin<Box<dyn Future<Output = BackendResult<EmbeddingResponse>> + Send + '_>> {
+        Box::pin(async move {
             let body = OllamaEmbeddingRequest {
                 model: &req.model,
                 input: &req.input,
+                dimensions: req.embedding_dimension,
                 options: None,
                 keep_alive: None,
             };
@@ -213,6 +216,6 @@ impl EmbeddingBackend for OllamaBackend {
                 model: parsed_response.model,
                 usage: None,
             })
-        }
+        })
     }
 }

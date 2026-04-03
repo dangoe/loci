@@ -64,13 +64,17 @@ impl std::error::Error for MemoryStoreError {
 /// Errors produced by a [`TextEmbedder`][crate::TextEmbedder] implementation.
 #[derive(Debug)]
 pub enum EmbeddingError {
+    /// The embedding backend returned a transport or protocol error.
     TargetModel(BackendError),
+    /// The embedding backend returned a response containing no vectors.
+    EmptyResponse,
 }
 
 impl fmt::Display for EmbeddingError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::TargetModel(msg) => write!(f, "Tawrget model request error: {msg}"),
+            Self::TargetModel(msg) => write!(f, "Target model request error: {msg}"),
+            Self::EmptyResponse => write!(f, "embedding backend returned no vectors"),
         }
     }
 }
