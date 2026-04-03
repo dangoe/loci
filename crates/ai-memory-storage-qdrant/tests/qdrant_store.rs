@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::future::Future;
+use std::pin::Pin;
 
 use ai_memory_core::embedding::{Embedding, TextEmbedder};
 use ai_memory_core::error::{EmbeddingError, MemoryStoreError};
@@ -44,13 +45,13 @@ impl TextEmbedder for FakeTextEmbedder {
     fn embed(
         &self,
         text: &str,
-    ) -> impl Future<Output = Result<Embedding, EmbeddingError>> + Send + '_ {
+    ) -> Pin<Box<dyn Future<Output = Result<Embedding, EmbeddingError>> + Send + '_>> {
         let values = self
             .mappings
             .get(text)
             .cloned()
             .unwrap_or_else(|| vec![0.0; DIM]);
-        async move { Ok(Embedding::new(values)) }
+        Box::pin(async move { Ok(Embedding::new(values)) })
     }
 }
 

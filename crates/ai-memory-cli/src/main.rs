@@ -10,6 +10,21 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 use uuid::Uuid;
 
+use ai_memory_backend_ollama::backend::{OllamaBackend, OllamaConfig};
+use ai_memory_core::contextualization::{Contextualizer, ContextualizerConfig};
+use ai_memory_core::embedding::DefaultTextEmbedder;
+use ai_memory_core::memory::{MemoryEntry, MemoryInput, MemoryQuery, Score};
+use ai_memory_core::store::MemoryStore;
+use ai_memory_storage_qdrant::config::QdrantConfig;
+use ai_memory_storage_qdrant::store::QdrantMemoryStore;
+
+/// Embedding model pulled by `ollama-init` in docker-compose.
+const EMBED_MODEL: &str = "nomic-embed-text";
+/// Output dimension of `nomic-embed-text`.
+const EMBED_DIM: usize = 768;
+/// Default LLM model pulled by `ollama-init` in docker-compose.
+const DEFAULT_LLM_MODEL: &str = "qwen3:0.6b";
+
 /// Top-level CLI arguments and global options.
 #[derive(Parser)]
 #[command(name = "ai-memory", about = "AI memory store CLI")]
@@ -25,14 +40,6 @@ struct Cli {
     /// Qdrant collection name
     #[arg(long, default_value = "memories", env = "COLLECTION_NAME")]
     collection: String,
-
-    /// Embedding model name
-    #[arg(long, default_value = "nomic-embed-text", env = "EMBEDDING_MODEL")]
-    model: String,
-
-    /// Embedding dimension (must match the model)
-    #[arg(long, default_value_t = 768, env = "EMBEDDING_DIMENSION")]
-    dimension: usize,
 
     /// Cosine similarity threshold for deduplication (0.0–1.0)
     #[arg(long, env = "SIMILARITY_THRESHOLD")]
@@ -90,21 +97,13 @@ enum Command {
     /// Clear all memories from the collection
     Clear,
     /// Enhance a prompt with memory context and call an LLM
-    Enhance {
+    Prompt {
         /// The prompt to process
         prompt: String,
 
-        /// Target LLM model name
-        #[arg(long, env = "LLM_MODEL")]
+        /// LLM model name
+        #[arg(long, default_value = DEFAULT_LLM_MODEL, env = "LLM_MODEL")]
         llm_model: String,
-
-        /// LLM API base URL
-        #[arg(long, default_value = "https://api.openai.com/v1", env = "LLM_URL")]
-        llm_url: String,
-
-        /// LLM API key (optional for local models)
-        #[arg(long, env = "LLM_API_KEY")]
-        llm_api_key: Option<String>,
 
         /// Maximum number of memories to inject into the prompt
         #[arg(long, default_value_t = 5)]
@@ -112,11 +111,7 @@ enum Command {
 
         /// Minimum similarity score for memory retrieval (0.0–1.0)
         #[arg(long, default_value_t = 0.0)]
-        llm_min_score: f64,
-
-        /// Memory extractor: "none" or "llm"
-        #[arg(long, default_value = "none", env = "MEMORY_EXTRACTOR")]
-        extractor: String,
+        min_score: f64,
     },
 }
 
@@ -132,14 +127,24 @@ async fn main() {
 }
 
 async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
-    let embedder = OllamaTextEmbedder::new(&cli.ollama_url).with_model(&cli.model, cli.dimension);
+    let ollama_config = OllamaConfig {
+        base_url: cli.ollama_url.clone(),
+        timeout: None,
+    };
 
-    let config = QdrantConfig {
+    let ollama = Arc::new(OllamaBackend::new(ollama_config)?);
+    let embedder = DefaultTextEmbedder::new(
+        Arc::clone(&ollama) as Arc<dyn ai_memory_core::backend::embedding::EmbeddingBackend>,
+        EMBED_MODEL,
+        EMBED_DIM,
+    );
+
+    let qdrant_config = QdrantConfig {
         collection_name: cli.collection,
         similarity_threshold: cli.similarity_threshold,
     };
 
-    let store = QdrantMemoryStore::new(&cli.qdrant_url, config, embedder)?;
+    let store = QdrantMemoryStore::new(&cli.qdrant_url, qdrant_config, embedder)?;
     store.initialize().await?;
 
     match cli.command {
@@ -187,35 +192,27 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 serde_json::to_string_pretty(&serde_json::json!({ "cleared": true }))?
             );
         }
-        Command::Enhance {
+        Command::Prompt {
             prompt,
             llm_model,
-            llm_url,
-            llm_api_key,
             max_memories,
-            llm_min_score,
-            extractor,
+            min_score,
         } => {
             let store = Arc::new(store);
-            let llm_client = OpenAiCompatibleClient::new(
-                llm_url.clone(),
-                llm_model.clone(),
-                llm_api_key.clone(),
-            );
-
             let min_score =
-                Score::new(llm_min_score).map_err(|e| format!("invalid llm_min_score: {e}"))?;
+                Score::new(min_score).map_err(|e| format!("invalid min_score: {e}"))?;
 
             let config = ContextualizerConfig {
                 max_memories,
                 min_score,
                 filters: HashMap::new(),
+                text_generation_model: llm_model,
             };
 
-            let enhancer =
-                Contextualizer::new(Arc::clone(&store), Arc::new(llm_client)).with_config(config);
+            let contextualizer =
+                Contextualizer::new(Arc::clone(&store), Arc::clone(&ollama)).with_config(config);
 
-            let response = enhancer.enhance(&prompt).await?;
+            let response = contextualizer.enhance(&prompt).await?;
             println!("{response}");
         }
     }
@@ -240,7 +237,7 @@ fn pairs_to_map(pairs: Vec<(String, String)>) -> HashMap<String, String> {
 
 /// Serialises a [`MemoryEntry`] into a [`serde_json::Value`] suitable for
 /// pretty-printing to stdout.
-fn entry_to_json(e: &ai_memory_core::MemoryEntry) -> serde_json::Value {
+fn entry_to_json(e: &MemoryEntry) -> serde_json::Value {
     serde_json::json!({
         "id": e.memory.id.to_string(),
         "content": e.memory.content,
@@ -275,3 +272,4 @@ mod tests {
         assert!(parse_key_value("noequalssign").is_err());
     }
 }
+
