@@ -1,0 +1,13 @@
+[package]
+name = "ai-memory-context-enhancer"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ai-memory-core = { path = "../ai-memory-core" }
+reqwest = { version = "0.12", features = ["json"] }
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+uuid.workspace = true

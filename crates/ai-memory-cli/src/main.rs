@@ -5,10 +5,14 @@
 //! works naturally in Docker / CI environments.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use uuid::Uuid;
 
+use ai_memory_context_enhancer::{
+    ContextEnhancer, EnhancerConfig, LlmMemoryExtractor, OpenAiCompatibleClient,
+};
 use ai_memory_core::{MemoryInput, MemoryQuery, MemoryStore, Score};
 use ai_memory_embedding_ollama::OllamaTextEmbedder;
 use ai_memory_qdrant::{QdrantConfig, QdrantMemoryStore};
@@ -94,6 +98,35 @@ enum Command {
     },
     /// Clear all memories from the collection
     Clear,
+    /// Enhance a prompt with memory context and call an LLM
+    Enhance {
+        /// The prompt to process
+        prompt: String,
+
+        /// Target LLM model name
+        #[arg(long, env = "LLM_MODEL")]
+        llm_model: String,
+
+        /// LLM API base URL
+        #[arg(long, default_value = "https://api.openai.com/v1", env = "LLM_URL")]
+        llm_url: String,
+
+        /// LLM API key (optional for local models)
+        #[arg(long, env = "LLM_API_KEY")]
+        llm_api_key: Option<String>,
+
+        /// Maximum number of memories to inject into the prompt
+        #[arg(long, default_value_t = 5)]
+        max_memories: usize,
+
+        /// Minimum similarity score for memory retrieval (0.0–1.0)
+        #[arg(long, default_value_t = 0.0)]
+        llm_min_score: f64,
+
+        /// Memory extractor: "none" or "llm"
+        #[arg(long, default_value = "none", env = "MEMORY_EXTRACTOR")]
+        extractor: String,
+    },
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -162,6 +195,43 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({ "cleared": true }))?
             );
+        }
+        Command::Enhance {
+            prompt,
+            llm_model,
+            llm_url,
+            llm_api_key,
+            max_memories,
+            llm_min_score,
+            extractor,
+        } => {
+            let store = Arc::new(store);
+            let llm_client = OpenAiCompatibleClient::new(
+                llm_url.clone(),
+                llm_model.clone(),
+                llm_api_key.clone(),
+            );
+
+            let min_score =
+                Score::new(llm_min_score).map_err(|e| format!("invalid llm_min_score: {e}"))?;
+
+            let config = EnhancerConfig {
+                max_memories,
+                min_score,
+                filters: HashMap::new(),
+            };
+
+            let mut enhancer =
+                ContextEnhancer::new(Arc::clone(&store), Arc::new(llm_client)).with_config(config);
+
+            if extractor == "llm" {
+                let llm_client2 = OpenAiCompatibleClient::new(llm_url, llm_model, llm_api_key);
+                enhancer = enhancer
+                    .with_extractor(Arc::new(LlmMemoryExtractor::new(Arc::new(llm_client2))));
+            }
+
+            let response = enhancer.enhance(&prompt).await?;
+            println!("{response}");
         }
     }
 
