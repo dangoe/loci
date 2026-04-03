@@ -51,7 +51,6 @@ struct OllamaTextGenerationRequest<'a> {
 struct OllamaTextGenerationResponse {
     model: String,
     response: String,
-    done: bool,
     #[serde(default)]
     prompt_eval_count: Option<u32>,
     #[serde(default)]
@@ -76,8 +75,6 @@ struct OllamaEmbeddingRequest<'a> {
 struct OllamaEmbeddingResponse {
     model: String,
     embeddings: Vec<Vec<f32>>,
-    #[serde(default)]
-    prompt_eval_count: Option<u32>,
 }
 
 /// A backend implementation for the Ollama API.
