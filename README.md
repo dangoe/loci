@@ -306,4 +306,4 @@ cargo test && cargo clippy
 
 MIT — see [LICENSE](LICENSE).
 
-Copyright © 2025 Daniel Götten
+Copyright © 2026 Daniel Götten
