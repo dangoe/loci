@@ -31,12 +31,12 @@ Client / REPL
      │  prompt + session_id
      ▼
 ┌──────────────────────────────────────┐
-│           loci Proxy                  │
+│           loci Proxy                 │
 │  1. load session from SessionStore   │
 │  2. query MemoryStore (semantic)     │
 │  3. inject [MEMORY CONTEXT] block    │
-│  4. forward enriched prompt ──────►  │  Target LLM
-│  ◄──────────────────────────────────  │  (Ollama / any backend)
+│  4. forward enriched prompt ───────► │  Target LLM
+│  ◄────────────────────────────────── │  (Ollama / any backend)
 │  5. stream / return response         │
 │  6. extract memories  (async)        │
 │  7. apply eviction strategies        │
