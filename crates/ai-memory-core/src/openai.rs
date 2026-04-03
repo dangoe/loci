@@ -2,7 +2,7 @@ use std::future::Future;
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::LlmError;
+use crate::LlmError;
 use crate::llm::{LlmClient, Message};
 
 /// An LLM client that speaks the OpenAI chat-completions API wire format.

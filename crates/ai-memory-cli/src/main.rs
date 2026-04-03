@@ -10,10 +10,10 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 use uuid::Uuid;
 
-use ai_memory_context_enhancer::{
-    ContextEnhancer, EnhancerConfig, LlmMemoryExtractor, OpenAiCompatibleClient,
+use ai_memory_core::{
+    ContextEnhancer, EnhancerConfig, LlmMemoryExtractor, MemoryInput, MemoryQuery, MemoryStore,
+    OpenAiCompatibleClient, Score,
 };
-use ai_memory_core::{MemoryInput, MemoryQuery, MemoryStore, Score};
 use ai_memory_embedding_ollama::OllamaTextEmbedder;
 use ai_memory_qdrant::{QdrantConfig, QdrantMemoryStore};
 

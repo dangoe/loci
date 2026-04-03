@@ -3,7 +3,6 @@ members = [
     "crates/ai-memory-core",
     "crates/ai-memory-embedding-ollama",
     "crates/ai-memory-qdrant",
-    "crates/ai-memory-context-enhancer",
     "crates/ai-memory-cli",
 ]
 resolver = "2"

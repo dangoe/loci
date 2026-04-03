@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use ai_memory_core::{MemoryQuery, MemoryStore, Score};
+use crate::store::MemoryStore;
+use crate::{EnhancerError, MemoryQuery, Score};
 
-use crate::error::EnhancerError;
 use crate::extractor::MemoryExtractor;
 use crate::llm::{LlmClient, Message, Role};
 
@@ -159,12 +159,12 @@ mod tests {
 
     use uuid::Uuid;
 
-    use ai_memory_core::{
+    use crate::{
         Memory, MemoryEntry, MemoryInput, MemoryQuery, MemoryStore, MemoryStoreError, Score,
     };
 
-    use crate::error::LlmError;
     use crate::llm::{LlmClient, Message};
+    use crate::LlmError;
 
     use super::*;
 

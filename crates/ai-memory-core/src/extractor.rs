@@ -1,10 +1,9 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use ai_memory_core::MemoryInput;
+use crate::memory::MemoryInput;
 
-use crate::error::ExtractorError;
-use crate::llm::{LlmClient, Message, Role};
+use crate::{ExtractorError, LlmClient, Message, Role};
 
 /// A type alias for a boxed, heap-allocated future that is `Send`.
 ///

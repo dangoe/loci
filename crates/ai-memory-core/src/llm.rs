@@ -1,6 +1,6 @@
 use std::future::Future;
 
-use crate::error::LlmError;
+use crate::LlmError;
 
 /// The role of a participant in a chat conversation.
 #[derive(Debug, Clone, PartialEq)]

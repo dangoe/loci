@@ -21,7 +21,6 @@ dependencies = [
 name = "ai-memory-cli"
 version = "0.1.0"
 dependencies = [
- "ai-memory-context-enhancer",
  "ai-memory-core",
  "ai-memory-embedding-ollama",
  "ai-memory-qdrant",
@@ -32,24 +31,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "ai-memory-context-enhancer"
+name = "ai-memory-core"
 version = "0.1.0"
 dependencies = [
- "ai-memory-core",
+ "chrono",
  "log",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tokio",
- "uuid",
-]
-
-[[package]]
-name = "ai-memory-core"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "serde",
  "uuid",
 ]
 
