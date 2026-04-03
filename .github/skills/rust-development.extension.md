@@ -1,4 +1,4 @@
-# Rust Development Extension: ai-memory
+# Rust Development Extension: loci
 
 Project-specific overrides and additions to `.github/skills/rust-development.md`.
 
@@ -9,8 +9,8 @@ cargo build                            # debug build (all crates)
 cargo build --release                  # release build
 cargo check                            # fast type-check
 cargo test                             # run all tests
-cargo test -p ai-memory-core           # run tests for a single crate
-cargo test -p ai-memory-core <name>    # run a single test by name (substring match)
+cargo test -p loci-core           # run tests for a single crate
+cargo test -p loci-core <name>    # run a single test by name (substring match)
 cargo clippy                           # lint — must pass with zero warnings
 cargo fmt                              # format code
 cargo fmt --check                      # verify formatting (CI)
@@ -20,10 +20,10 @@ cargo fmt --check                      # verify formatting (CI)
 
 | Crate | Path | Purpose |
 |-------|------|---------|
-| `ai-memory-core` | `crates/ai-memory-core` | `MemoryStore` trait, `EmbeddingPort` trait, domain types, `MemoryService<S,E>` |
-| `ai-memory-neo4j` | `crates/ai-memory-neo4j` | `Neo4jMemoryStore` — `impl MemoryStore` backed by Neo4j vector index |
+| `loci-core` | `crates/loci-core` | `MemoryStore` trait, `EmbeddingPort` trait, domain types, `MemoryService<S,E>` |
+| `loci-neo4j` | `crates/loci-neo4j` | `Neo4jMemoryStore` — `impl MemoryStore` backed by Neo4j vector index |
 
-## Domain Types (ai-memory-core)
+## Domain Types (loci-core)
 
 | Type | Description |
 |------|-------------|
@@ -39,7 +39,7 @@ cargo fmt --check                      # verify formatting (CI)
 - `MemoryStore` and `EmbeddingPort` use native AFIT (`async fn` directly in trait).
 - Both traits are `Send + Sync` supertrait-bounded.
 - Production types are prefixed `Native`; test doubles are prefixed `Mock`.
-- New backend crates follow the same pattern as `ai-memory-neo4j`: one `Config` struct, one store struct, `impl MemoryStore for ...` in `store.rs`.
+- New backend crates follow the same pattern as `loci-neo4j`: one `Config` struct, one store struct, `impl MemoryStore for ...` in `store.rs`.
 
 ## Dependencies in Use
 

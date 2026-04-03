@@ -1,9 +1,9 @@
 [workspace]
 members = [
-    "crates/ai-memory-core",
-    "crates/ai-memory-backend-ollama",
-    "crates/ai-memory-storage-qdrant",
-    "crates/ai-memory-cli",
+    "crates/loci-core",
+    "crates/loci-backend-ollama",
+    "crates/loci-memory-store-qdrant",
+    "crates/loci-cli",
 ]
 resolver = "2"
 

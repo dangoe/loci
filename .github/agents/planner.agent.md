@@ -1,5 +1,5 @@
 ---
-description: Plans features and tasks for the ai-memory project
+description: Plans features and tasks for the loci project
 name: Planner
 tools: [codebase, githubRepo, fetch]
 ---

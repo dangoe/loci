@@ -1,5 +1,5 @@
 ---
-description: Writes and maintains tests for the ai-memory project
+description: Writes and maintains tests for the loci project
 name: Testing Expert
 tools: [codebase, editFiles, createFile, runCommands, terminalLastCommand]
 ---

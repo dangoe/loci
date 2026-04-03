@@ -18,57 +18,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ai-memory-backend-ollama"
-version = "0.1.0"
-dependencies = [
- "ai-memory-core",
- "log",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "ai-memory-cli"
-version = "0.1.0"
-dependencies = [
- "ai-memory-backend-ollama",
- "ai-memory-core",
- "ai-memory-storage-qdrant",
- "clap",
- "serde_json",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "ai-memory-core"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "log",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "ai-memory-storage-qdrant"
-version = "0.1.0"
-dependencies = [
- "ai-memory-core",
- "chrono",
- "log",
- "qdrant-client",
- "serde_json",
- "testcontainers",
- "tokio",
- "uuid",
-]
-
-[[package]]
 name = "android_system_properties"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1367,6 +1316,57 @@ name = "litemap"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
+
+[[package]]
+name = "loci-backend-ollama"
+version = "0.1.0"
+dependencies = [
+ "loci-core",
+ "log",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "loci-cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "loci-backend-ollama",
+ "loci-core",
+ "loci-memory-store-qdrant",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "loci-core"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "log",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "loci-memory-store-qdrant"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "loci-core",
+ "log",
+ "qdrant-client",
+ "serde_json",
+ "testcontainers",
+ "tokio",
+ "uuid",
+]
 
 [[package]]
 name = "lock_api"

@@ -1,4 +1,4 @@
-# Rust Testing Extension: ai-memory
+# Rust Testing Extension: loci
 
 Project-specific overrides and additions to `.github/skills/rust-testing.md`.
 
@@ -6,8 +6,8 @@ Project-specific overrides and additions to `.github/skills/rust-testing.md`.
 
 ```bash
 cargo test                                   # run all tests across the workspace
-cargo test -p ai-memory-core                 # run tests for a single crate
-cargo test -p ai-memory-core <name>          # run tests matching substring
+cargo test -p loci-core                 # run tests for a single crate
+cargo test -p loci-core <name>          # run tests matching substring
 cargo test -- --nocapture                    # show println! output
 cargo test -- --test-threads=1               # serialise tests (useful for I/O tests)
 ```
@@ -20,16 +20,16 @@ cargo test -- --test-threads=1               # serialise tests (useful for I/O t
 
 ## Integration Tests
 
-`ai-memory-neo4j` integration tests use [testcontainers](https://crates.io/crates/testcontainers)
+`loci-neo4j` integration tests use [testcontainers](https://crates.io/crates/testcontainers)
 to spin up a real Neo4j 5 instance via Docker. They are marked `#[ignore]` and must be opted into
 explicitly:
 
 ```bash
 # Run all Neo4j integration tests (Docker must be running)
-cargo test -p ai-memory-neo4j -- --ignored --test-threads=1
+cargo test -p loci-neo4j -- --ignored --test-threads=1
 
 # Run a single integration test
-cargo test -p ai-memory-neo4j <name> -- --ignored
+cargo test -p loci-neo4j <name> -- --ignored
 ```
 
 `--test-threads=1` is recommended because each test starts its own container; running them

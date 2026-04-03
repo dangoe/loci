@@ -1,0 +1,20 @@
+[package]
+name = "loci-memory-store-qdrant"
+version.workspace = true
+edition.workspace = true
+
+[features]
+integration = []
+
+[dependencies]
+loci-core = { path = "../loci-core" }
+chrono.workspace = true
+log.workspace = true
+qdrant-client = "1.14"
+serde_json.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+testcontainers = { version = "0.27", features  = ["http_wait_plain"] }
+uuid.workspace = true
