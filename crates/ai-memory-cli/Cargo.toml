@@ -1,0 +1,17 @@
+[package]
+name = "ai-memory-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "ai-memory"
+path = "src/main.rs"
+
+[dependencies]
+ai-memory-core = { path = "../ai-memory-core" }
+ai-memory-qdrant = { path = "../ai-memory-qdrant" }
+ai-memory-embedding-ollama = { path = "../ai-memory-embedding-ollama" }
+clap = { version = "4", features = ["derive", "env"] }
+serde_json.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+uuid = { version = "1", features = ["v4"] }

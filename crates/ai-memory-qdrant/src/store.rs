@@ -4,9 +4,10 @@ use chrono::{DateTime, Utc};
 use qdrant_client::Payload;
 use qdrant_client::Qdrant;
 use qdrant_client::qdrant::{
-    CreateCollectionBuilder, DeletePointsBuilder, Distance, GetPointsBuilder, PointId, PointStruct,
-    PointsIdsList, SearchPointsBuilder, UpsertPointsBuilder, VectorParamsBuilder,
-    point_id::PointIdOptions,
+    CreateCollectionBuilder, DeletePointsBuilder, Distance, GetCollectionInfoResponse,
+    GetPointsBuilder, PointId, PointStruct, PointsIdsList, SearchPointsBuilder,
+    UpsertPointsBuilder, VectorParamsBuilder, point_id::PointIdOptions,
+    vectors_config::Config as VectorsConfigVariant,
 };
 use uuid::Uuid;
 
@@ -49,6 +50,10 @@ impl<E: TextEmbedder> QdrantMemoryStore<E> {
 
     /// Creates the Qdrant collection if it does not already exist. Must be called
     /// once before using the store.
+    ///
+    /// If the collection already exists, validates that its vector dimension matches
+    /// the dimension reported by the embedder. Returns [`MemoryStoreError::Connection`]
+    /// on a mismatch so callers receive an actionable error before any data operations.
     pub async fn initialize(&self) -> Result<(), MemoryStoreError> {
         let exists = self
             .client
@@ -56,7 +61,24 @@ impl<E: TextEmbedder> QdrantMemoryStore<E> {
             .await
             .map_err(|e| MemoryStoreError::Connection(e.to_string()))?;
 
-        if !exists {
+        if exists {
+            let info = self
+                .client
+                .collection_info(&self.config.collection_name)
+                .await
+                .map_err(|e| MemoryStoreError::Connection(e.to_string()))?;
+
+            let expected_dim = self.embedder.embedding_dimension() as u64;
+            if let Some(dim) = extract_vector_dimension(&info)
+                && dim != expected_dim
+            {
+                return Err(MemoryStoreError::Connection(format!(
+                    "collection '{}' has vector dimension {dim} \
+                     but embedder produces {expected_dim}",
+                    self.config.collection_name
+                )));
+            }
+        } else {
             let dim = self.embedder.embedding_dimension() as u64;
             self.client
                 .create_collection(
@@ -289,6 +311,22 @@ impl<E: TextEmbedder> MemoryStore for QdrantMemoryStore<E> {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Extracts the vector dimension from a [`GetCollectionInfoResponse`].
+///
+/// Returns `None` when any part of the config chain is absent (e.g. a sparse-only
+/// collection), so callers can skip the validation rather than failing hard.
+fn extract_vector_dimension(info: &GetCollectionInfoResponse) -> Option<u64> {
+    info.result
+        .as_ref()
+        .and_then(|ci| ci.config.as_ref())
+        .and_then(|cfg| cfg.params.as_ref())
+        .and_then(|params| params.vectors_config.as_ref())
+        .and_then(|vc| match &vc.config {
+            Some(VectorsConfigVariant::Params(vp)) => Some(vp.size),
+            _ => None,
+        })
+}
 
 fn extract_uuid_from_point_id(id: Option<&PointId>) -> Result<Uuid, MemoryStoreError> {
     let point_id = id.ok_or_else(|| MemoryStoreError::Query("point has no ID".to_string()))?;
