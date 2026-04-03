@@ -1,9 +1,6 @@
-mod embedding;
-mod error;
-mod memory;
-mod store;
-
-pub use embedding::{Embedding, TextEmbedder};
-pub use error::{EmbeddingError, MemoryStoreError};
-pub use memory::{InvalidScore, Memory, MemoryEntry, MemoryInput, MemoryQuery, Score};
-pub use store::MemoryStore;
+pub mod backend;
+pub mod contextualization;
+pub mod embedding;
+pub mod error;
+pub mod memory;
+pub mod store;

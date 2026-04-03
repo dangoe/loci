@@ -1,11 +1,13 @@
 use std::collections::HashMap;
 use std::future::Future;
+use std::pin::Pin;
 
-use ai_memory_core::{
-    Embedding, EmbeddingError, MemoryInput, MemoryQuery, MemoryStore, MemoryStoreError, Score,
-    TextEmbedder,
-};
-use ai_memory_qdrant::{QdrantConfig, QdrantMemoryStore};
+use ai_memory_core::embedding::{Embedding, TextEmbedder};
+use ai_memory_core::error::{EmbeddingError, MemoryStoreError};
+use ai_memory_core::memory::{MemoryInput, MemoryQuery, Score};
+use ai_memory_core::store::MemoryStore;
+use ai_memory_storage_qdrant::config::QdrantConfig;
+use ai_memory_storage_qdrant::store::QdrantMemoryStore;
 use testcontainers::core::wait::HttpWaitStrategy;
 use testcontainers::core::{ContainerPort, IntoContainerPort, WaitFor};
 use testcontainers::runners::AsyncRunner;
@@ -15,8 +17,6 @@ use uuid::Uuid;
 const DIM: usize = 4;
 /// Qdrant gRPC port used by the client
 const QDRANT_PORT: u16 = 6334;
-
-// ── Test double ──────────────────────────────────────────────────────────────
 
 /// Maps specific strings to predetermined unit vectors for predictable cosine similarity.
 /// Any unmapped text returns the zero vector.
@@ -45,13 +45,13 @@ impl TextEmbedder for FakeTextEmbedder {
     fn embed(
         &self,
         text: &str,
-    ) -> impl Future<Output = Result<Embedding, EmbeddingError>> + Send + '_ {
+    ) -> Pin<Box<dyn Future<Output = Result<Embedding, EmbeddingError>> + Send + '_>> {
         let values = self
             .mappings
             .get(text)
             .cloned()
             .unwrap_or_else(|| vec![0.0; DIM]);
-        async move { Ok(Embedding::new(values)) }
+        Box::pin(async move { Ok(Embedding::new(values)) })
     }
 }
 
@@ -61,8 +61,6 @@ fn unit_vec(index: usize) -> Vec<f32> {
     v[index] = 1.0;
     v
 }
-
-// ── Test setup ───────────────────────────────────────────────────────────────
 
 async fn start_store(
     embedder: FakeTextEmbedder,
@@ -120,8 +118,6 @@ fn query(topic: &str, max_results: usize) -> MemoryQuery {
         filters: HashMap::new(),
     }
 }
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[tokio::test]
 #[cfg_attr(not(feature = "integration"), ignore)]

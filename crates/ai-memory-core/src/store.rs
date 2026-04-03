@@ -2,7 +2,10 @@ use std::future::Future;
 
 use uuid::Uuid;
 
-use crate::{MemoryEntry, MemoryInput, MemoryQuery, MemoryStoreError};
+use crate::{
+    error::MemoryStoreError,
+    memory::{MemoryEntry, MemoryInput, MemoryQuery},
+};
 
 /// Persistent storage and semantic retrieval of [`crate::Memory`] entries.
 pub trait MemoryStore: Send + Sync {

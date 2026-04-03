@@ -2,6 +2,35 @@ use std::fmt;
 
 use uuid::Uuid;
 
+use crate::backend::error::BackendError;
+
+/// Errors produced by a [`crate::ContextEnhancer`].
+#[derive(Debug)]
+pub enum ContextualizerError {
+    /// The memory store returned an error during query.
+    MemoryStore(MemoryStoreError),
+    /// The remote model call failed.
+    RemoteModel(BackendError),
+}
+
+impl fmt::Display for ContextualizerError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MemoryStore(e) => write!(f, "memory store error: {e}"),
+            Self::RemoteModel(e) => write!(f, "remote model error: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for ContextualizerError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::MemoryStore(e) => Some(e),
+            Self::RemoteModel(e) => Some(e),
+        }
+    }
+}
+
 /// Errors produced by a [`MemoryStore`][crate::MemoryStore] implementation.
 #[derive(Debug)]
 pub enum MemoryStoreError {
@@ -35,15 +64,17 @@ impl std::error::Error for MemoryStoreError {
 /// Errors produced by a [`TextEmbedder`][crate::TextEmbedder] implementation.
 #[derive(Debug)]
 pub enum EmbeddingError {
-    Http(String),
-    Parse(String),
+    /// The embedding backend returned a transport or protocol error.
+    TargetModel(BackendError),
+    /// The embedding backend returned a response containing no vectors.
+    EmptyResponse,
 }
 
 impl fmt::Display for EmbeddingError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Http(msg) => write!(f, "HTTP error: {msg}"),
-            Self::Parse(msg) => write!(f, "parse error: {msg}"),
+            Self::TargetModel(msg) => write!(f, "Target model request error: {msg}"),
+            Self::EmptyResponse => write!(f, "embedding backend returned no vectors"),
         }
     }
 }

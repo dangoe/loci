@@ -1,5 +1,5 @@
 [package]
-name = "ai-memory-qdrant"
+name = "ai-memory-storage-qdrant"
 version.workspace = true
 edition.workspace = true
 

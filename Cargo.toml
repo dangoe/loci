@@ -1,8 +1,8 @@
 [workspace]
 members = [
     "crates/ai-memory-core",
-    "crates/ai-memory-embedding-ollama",
-    "crates/ai-memory-qdrant",
+    "crates/ai-memory-backend-ollama",
+    "crates/ai-memory-storage-qdrant",
     "crates/ai-memory-cli",
 ]
 resolver = "2"
