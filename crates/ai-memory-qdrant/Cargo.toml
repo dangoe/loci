@@ -1,19 +1,20 @@
 [package]
-name = "ai-memory-neo4j"
+name = "ai-memory-qdrant"
 version.workspace = true
 edition.workspace = true
+
+[features]
+integration = []
 
 [dependencies]
 ai-memory-core = { path = "../ai-memory-core" }
 chrono.workspace = true
 log.workspace = true
-neo4rs = "0.8"
+qdrant-client = "1.14"
 serde_json.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
-rstest = "0.23"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 testcontainers = "0.27"
-testcontainers-modules = { version = "0.15", features = ["neo4j"] }
 uuid.workspace = true

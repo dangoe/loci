@@ -2,7 +2,7 @@
 members = [
     "crates/ai-memory-core",
     "crates/ai-memory-embedding-ollama",
-    "crates/ai-memory-neo4j",
+    "crates/ai-memory-qdrant",
 ]
 resolver = "2"
 
