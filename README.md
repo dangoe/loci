@@ -1,4 +1,4 @@
-# loci
+![loci](.github/assets/logo.svg)
 
 > _A memory-based context proxy for LLMs — semantic memory storage, session-aware retrieval,
 > and transparent prompt enrichment._
