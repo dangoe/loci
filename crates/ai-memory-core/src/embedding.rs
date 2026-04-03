@@ -1,4 +1,4 @@
-use crate::EmbeddingError;
+use crate::error::EmbeddingError;
 
 /// An embedding vector represented as a sequence of `f32` values.
 #[derive(Debug, Clone, PartialEq)]

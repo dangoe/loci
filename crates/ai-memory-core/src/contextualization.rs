@@ -1,29 +1,31 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::backend::text_generation::{self, TextGenerationRequest};
+use crate::error::ContextualizerError;
+use crate::memory::{MemoryEntry, MemoryQuery, Score};
 use crate::store::MemoryStore;
-use crate::{ContextEnhancerError, MemoryEntry, MemoryQuery, Score};
 
-use crate::extractor::MemoryExtractor;
-use crate::remote_model::{LlmClient, Message, Role};
-
-/// Configuration for a [`ContextEnhancer`].
+/// Configuration for a [`Contextualizer`].
 #[derive(Debug, Clone)]
-pub struct EnhancerConfig {
+pub struct ContextualizerConfig {
     /// Maximum number of memories to retrieve and inject into the prompt.
     pub max_memories: usize,
     /// Minimum similarity score a memory must have to be included.
     pub min_score: Score,
     /// Metadata filters applied when querying the memory store.
     pub filters: HashMap<String, String>,
+    /// The model to use for text generation.
+    pub text_generation_model: String,
 }
 
-impl Default for EnhancerConfig {
+impl Default for ContextualizerConfig {
     fn default() -> Self {
         Self {
             max_memories: 5,
             min_score: Score::ZERO,
             filters: HashMap::new(),
+            text_generation_model: String::new(),
         }
     }
 }
@@ -35,38 +37,29 @@ impl Default for EnhancerConfig {
 /// 2. Prepends a `[MEMORY CONTEXT]` block to the prompt when memories exist.
 /// 3. Calls the LLM with the enriched prompt.
 /// 4. Optionally extracts new memories from the exchange in a background task.
-pub struct ContextEnhancer<S: MemoryStore, L: LlmClient> {
-    store: Arc<S>,
-    llm: Arc<L>,
-    extractor: Option<Arc<dyn MemoryExtractor>>,
-    config: EnhancerConfig,
+pub struct Contextualizer<M: MemoryStore, E: text_generation::TextGenerationBackend> {
+    memory_store: Arc<M>,
+    text_generation_backend: Arc<E>,
+    config: ContextualizerConfig,
 }
 
-impl<S, L> ContextEnhancer<S, L>
+impl<M, E> Contextualizer<M, E>
 where
-    S: MemoryStore + 'static,
-    L: LlmClient + 'static,
+    M: MemoryStore + 'static,
+    E: text_generation::TextGenerationBackend + 'static,
 {
     /// Creates a new `ContextEnhancer` with default configuration.
-    pub fn new(store: Arc<S>, target_llm: Arc<L>) -> Self {
+    pub fn new(memory_store: Arc<M>, text_generation_backend: Arc<E>) -> Self {
         Self {
-            store,
-            target_llm,
-            extractor: None,
-            config: EnhancerConfig::default(),
+            memory_store,
+            text_generation_backend,
+            config: ContextualizerConfig::default(),
         }
     }
 
     /// Applies a custom [`EnhancerConfig`].
-    pub fn with_config(mut self, config: EnhancerConfig) -> Self {
+    pub fn with_config(mut self, config: ContextualizerConfig) -> Self {
         self.config = config;
-        self
-    }
-
-    /// Attaches a [`MemoryExtractor`] that will save new memories after each
-    /// LLM call in a fire-and-forget background task.
-    pub fn with_extractor(mut self, extractor: Arc<dyn MemoryExtractor>) -> Self {
-        self.extractor = Some(extractor);
         self
     }
 
@@ -76,53 +69,17 @@ where
     ///
     /// Returns [`EnhancerError::MemoryStore`] if the store query fails, or
     /// [`EnhancerError::Llm`] if the LLM call fails.
-    pub async fn enhance(&self, prompt: &str) -> Result<String, ContextEnhancerError> {
+    pub async fn enhance(&self, prompt: &str) -> Result<String, ContextualizerError> {
         let memory_entries = self.query_memory(prompt).await?;
 
         log::debug!("retrieved {} relevant memories", memory_entries.len());
 
-        let enriched_prompt = self.enrich_prompt(prompt, memory_entries);
+        let augmented_prompt = self.augment_prompt(prompt, memory_entries);
 
-        // 3. Call the LLM.
-        let messages = vec![Message {
-            role: Role::User,
-            content: enriched_prompt,
-        }];
-
-        let response = self
-            .llm
-            .complete(&messages)
-            .await
-            .map_err(ContextEnhancerError::Llm)?;
-
-        // 4. Fire-and-forget memory extraction.
-        if let Some(extractor) = &self.extractor {
-            let extractor = Arc::clone(extractor);
-            let store = Arc::clone(&self.store);
-            let prompt_owned = prompt.to_string();
-            let response_owned = response.clone();
-
-            tokio::spawn(async move {
-                match extractor.extract(&prompt_owned, &response_owned).await {
-                    Ok(inputs) => {
-                        for input in inputs {
-                            if let Err(e) = store.save(input).await {
-                                log::warn!("failed to save extracted memory: {e}");
-                            }
-                        }
-                    }
-                    Err(e) => log::warn!("memory extraction failed: {e}"),
-                }
-            });
-        }
-
-        Ok(response)
+        self.generate_text(augmented_prompt).await
     }
 
-    async fn query_memory(
-        &self,
-        prompt: &str,
-    ) -> Result<Vec<crate::MemoryEntry>, ContextEnhancerError> {
+    async fn query_memory(&self, prompt: &str) -> Result<Vec<MemoryEntry>, ContextualizerError> {
         let query = MemoryQuery {
             topic: prompt.to_string(),
             max_results: self.config.max_memories,
@@ -130,13 +87,13 @@ where
             filters: self.config.filters.clone(),
         };
 
-        self.store
+        self.memory_store
             .query(query)
             .await
-            .map_err(ContextEnhancerError::MemoryStore)
+            .map_err(ContextualizerError::MemoryStore)
     }
 
-    fn enrich_prompt(&self, prompt: &str, memory_entries: Vec<MemoryEntry>) -> String {
+    fn augment_prompt(&self, prompt: &str, memory_entries: Vec<MemoryEntry>) -> String {
         if memory_entries.is_empty() {
             prompt.to_string()
         } else {
@@ -157,6 +114,17 @@ where
             buf
         }
     }
+
+    async fn generate_text(&self, augmented_prompt: String) -> Result<String, ContextualizerError> {
+        self.text_generation_backend
+            .generate(TextGenerationRequest::new(
+                self.config.text_generation_model.to_string(),
+                augmented_prompt,
+            ))
+            .await
+            .map(|r| r.text)
+            .map_err(ContextualizerError::RemoteModel)
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -168,11 +136,13 @@ mod tests {
     use uuid::Uuid;
 
     use crate::{
-        Memory, MemoryEntry, MemoryInput, MemoryQuery, MemoryStore, MemoryStoreError, Score,
+        backend::{
+            common::BackendResult,
+            text_generation::{TextGenerationBackend, TextGenerationResponse},
+        },
+        error::MemoryStoreError,
+        memory::{Memory, MemoryInput, MemoryQuery, Score},
     };
-
-    use crate::LlmError;
-    use crate::remote_model::{LlmClient, Message};
 
     use super::*;
 
@@ -224,17 +194,17 @@ mod tests {
 
     // ── Mock LLM ─────────────────────────────────────────────────────────────
 
-    struct MockLlm {
+    struct MockTextGenerationBackend {
         reply: String,
     }
 
-    impl LlmClient for MockLlm {
-        fn complete(
+    impl TextGenerationBackend for MockTextGenerationBackend {
+        fn generate(
             &self,
-            _messages: &[Message],
-        ) -> impl Future<Output = Result<String, LlmError>> + Send + '_ {
+            req: TextGenerationRequest,
+        ) -> impl Future<Output = BackendResult<TextGenerationResponse>> + Send + '_ {
             let reply = self.reply.clone();
-            async move { Ok(reply) }
+            async move { Ok(TextGenerationResponse::done(reply, req.model, None)) }
         }
     }
 
@@ -243,11 +213,11 @@ mod tests {
     #[tokio::test]
     async fn enhance_no_memories_returns_plain_response() {
         let store = Arc::new(MockStore { entries: vec![] });
-        let llm = Arc::new(MockLlm {
+        let llm = Arc::new(MockTextGenerationBackend {
             reply: "Hello!".to_string(),
         });
 
-        let enhancer = ContextEnhancer::new(store, llm);
+        let enhancer = Contextualizer::new(store, llm);
         let result = enhancer.enhance("hi").await.unwrap();
         assert_eq!(result, "Hello!");
     }
@@ -266,27 +236,34 @@ mod tests {
             entries: vec![entry],
         });
 
-        struct CaptureLlm {
+        struct CaptureTextGenerationBackend {
             tx: std::sync::Mutex<std::sync::mpsc::SyncSender<String>>,
         }
 
-        impl LlmClient for CaptureLlm {
-            fn complete(
+        impl TextGenerationBackend for CaptureTextGenerationBackend {
+            fn generate(
                 &self,
-                messages: &[Message],
-            ) -> impl Future<Output = Result<String, LlmError>> + Send + '_ {
-                let content = messages[0].content.clone();
+                req: TextGenerationRequest,
+            ) -> impl Future<Output = BackendResult<TextGenerationResponse>> + Send + '_
+            {
+                let content = req.prompt.clone();
                 self.tx.lock().unwrap().send(content).unwrap();
-                async move { Ok("noted".to_string()) }
+                async move {
+                    Ok(TextGenerationResponse::done(
+                        "noted".to_string(),
+                        req.model,
+                        None,
+                    ))
+                }
             }
         }
 
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
-        let llm = Arc::new(CaptureLlm {
+        let llm = Arc::new(CaptureTextGenerationBackend {
             tx: std::sync::Mutex::new(tx),
         });
 
-        let enhancer = ContextEnhancer::new(store, llm);
+        let enhancer = Contextualizer::new(store, llm);
         enhancer.enhance("what do I like?").await.unwrap();
 
         let sent = rx.try_recv().unwrap();

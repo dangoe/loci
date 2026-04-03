@@ -22,8 +22,8 @@ name = "ai-memory-cli"
 version = "0.1.0"
 dependencies = [
  "ai-memory-core",
- "ai-memory-embedding-ollama",
- "ai-memory-qdrant",
+ "ai-memory-ollama",
+ "ai-memory-storage-qdrant",
  "clap",
  "serde_json",
  "tokio",
@@ -44,7 +44,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ai-memory-embedding-ollama"
+name = "ai-memory-ollama"
 version = "0.1.0"
 dependencies = [
  "ai-memory-core",
@@ -55,7 +55,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ai-memory-qdrant"
+name = "ai-memory-storage-qdrant"
 version = "0.1.0"
 dependencies = [
  "ai-memory-core",

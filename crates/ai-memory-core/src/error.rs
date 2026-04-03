@@ -2,76 +2,31 @@ use std::fmt;
 
 use uuid::Uuid;
 
-/// Errors produced by a remote model client.
-#[derive(Debug)]
-pub enum RemoteModelRequestError {
-    /// An HTTP-level error occurred while calling the model API.
-    Http(String),
-    /// The response from the model could not be parsed.
-    Parse(String),
-}
-
-impl fmt::Display for RemoteModelRequestError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Http(msg) => write!(f, "Remote model HTTP error: {msg}"),
-            Self::Parse(msg) => write!(f, "Remote model response parse error: {msg}"),
-        }
-    }
-}
-
-impl std::error::Error for RemoteModelRequestError {}
-
-/// Errors produced by a [`crate::MemoryExtractor`] implementation.
-#[derive(Debug)]
-pub enum MemoryExtractorError {
-    /// The underlying remote model call failed.
-    TargetModel(RemoteModelRequestError),
-    /// The LLM output could not be parsed into memory inputs.
-    Parse(String),
-}
-
-impl fmt::Display for MemoryExtractorError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::TargetModel(e) => write!(f, "extractor target model error: {e}"),
-            Self::Parse(msg) => write!(f, "extractor parse error: {msg}"),
-        }
-    }
-}
-
-impl std::error::Error for MemoryExtractorError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::TargetModel(e) => Some(e),
-            Self::Parse(_) => None,
-        }
-    }
-}
+use crate::backend::error::BackendError;
 
 /// Errors produced by a [`crate::ContextEnhancer`].
 #[derive(Debug)]
-pub enum ContextEnhancerError {
+pub enum ContextualizerError {
     /// The memory store returned an error during query.
     MemoryStore(MemoryStoreError),
     /// The remote model call failed.
-    TargetModel(RemoteModelRequestError),
+    RemoteModel(BackendError),
 }
 
-impl fmt::Display for ContextEnhancerError {
+impl fmt::Display for ContextualizerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MemoryStore(e) => write!(f, "memory store error: {e}"),
-            Self::Llm(e) => write!(f, "LLM error: {e}"),
+            Self::RemoteModel(e) => write!(f, "remote model error: {e}"),
         }
     }
 }
 
-impl std::error::Error for ContextEnhancerError {
+impl std::error::Error for ContextualizerError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::MemoryStore(e) => Some(e),
-            Self::Llm(e) => Some(e),
+            Self::RemoteModel(e) => Some(e),
         }
     }
 }
@@ -109,7 +64,7 @@ impl std::error::Error for MemoryStoreError {
 /// Errors produced by a [`TextEmbedder`][crate::TextEmbedder] implementation.
 #[derive(Debug)]
 pub enum EmbeddingError {
-    TargetModel(RemoteModelRequestError),
+    TargetModel(BackendError),
 }
 
 impl fmt::Display for EmbeddingError {

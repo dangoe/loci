@@ -11,11 +11,10 @@ use clap::{Parser, Subcommand};
 use uuid::Uuid;
 
 use ai_memory_core::{
-    ContextEnhancer, EnhancerConfig, LlmMemoryExtractor, MemoryInput, MemoryQuery, MemoryStore,
-    OpenAiCompatibleClient, Score,
+    Contextualizer, ContextualizerConfig, MemoryInput, MemoryQuery, MemoryStore, Score,
 };
-use ai_memory_embedding_ollama::OllamaTextEmbedder;
-use ai_memory_qdrant::{QdrantConfig, QdrantMemoryStore};
+use ai_memory_ollama::OllamaTextEmbedder;
+use ai_memory_storage_qdrant::{QdrantConfig, QdrantMemoryStore};
 
 // ── CLI definition ────────────────────────────────────────────────────────────
 
@@ -215,20 +214,14 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let min_score =
                 Score::new(llm_min_score).map_err(|e| format!("invalid llm_min_score: {e}"))?;
 
-            let config = EnhancerConfig {
+            let config = ContextualizerConfig {
                 max_memories,
                 min_score,
                 filters: HashMap::new(),
             };
 
-            let mut enhancer =
-                ContextEnhancer::new(Arc::clone(&store), Arc::new(llm_client)).with_config(config);
-
-            if extractor == "llm" {
-                let llm_client2 = OpenAiCompatibleClient::new(llm_url, llm_model, llm_api_key);
-                enhancer = enhancer
-                    .with_extractor(Arc::new(LlmMemoryExtractor::new(Arc::new(llm_client2))));
-            }
+            let enhancer =
+                Contextualizer::new(Arc::clone(&store), Arc::new(llm_client)).with_config(config);
 
             let response = enhancer.enhance(&prompt).await?;
             println!("{response}");
