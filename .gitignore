@@ -1,1 +1,21 @@
-/target
+# Compiled files and executables
+/target/
+**/*.rs.bk
+*.pdb
+
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Debug files
+*.dSYM/
+
+# Environment files
+.env
+.env.local
+
+# Local development files
+/local/
