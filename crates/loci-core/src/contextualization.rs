@@ -3,9 +3,12 @@
 // This file is part of loci-core.
 
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::Arc;
 
-use crate::backend::text_generation::{self, TextGenerationRequest};
+use futures::Stream;
+
+use crate::backend::text_generation::{self, TextGenerationRequest, TextGenerationResponse};
 use crate::error::ContextualizerError;
 use crate::memory::{MemoryEntry, MemoryQuery, Score};
 use crate::store::MemoryStore;
@@ -81,6 +84,39 @@ where
         let augmented_prompt = self.augment_prompt(prompt, memory_entries);
 
         self.generate_text(augmented_prompt).await
+    }
+
+    /// Enhances `prompt` with memory context and streams the LLM response
+    /// chunk by chunk.
+    ///
+    /// Memory retrieval is performed before the stream begins.  Each yielded
+    /// item is a [`TextGenerationResponse`] partial chunk; the final item has
+    /// `done: true`.
+    pub fn enhance_stream<'a>(
+        &'a self,
+        prompt: &'a str,
+    ) -> Pin<
+        Box<dyn Stream<Item = Result<TextGenerationResponse, ContextualizerError>> + Send + 'a>,
+    > {
+        Box::pin(async_stream::try_stream! {
+            let memory_entries = self.query_memory(prompt).await?;
+
+            log::debug!("retrieved {} relevant memories", memory_entries.len());
+
+            let augmented_prompt = self.augment_prompt(prompt, memory_entries);
+
+            let req = TextGenerationRequest::new(
+                self.config.text_generation_model.to_string(),
+                augmented_prompt,
+            );
+
+            use futures::StreamExt as _;
+            let mut stream = self.text_generation_backend.generate_stream(req);
+            while let Some(result) = stream.next().await {
+                let chunk = result.map_err(ContextualizerError::RemoteModel)?;
+                yield chunk;
+            }
+        })
     }
 
     async fn query_memory(&self, prompt: &str) -> Result<Vec<MemoryEntry>, ContextualizerError> {

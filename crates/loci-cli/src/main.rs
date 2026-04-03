@@ -9,9 +9,12 @@
 //! works naturally in Docker / CI environments.
 
 use std::collections::HashMap;
+use std::io::Write as _;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
+use futures::StreamExt as _;
+use log::{LevelFilter, error, info};
 use uuid::Uuid;
 
 use loci_backend_ollama::backend::{OllamaBackend, OllamaConfig};
@@ -31,23 +34,37 @@ const DEFAULT_LLM_MODEL: &str = "qwen3:0.6b";
 
 /// Top-level CLI arguments and global options.
 #[derive(Parser)]
-#[command(name = "ai-memory", about = "AI memory store CLI")]
+#[command(name = "loci", about = "loci CLI")]
 struct Cli {
     /// Qdrant gRPC URL
-    #[arg(long, default_value = "http://localhost:6334", env = "QDRANT_URL")]
+    #[arg(
+        long,
+        short,
+        default_value = "http://localhost:6334",
+        env = "QDRANT_URL"
+    )]
     qdrant_url: String,
 
     /// Ollama base URL
-    #[arg(long, default_value = "http://localhost:11434", env = "OLLAMA_URL")]
+    #[arg(
+        long,
+        short,
+        default_value = "http://localhost:11434",
+        env = "OLLAMA_URL"
+    )]
     ollama_url: String,
 
     /// Qdrant collection name
-    #[arg(long, default_value = "memories", env = "COLLECTION_NAME")]
+    #[arg(long, short, default_value = "memories", env = "COLLECTION_NAME")]
     collection: String,
 
     /// Cosine similarity threshold for deduplication (0.0–1.0)
-    #[arg(long, env = "SIMILARITY_THRESHOLD")]
+    #[arg(long, short, env = "SIMILARITY_THRESHOLD")]
     similarity_threshold: Option<f64>,
+
+    /// Verbose output
+    #[arg(long, short)]
+    verbose: bool,
 
     #[command(subcommand)]
     command: Command,
@@ -56,50 +73,11 @@ struct Cli {
 /// Available sub-commands.
 #[derive(Subcommand)]
 enum Command {
-    /// Save a new memory
-    Save {
-        /// Memory content
-        #[arg(long)]
-        content: String,
-        /// Metadata as key=value pairs (repeatable)
-        #[arg(long = "meta", value_parser = parse_key_value)]
-        metadata: Vec<(String, String)>,
+    /// Memory store operations
+    Memory {
+        #[command(subcommand)]
+        command: MemoryCommand,
     },
-    /// Query memories by semantic similarity
-    Query {
-        /// Topic to search for
-        #[arg(long)]
-        topic: String,
-        /// Maximum number of results
-        #[arg(long, default_value_t = 10)]
-        max_results: usize,
-        /// Minimum similarity score (0.0–1.0)
-        #[arg(long, default_value_t = 0.0)]
-        min_score: f64,
-        /// Filter by metadata key=value pairs (repeatable)
-        #[arg(long = "filter", value_parser = parse_key_value)]
-        filters: Vec<(String, String)>,
-    },
-    /// Update an existing memory by ID
-    Update {
-        /// Memory ID (UUID)
-        #[arg(long)]
-        id: Uuid,
-        /// New content
-        #[arg(long)]
-        content: String,
-        /// New metadata as key=value pairs (repeatable)
-        #[arg(long = "meta", value_parser = parse_key_value)]
-        metadata: Vec<(String, String)>,
-    },
-    /// Delete a memory by ID
-    Delete {
-        /// Memory ID (UUID)
-        #[arg(long)]
-        id: Uuid,
-    },
-    /// Clear all memories from the collection
-    Clear,
     /// Enhance a prompt with memory context and call an LLM
     Prompt {
         /// The prompt to process
@@ -119,13 +97,64 @@ enum Command {
     },
 }
 
-// ── Entry point ───────────────────────────────────────────────────────────────
+#[derive(Subcommand)]
+enum MemoryCommand {
+    /// Save a new memory entry
+    Save {
+        /// Memory content
+        #[arg(long)]
+        content: String,
+        /// Metadata as key=value pairs (repeatable)
+        #[arg(long = "meta", value_parser = parse_key_value)]
+        metadata: Vec<(String, String)>,
+    },
+    /// Query memory entries by semantic similarity
+    Query {
+        /// Topic to search for
+        #[arg(long)]
+        topic: String,
+        /// Maximum number of results
+        #[arg(long, default_value_t = 10)]
+        max_results: usize,
+        /// Minimum similarity score (0.0–1.0)
+        #[arg(long, default_value_t = 0.0)]
+        min_score: f64,
+        /// Filter by metadata key=value pairs (repeatable)
+        #[arg(long = "filter", value_parser = parse_key_value)]
+        filters: Vec<(String, String)>,
+    },
+    /// Update an existing memory entry by ID
+    Update {
+        /// Memory entry ID
+        #[arg(long)]
+        id: Uuid,
+        /// New content
+        #[arg(long)]
+        content: String,
+        /// New metadata as key=value pairs (repeatable)
+        #[arg(long = "meta", value_parser = parse_key_value)]
+        metadata: Vec<(String, String)>,
+    },
+    /// Delete a memory entry by ID
+    Delete {
+        /// Memory entry ID
+        #[arg(long)]
+        id: Uuid,
+    },
+    /// Clear all memories from the collection
+    Clear,
+}
 
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
+
+    setup_logging(cli.verbose);
+
+    info!("Starting loci CLI");
+
     if let Err(e) = run(cli).await {
-        eprintln!("error: {e}");
+        error!("error: {e}");
         std::process::exit(1);
     }
 }
@@ -135,6 +164,8 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         base_url: cli.ollama_url.clone(),
         timeout: None,
     };
+
+    info!("Using Ollama URL: {}", cli.ollama_url);
 
     let ollama = Arc::new(OllamaBackend::new(ollama_config)?);
     let embedder = DefaultTextEmbedder::new(
@@ -148,54 +179,64 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         similarity_threshold: cli.similarity_threshold,
     };
 
+    info!("Using Qdrant URL: {}", cli.qdrant_url);
+    info!("Initializing memory store...");
+
     let store = QdrantMemoryStore::new(&cli.qdrant_url, qdrant_config, embedder)?;
     store.initialize().await?;
 
+    info!("Memory store initialized.");
+
     match cli.command {
-        Command::Save { content, metadata } => {
-            let input = MemoryInput::new(content, pairs_to_map(metadata));
-            let entry = store.save(input).await?;
-            println!("{}", serde_json::to_string_pretty(&entry_to_json(&entry))?);
-        }
-        Command::Query {
-            topic,
-            max_results,
-            min_score,
-            filters,
-        } => {
-            let query = MemoryQuery {
+        Command::Memory { command } => match command {
+            MemoryCommand::Save { content, metadata } => {
+                let input = MemoryInput::new(content, pairs_to_map(metadata));
+                let entry = store.save(input).await?;
+                println!("{}", serde_json::to_string_pretty(&entry_to_json(&entry))?);
+            }
+            MemoryCommand::Query {
                 topic,
                 max_results,
-                min_score: Score::new(min_score).map_err(|e| format!("invalid min_score: {e}"))?,
-                filters: pairs_to_map(filters),
-            };
-            let entries = store.query(query).await?;
-            let json: Vec<_> = entries.iter().map(entry_to_json).collect();
-            println!("{}", serde_json::to_string_pretty(&json)?);
-        }
-        Command::Update {
-            id,
-            content,
-            metadata,
-        } => {
-            let input = MemoryInput::new(content, pairs_to_map(metadata));
-            let entry = store.update(id, input).await?;
-            println!("{}", serde_json::to_string_pretty(&entry_to_json(&entry))?);
-        }
-        Command::Delete { id } => {
-            store.delete(id).await?;
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!({ "deleted": id.to_string() }))?
-            );
-        }
-        Command::Clear => {
-            store.clear().await?;
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!({ "cleared": true }))?
-            );
-        }
+                min_score,
+                filters,
+            } => {
+                let query = MemoryQuery {
+                    topic,
+                    max_results,
+                    min_score: Score::new(min_score)
+                        .map_err(|e| format!("invalid min_score: {e}"))?,
+                    filters: pairs_to_map(filters),
+                };
+                let entries = store.query(query).await?;
+                let json: Vec<_> = entries.iter().map(entry_to_json).collect();
+                println!("{}", serde_json::to_string_pretty(&json)?);
+            }
+            MemoryCommand::Update {
+                id,
+                content,
+                metadata,
+            } => {
+                let input = MemoryInput::new(content, pairs_to_map(metadata));
+                let entry = store.update(id, input).await?;
+                println!("{}", serde_json::to_string_pretty(&entry_to_json(&entry))?);
+            }
+            MemoryCommand::Delete { id } => {
+                store.delete(id).await?;
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(
+                        &serde_json::json!({ "deleted": id.to_string() })
+                    )?
+                );
+            }
+            MemoryCommand::Clear => {
+                store.clear().await?;
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({ "cleared": true }))?
+                );
+            }
+        },
         Command::Prompt {
             prompt,
             llm_model,
@@ -215,15 +256,20 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let contextualizer =
                 Contextualizer::new(Arc::clone(&store), Arc::clone(&ollama)).with_config(config);
 
-            let response = contextualizer.enhance(&prompt).await?;
-            println!("{response}");
+            let mut stream = contextualizer.enhance_stream(&prompt);
+            while let Some(result) = stream.next().await {
+                let chunk = result.map_err(|e| e.to_string())?;
+                print!("{}", chunk.text);
+                std::io::stdout().flush()?;
+                if chunk.done {
+                    println!();
+                }
+            }
         }
     }
 
     Ok(())
 }
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Parses a `key=value` string into a `(String, String)` pair.
 fn parse_key_value(s: &str) -> Result<(String, String), String> {
@@ -250,7 +296,26 @@ fn entry_to_json(e: &MemoryEntry) -> serde_json::Value {
     })
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
+fn setup_logging(verbose: bool) {
+    #[cfg(feature = "journald")]
+    {
+        JournalLog::new()
+            .expect("Failed to connect to journald")
+            .install()
+            .expect("Failed to install journald logger");
+    }
+
+    #[cfg(not(feature = "journald"))]
+    {
+        env_logger::init();
+    }
+
+    log::set_max_level(if verbose {
+        LevelFilter::Debug
+    } else {
+        LevelFilter::Info
+    });
+}
 
 #[cfg(test)]
 mod tests {

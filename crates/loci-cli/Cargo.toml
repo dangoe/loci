@@ -12,6 +12,10 @@ loci-core = { path = "../loci-core" }
 loci-memory-store-qdrant = { path = "../loci-memory-store-qdrant" }
 loci-backend-ollama = { path = "../loci-backend-ollama" }
 clap = { version = "4", features = ["derive", "env"] }
+futures.workspace = true
 serde_json.workspace = true
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 uuid = { version = "1", features = ["v4"] }
+env_logger = "0.11.10"
+systemd-journal-logger = { version = "2.2", optional = true }
+log.workspace = true

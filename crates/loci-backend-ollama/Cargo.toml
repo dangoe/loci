@@ -4,8 +4,10 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+async-stream.workspace = true
+futures.workspace = true
 loci-core = { path = "../loci-core" }
 log.workspace = true
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
 serde.workspace = true
 serde_json.workspace = true

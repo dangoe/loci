@@ -5,6 +5,7 @@
 use std::time::Duration;
 use std::{collections::HashMap, pin::Pin};
 
+use futures::Stream;
 use serde::{Deserialize, Serialize};
 
 use crate::backend::common::{BackendParams, BackendResult};
@@ -135,9 +136,24 @@ pub struct TokenUsage {
     pub total_tokens: Option<u32>,
 }
 
+/// A backend that generates text responses.
 pub trait TextGenerationBackend: Send + Sync {
+    /// Generates a single response for the given request.
     fn generate(
         &self,
         req: TextGenerationRequest,
     ) -> Pin<Box<dyn Future<Output = BackendResult<TextGenerationResponse>> + Send + '_>>;
+
+    /// Streams generation responses chunk by chunk.
+    ///
+    /// Each item in the returned stream is a partial or final
+    /// [`TextGenerationResponse`].  The last item has `done: true`.
+    ///
+    /// The default implementation wraps [`generate`] into a single-item stream.
+    fn generate_stream(
+        &self,
+        req: TextGenerationRequest,
+    ) -> Pin<Box<dyn Stream<Item = BackendResult<TextGenerationResponse>> + Send + '_>> {
+        Box::pin(futures::stream::once(self.generate(req)))
+    }
 }

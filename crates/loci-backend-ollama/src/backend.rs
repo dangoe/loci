@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // This file is part of loci-backend-ollama.
 
+use futures::StreamExt as _;
 use loci_core::backend::{
     common::BackendResult,
     embedding::{EmbeddingBackend, EmbeddingRequest, EmbeddingResponse},
@@ -10,7 +11,8 @@ use loci_core::backend::{
         TextGenerationBackend, TextGenerationRequest, TextGenerationResponse, TokenUsage,
     },
 };
-use reqwest::{Client, Response};
+use log::{debug, error};
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -40,6 +42,7 @@ impl Default for OllamaConfig {
 struct OllamaTextGenerationRequest<'a> {
     model: &'a str,
     prompt: &'a str,
+    stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     system: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -54,6 +57,18 @@ struct OllamaTextGenerationRequest<'a> {
 struct OllamaTextGenerationResponse {
     model: String,
     response: String,
+    #[serde(default)]
+    prompt_eval_count: Option<u32>,
+    #[serde(default)]
+    eval_count: Option<u32>,
+}
+
+/// A single chunk from a streaming text generation response.
+#[derive(Debug, Deserialize)]
+struct OllamaStreamChunk {
+    model: String,
+    response: String,
+    done: bool,
     #[serde(default)]
     prompt_eval_count: Option<u32>,
     #[serde(default)]
@@ -99,19 +114,6 @@ impl OllamaBackend {
         })?;
         Ok(Self { config, client })
     }
-
-    async fn check_status(resp: Response) -> BackendResult<Response> {
-        let status = resp.status();
-        if !status.is_success() {
-            let code = status.as_u16();
-            let msg = resp.text().await.unwrap_or_default();
-            return Err(BackendError::Http {
-                message: msg,
-                status: Some(code),
-            });
-        }
-        Ok(resp)
-    }
 }
 
 /// Implements the `TextGenerationBackend` trait for `OllamaBackend`.
@@ -124,12 +126,15 @@ impl TextGenerationBackend for OllamaBackend {
             let body = OllamaTextGenerationRequest {
                 model: &req.model,
                 prompt: &req.prompt,
+                stream: false,
                 system: req.system.as_deref(),
                 options: None,
                 keep_alive: None,
             };
 
-            let http_reponse = self
+            debug!("Sending request to Ollama: {:?}", body);
+
+            let http_response = self
                 .client
                 .post(format!("{}/api/generate", self.config.base_url))
                 .json(&body)
@@ -139,15 +144,21 @@ impl TextGenerationBackend for OllamaBackend {
                     message: e.to_string(),
                 })?;
 
-            let http_response = Self::check_status(http_reponse).await?;
+            debug!("Received response from Ollama: {:?}", http_response);
+
+            let parsed: Result<OllamaTextGenerationResponse, reqwest::Error> =
+                http_response.json().await;
+
+            if parsed.is_err() {
+                error!("Failed to parse response: {:?}", parsed);
+            }
 
             let parse_response: OllamaTextGenerationResponse =
-                http_response
-                    .json()
-                    .await
-                    .map_err(|e| BackendError::Parse {
-                        message: e.to_string(),
-                    })?;
+                parsed.map_err(|e| BackendError::Parse {
+                    message: e.to_string(),
+                })?;
+
+            debug!("Parsed response from Ollama: {:?}", parse_response);
 
             let total_tokens = match (parse_response.prompt_eval_count, parse_response.eval_count) {
                 (Some(a), Some(b)) => Some(a + b),
@@ -166,6 +177,84 @@ impl TextGenerationBackend for OllamaBackend {
                 }),
                 done: true,
             })
+        })
+    }
+
+    fn generate_stream(
+        &self,
+        req: TextGenerationRequest,
+    ) -> Pin<
+        Box<
+            dyn futures::Stream<Item = BackendResult<TextGenerationResponse>> + Send + '_,
+        >,
+    > {
+        Box::pin(async_stream::try_stream! {
+            let body = OllamaTextGenerationRequest {
+                model: &req.model,
+                prompt: &req.prompt,
+                stream: true,
+                system: req.system.as_deref(),
+                options: None,
+                keep_alive: None,
+            };
+
+            debug!("Sending streaming request to Ollama: {:?}", body);
+
+            let http_response = self
+                .client
+                .post(format!("{}/api/generate", self.config.base_url))
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| BackendError::Transport { message: e.to_string() })?;
+
+            let mut byte_stream = http_response.bytes_stream();
+            let mut buffer = String::new();
+
+            while let Some(chunk) = byte_stream.next().await {
+                let bytes = chunk.map_err(|e| BackendError::Transport { message: e.to_string() })?;
+                buffer.push_str(&String::from_utf8_lossy(&bytes));
+
+                while let Some(newline_pos) = buffer.find('\n') {
+                    let line = buffer[..newline_pos].trim().to_string();
+                    buffer.drain(..=newline_pos);
+
+                    if line.is_empty() {
+                        continue;
+                    }
+
+                    let chunk: OllamaStreamChunk = serde_json::from_str(&line)
+                        .map_err(|e| BackendError::Parse { message: e.to_string() })?;
+
+                    let is_done = chunk.done;
+                    let usage = if is_done {
+                        let total = match (chunk.prompt_eval_count, chunk.eval_count) {
+                            (Some(a), Some(b)) => Some(a + b),
+                            (Some(a), None) => Some(a),
+                            (None, Some(b)) => Some(b),
+                            (None, None) => None,
+                        };
+                        Some(TokenUsage {
+                            prompt_tokens: chunk.prompt_eval_count,
+                            completion_tokens: chunk.eval_count,
+                            total_tokens: total,
+                        })
+                    } else {
+                        None
+                    };
+
+                    yield TextGenerationResponse {
+                        text: chunk.response,
+                        model: chunk.model,
+                        usage,
+                        done: is_done,
+                    };
+
+                    if is_done {
+                        return;
+                    }
+                }
+            }
         })
     }
 }
@@ -194,13 +283,6 @@ impl EmbeddingBackend for OllamaBackend {
                 .map_err(|e| BackendError::Transport {
                     message: format!("Failed to send request: {e}"),
                 })?;
-
-            let http_response =
-                Self::check_status(http_response)
-                    .await
-                    .map_err(|e| BackendError::Other {
-                        message: e.to_string(),
-                    })?;
 
             let parsed_response: OllamaEmbeddingResponse =
                 http_response
