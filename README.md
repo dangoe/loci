@@ -31,12 +31,12 @@ Client / REPL
      │  prompt + session_id
      ▼
 ┌──────────────────────────────────────┐
-│           loci Proxy                  │
+│           loci Proxy                 │
 │  1. load session from SessionStore   │
 │  2. query MemoryStore (semantic)     │
 │  3. inject [MEMORY CONTEXT] block    │
-│  4. forward enriched prompt ──────►  │  Target LLM
-│  ◄──────────────────────────────────  │  (Ollama / any backend)
+│  4. forward enriched prompt ───────► │  Target LLM
+│  ◄────────────────────────────────── │  (Ollama / any backend)
 │  5. stream / return response         │
 │  6. extract memories  (async)        │
 │  7. apply eviction strategies        │
@@ -58,7 +58,7 @@ The following is fully implemented and working today.
 | Crate | Path | Purpose |
 |---|---|---|
 | `loci-core` | `crates/loci-core` | Traits, domain types, `Contextualizer` |
-| `loci-storage-qdrant` | `crates/loci-storage-qdrant` | Qdrant-backed `MemoryStore` with deduplication |
+| `loci-memory-store-qdrant` | `crates/loci-memory-store-qdrant` | Qdrant-backed `MemoryStore` with deduplication |
 | `loci-backend-ollama` | `crates/loci-backend-ollama` | Ollama embedding + text generation backend |
 | `loci-cli` | `crates/loci-cli` | `loci` CLI binary for CRUD + prompt enhancement |
 
@@ -228,7 +228,7 @@ cargo clippy         # lint
 cargo fmt            # format
 
 # Integration tests (requires Docker)
-cargo test -p loci-storage-qdrant -- --ignored --test-threads=1
+cargo test -p loci-memory-store-qdrant -- --ignored --test-threads=1
 ```
 
 ---
@@ -306,4 +306,4 @@ cargo test && cargo clippy
 
 MIT — see [LICENSE](LICENSE).
 
-Copyright © 2025 Daniel Götten
+Copyright © 2026 Daniel Götten
