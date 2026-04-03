@@ -131,7 +131,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::future::Future;
+    use std::{future::Future, pin::Pin};
 
     use uuid::Uuid;
 
@@ -202,9 +202,10 @@ mod tests {
         fn generate(
             &self,
             req: TextGenerationRequest,
-        ) -> impl Future<Output = BackendResult<TextGenerationResponse>> + Send + '_ {
+        ) -> Pin<Box<dyn Future<Output = BackendResult<TextGenerationResponse>> + Send + '_>>
+        {
             let reply = self.reply.clone();
-            async move { Ok(TextGenerationResponse::done(reply, req.model, None)) }
+            Box::pin(async move { Ok(TextGenerationResponse::done(reply, req.model, None)) })
         }
     }
 
@@ -244,17 +245,17 @@ mod tests {
             fn generate(
                 &self,
                 req: TextGenerationRequest,
-            ) -> impl Future<Output = BackendResult<TextGenerationResponse>> + Send + '_
+            ) -> Pin<Box<dyn Future<Output = BackendResult<TextGenerationResponse>> + Send + '_>>
             {
                 let content = req.prompt.clone();
                 self.tx.lock().unwrap().send(content).unwrap();
-                async move {
+                Box::pin(async move {
                     Ok(TextGenerationResponse::done(
                         "noted".to_string(),
                         req.model,
                         None,
                     ))
-                }
+                })
             }
         }
 

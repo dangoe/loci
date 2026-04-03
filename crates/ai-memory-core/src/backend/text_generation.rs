@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use std::time::Duration;
+use std::{collections::HashMap, pin::Pin};
 
 use serde::{Deserialize, Serialize};
 
@@ -135,5 +135,5 @@ pub trait TextGenerationBackend: Send + Sync {
     fn generate(
         &self,
         req: TextGenerationRequest,
-    ) -> impl Future<Output = BackendResult<TextGenerationResponse>> + Send + '_;
+    ) -> Pin<Box<dyn Future<Output = BackendResult<TextGenerationResponse>> + Send + '_>>;
 }
