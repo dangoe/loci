@@ -6,7 +6,8 @@ use ai_memory_core::{
     TextEmbedder,
 };
 use ai_memory_qdrant::{QdrantConfig, QdrantMemoryStore};
-use testcontainers::core::{IntoContainerPort, WaitFor};
+use testcontainers::core::wait::HttpWaitStrategy;
+use testcontainers::core::{ContainerPort, IntoContainerPort, WaitFor};
 use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, GenericImage};
 use uuid::Uuid;
@@ -72,7 +73,11 @@ async fn start_store(
 ) {
     let image = GenericImage::new("qdrant/qdrant", "latest")
         .with_exposed_port(QDRANT_PORT.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("gRPC endpoint listening on"));
+        .with_wait_for(WaitFor::http(
+            HttpWaitStrategy::new("/healthz")
+                .with_port(ContainerPort::Tcp(6333))
+                .with_expected_status_code(200u16),
+        ));
 
     let container: ContainerAsync<GenericImage> = image
         .start()

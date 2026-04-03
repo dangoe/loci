@@ -16,5 +16,5 @@ uuid.workspace = true
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
-testcontainers = "0.27"
+testcontainers = { version = "0.27", features  = ["http_wait_plain"] }
 uuid.workspace = true
