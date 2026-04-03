@@ -3,7 +3,7 @@ use std::future::Future;
 use serde::{Deserialize, Serialize};
 
 use crate::LlmError;
-use crate::llm::{LlmClient, Message};
+use crate::remote_model::{LlmClient, Message};
 
 /// An LLM client that speaks the OpenAI chat-completions API wire format.
 ///
@@ -130,7 +130,7 @@ struct ChatMessageResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::Role;
+    use crate::remote_model::Role;
 
     #[test]
     fn role_as_str_round_trips() {

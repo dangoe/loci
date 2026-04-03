@@ -2,48 +2,48 @@ use std::fmt;
 
 use uuid::Uuid;
 
-/// Errors produced by an LLM HTTP client.
+/// Errors produced by a remote model client.
 #[derive(Debug)]
-pub enum LlmError {
-    /// An HTTP-level error occurred while calling the LLM API.
+pub enum RemoteModelRequestError {
+    /// An HTTP-level error occurred while calling the model API.
     Http(String),
-    /// The response from the LLM could not be parsed.
+    /// The response from the model could not be parsed.
     Parse(String),
 }
 
-impl fmt::Display for LlmError {
+impl fmt::Display for RemoteModelRequestError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Http(msg) => write!(f, "LLM HTTP error: {msg}"),
-            Self::Parse(msg) => write!(f, "LLM parse error: {msg}"),
+            Self::Http(msg) => write!(f, "Remote model HTTP error: {msg}"),
+            Self::Parse(msg) => write!(f, "Remote model response parse error: {msg}"),
         }
     }
 }
 
-impl std::error::Error for LlmError {}
+impl std::error::Error for RemoteModelRequestError {}
 
 /// Errors produced by a [`crate::MemoryExtractor`] implementation.
 #[derive(Debug)]
-pub enum ExtractorError {
-    /// The underlying LLM call failed.
-    Llm(LlmError),
+pub enum MemoryExtractorError {
+    /// The underlying remote model call failed.
+    TargetModel(RemoteModelRequestError),
     /// The LLM output could not be parsed into memory inputs.
     Parse(String),
 }
 
-impl fmt::Display for ExtractorError {
+impl fmt::Display for MemoryExtractorError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Llm(e) => write!(f, "extractor LLM error: {e}"),
+            Self::TargetModel(e) => write!(f, "extractor target model error: {e}"),
             Self::Parse(msg) => write!(f, "extractor parse error: {msg}"),
         }
     }
 }
 
-impl std::error::Error for ExtractorError {
+impl std::error::Error for MemoryExtractorError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Llm(e) => Some(e),
+            Self::TargetModel(e) => Some(e),
             Self::Parse(_) => None,
         }
     }
@@ -51,14 +51,14 @@ impl std::error::Error for ExtractorError {
 
 /// Errors produced by a [`crate::ContextEnhancer`].
 #[derive(Debug)]
-pub enum EnhancerError {
+pub enum ContextEnhancerError {
     /// The memory store returned an error during query.
     MemoryStore(MemoryStoreError),
-    /// The LLM call failed.
-    Llm(LlmError),
+    /// The remote model call failed.
+    TargetModel(RemoteModelRequestError),
 }
 
-impl fmt::Display for EnhancerError {
+impl fmt::Display for ContextEnhancerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MemoryStore(e) => write!(f, "memory store error: {e}"),
@@ -67,7 +67,7 @@ impl fmt::Display for EnhancerError {
     }
 }
 
-impl std::error::Error for EnhancerError {
+impl std::error::Error for ContextEnhancerError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::MemoryStore(e) => Some(e),
@@ -109,15 +109,13 @@ impl std::error::Error for MemoryStoreError {
 /// Errors produced by a [`TextEmbedder`][crate::TextEmbedder] implementation.
 #[derive(Debug)]
 pub enum EmbeddingError {
-    Http(String),
-    Parse(String),
+    TargetModel(RemoteModelRequestError),
 }
 
 impl fmt::Display for EmbeddingError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Http(msg) => write!(f, "HTTP error: {msg}"),
-            Self::Parse(msg) => write!(f, "parse error: {msg}"),
+            Self::TargetModel(msg) => write!(f, "Tawrget model request error: {msg}"),
         }
     }
 }

@@ -2,16 +2,18 @@ mod embedding;
 mod enhancer;
 mod error;
 mod extractor;
-mod llm;
 mod memory;
 mod openai;
+mod remote_model;
 mod store;
 
 pub use embedding::{Embedding, TextEmbedder};
 pub use enhancer::{ContextEnhancer, EnhancerConfig};
-pub use error::{EmbeddingError, EnhancerError, ExtractorError, LlmError, MemoryStoreError};
+pub use error::{
+    ContextEnhancerError, EmbeddingError, LlmError, MemoryExtractorError, MemoryStoreError,
+};
 pub use extractor::{BoxFuture, LlmMemoryExtractor, MemoryExtractor, NoOpExtractor};
-pub use llm::{LlmClient, Message, Role};
 pub use memory::{InvalidScore, Memory, MemoryEntry, MemoryInput, MemoryQuery, Score};
 pub use openai::OpenAiCompatibleClient;
+pub use remote_model::{LlmClient, Message, Role};
 pub use store::MemoryStore;

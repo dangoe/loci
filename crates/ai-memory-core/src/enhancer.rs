@@ -2,10 +2,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::store::MemoryStore;
-use crate::{EnhancerError, MemoryQuery, Score};
+use crate::{ContextEnhancerError, MemoryEntry, MemoryQuery, Score};
 
 use crate::extractor::MemoryExtractor;
-use crate::llm::{LlmClient, Message, Role};
+use crate::remote_model::{LlmClient, Message, Role};
 
 /// Configuration for a [`ContextEnhancer`].
 #[derive(Debug, Clone)]
@@ -48,10 +48,10 @@ where
     L: LlmClient + 'static,
 {
     /// Creates a new `ContextEnhancer` with default configuration.
-    pub fn new(store: Arc<S>, llm: Arc<L>) -> Self {
+    pub fn new(store: Arc<S>, target_llm: Arc<L>) -> Self {
         Self {
             store,
-            llm,
+            target_llm,
             extractor: None,
             config: EnhancerConfig::default(),
         }
@@ -76,55 +76,24 @@ where
     ///
     /// Returns [`EnhancerError::MemoryStore`] if the store query fails, or
     /// [`EnhancerError::Llm`] if the LLM call fails.
-    pub async fn enhance(&self, prompt: &str) -> Result<String, EnhancerError> {
-        // 1. Query the memory store.
-        let query = MemoryQuery {
-            topic: prompt.to_string(),
-            max_results: self.config.max_memories,
-            min_score: self.config.min_score,
-            filters: self.config.filters.clone(),
-        };
+    pub async fn enhance(&self, prompt: &str) -> Result<String, ContextEnhancerError> {
+        let memory_entries = self.query_memory(prompt).await?;
 
-        let entries = self
-            .store
-            .query(query)
-            .await
-            .map_err(EnhancerError::MemoryStore)?;
+        log::debug!("retrieved {} relevant memories", memory_entries.len());
 
-        log::debug!("retrieved {} relevant memories", entries.len());
-
-        // 2. Build the enriched prompt.
-        let enriched = if entries.is_empty() {
-            prompt.to_string()
-        } else {
-            let mut buf = String::from("[MEMORY CONTEXT]\n");
-            buf.push_str("The following memories are relevant to your request:\n\n");
-
-            for (i, entry) in entries.iter().enumerate() {
-                buf.push_str(&format!(
-                    "{}. (relevance: {:.2}) {}\n",
-                    i + 1,
-                    entry.score.value(),
-                    entry.memory.content,
-                ));
-            }
-
-            buf.push_str("\n[USER PROMPT]\n");
-            buf.push_str(prompt);
-            buf
-        };
+        let enriched_prompt = self.enrich_prompt(prompt, memory_entries);
 
         // 3. Call the LLM.
         let messages = vec![Message {
             role: Role::User,
-            content: enriched,
+            content: enriched_prompt,
         }];
 
         let response = self
             .llm
             .complete(&messages)
             .await
-            .map_err(EnhancerError::Llm)?;
+            .map_err(ContextEnhancerError::Llm)?;
 
         // 4. Fire-and-forget memory extraction.
         if let Some(extractor) = &self.extractor {
@@ -149,6 +118,45 @@ where
 
         Ok(response)
     }
+
+    async fn query_memory(
+        &self,
+        prompt: &str,
+    ) -> Result<Vec<crate::MemoryEntry>, ContextEnhancerError> {
+        let query = MemoryQuery {
+            topic: prompt.to_string(),
+            max_results: self.config.max_memories,
+            min_score: self.config.min_score,
+            filters: self.config.filters.clone(),
+        };
+
+        self.store
+            .query(query)
+            .await
+            .map_err(ContextEnhancerError::MemoryStore)
+    }
+
+    fn enrich_prompt(&self, prompt: &str, memory_entries: Vec<MemoryEntry>) -> String {
+        if memory_entries.is_empty() {
+            prompt.to_string()
+        } else {
+            let mut buf = String::from("[MEMORY CONTEXT]\n");
+            buf.push_str("The following memories are relevant to your request:\n\n");
+
+            for (i, entry) in memory_entries.iter().enumerate() {
+                buf.push_str(&format!(
+                    "{}. (relevance: {:.2}) {}\n",
+                    i + 1,
+                    entry.score.value(),
+                    entry.memory.content,
+                ));
+            }
+
+            buf.push_str("\n[USER PROMPT]\n");
+            buf.push_str(prompt);
+            buf
+        }
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -163,8 +171,8 @@ mod tests {
         Memory, MemoryEntry, MemoryInput, MemoryQuery, MemoryStore, MemoryStoreError, Score,
     };
 
-    use crate::llm::{LlmClient, Message};
     use crate::LlmError;
+    use crate::remote_model::{LlmClient, Message};
 
     use super::*;
 

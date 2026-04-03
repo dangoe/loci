@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::memory::MemoryInput;
 
-use crate::{ExtractorError, LlmClient, Message, Role};
+use crate::{LlmClient, MemoryExtractorError, Message, Role};
 
 /// A type alias for a boxed, heap-allocated future that is `Send`.
 ///
@@ -23,7 +23,7 @@ pub trait MemoryExtractor: Send + Sync {
         &'a self,
         prompt: &'a str,
         response: &'a str,
-    ) -> BoxFuture<'a, Result<Vec<MemoryInput>, ExtractorError>>;
+    ) -> BoxFuture<'a, Result<Vec<MemoryInput>, MemoryExtractorError>>;
 }
 
 // ── NoOpExtractor ─────────────────────────────────────────────────────────────
@@ -38,7 +38,7 @@ impl MemoryExtractor for NoOpExtractor {
         &'a self,
         _prompt: &'a str,
         _response: &'a str,
-    ) -> BoxFuture<'a, Result<Vec<MemoryInput>, ExtractorError>> {
+    ) -> BoxFuture<'a, Result<Vec<MemoryInput>, MemoryExtractorError>> {
         Box::pin(async { Ok(vec![]) })
     }
 }
@@ -72,7 +72,7 @@ impl<L: LlmClient + 'static> MemoryExtractor for LlmMemoryExtractor<L> {
         &'a self,
         prompt: &'a str,
         response: &'a str,
-    ) -> BoxFuture<'a, Result<Vec<MemoryInput>, ExtractorError>> {
+    ) -> BoxFuture<'a, Result<Vec<MemoryInput>, MemoryExtractorError>> {
         Box::pin(async move {
             let conversation = format!("User prompt:\n{prompt}\n\nAssistant response:\n{response}");
 
@@ -91,13 +91,13 @@ impl<L: LlmClient + 'static> MemoryExtractor for LlmMemoryExtractor<L> {
                 .llm
                 .complete(&messages)
                 .await
-                .map_err(ExtractorError::Llm)?;
+                .map_err(MemoryExtractorError::Llm)?;
 
             log::debug!("memory extractor LLM response: {raw}");
 
             // Parse the JSON array of fact strings.
             let facts: Vec<String> = serde_json::from_str(raw.trim())
-                .map_err(|e| ExtractorError::Parse(format!("expected JSON array: {e}")))?;
+                .map_err(|e| MemoryExtractorError::Parse(format!("expected JSON array: {e}")))?;
 
             let inputs = facts
                 .into_iter()
