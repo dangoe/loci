@@ -139,8 +139,7 @@ impl<E: TextEmbedder> QdrantMemoryStore<E> {
             .client
             .search_points(
                 SearchPointsBuilder::new(&self.config.collection_name, vector, max_results as u64)
-                    .with_payload(true)
-                    .score_threshold(min_score as f32),
+                    .with_payload(true),
             )
             .await
             .map_err(|e| MemoryStoreError::Query(e.to_string()))?;
@@ -148,6 +147,11 @@ impl<E: TextEmbedder> QdrantMemoryStore<E> {
         let mut entries = Vec::new();
         for point in response.result {
             let entry = Self::parse_scored_point(&point)?;
+            // Enforce inclusive score semantics here. Qdrant score_threshold is strict and
+            // would drop exact-boundary matches (e.g. 0.0), which breaks query expectations.
+            if entry.score.value() < min_score {
+                continue;
+            }
             // Post-filter by metadata key/value pairs
             if !filters.iter().all(|(k, v)| {
                 entry
