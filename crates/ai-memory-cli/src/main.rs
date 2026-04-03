@@ -209,7 +209,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_key_value_value_contains_equals() {
+    fn parse_key_value_when_value_contains_equals() {
         let (k, v) = parse_key_value("url=http://host:1234").unwrap();
         assert_eq!(k, "url");
         assert_eq!(v, "http://host:1234");

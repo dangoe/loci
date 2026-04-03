@@ -362,11 +362,11 @@ fn parse_payload_to_memory(
         .ok_or_else(|| MemoryStoreError::Query("missing content in payload".to_string()))?
         .to_owned();
 
-    let metadata_json = payload
-        .get(FIELD_METADATA)
-        .and_then(|v| v.as_str())
-        .map_or("{}", |s| s.as_str());
-    let metadata: HashMap<String, String> = serde_json::from_str(metadata_json).unwrap_or_default();
+    let metadata: HashMap<String, String> = match payload.get(FIELD_METADATA).and_then(|v| v.as_str()) {
+        Some(json) => serde_json::from_str(json)
+            .map_err(|e| MemoryStoreError::Query(format!("invalid metadata JSON: {e}")))?,
+        None => HashMap::new(),
+    };
 
     let created_at = extract_created_at_from_payload(payload)?;
 

@@ -13,7 +13,7 @@ use testcontainers::{ContainerAsync, GenericImage};
 use uuid::Uuid;
 
 const DIM: usize = 4;
-/// Qdrant gRPC port (also used for HTTP/2 REST)
+/// Qdrant gRPC port used by the client
 const QDRANT_PORT: u16 = 6334;
 
 // ── Test double ──────────────────────────────────────────────────────────────
