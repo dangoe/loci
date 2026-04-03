@@ -10,14 +10,6 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 use uuid::Uuid;
 
-use ai_memory_core::{
-    Contextualizer, ContextualizerConfig, MemoryInput, MemoryQuery, MemoryStore, Score,
-};
-use ai_memory_ollama::OllamaTextEmbedder;
-use ai_memory_storage_qdrant::{QdrantConfig, QdrantMemoryStore};
-
-// ── CLI definition ────────────────────────────────────────────────────────────
-
 /// Top-level CLI arguments and global options.
 #[derive(Parser)]
 #[command(name = "ai-memory", about = "AI memory store CLI")]

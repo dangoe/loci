@@ -1,4 +1,9 @@
-use crate::error::EmbeddingError;
+use std::sync::Arc;
+
+use crate::{
+    backend::embedding::{EmbeddingBackend, EmbeddingRequest},
+    error::EmbeddingError,
+};
 
 /// An embedding vector represented as a sequence of `f32` values.
 #[derive(Debug, Clone, PartialEq)]
@@ -36,6 +41,26 @@ pub trait TextEmbedder: Send + Sync {
         &self,
         text: &str,
     ) -> impl Future<Output = Result<Embedding, EmbeddingError>> + Send + '_;
+}
+
+struct DefaultTextEmbedder {
+    backend: Box<dyn EmbeddingBackend>,
+    model: String,
+    embedding_dimension: usize,
+}
+
+impl TextEmbedder for DefaultTextEmbedder {
+    fn embedding_dimension(&self) -> usize {
+        self.embedding_dimension
+    }
+
+    fn embed(
+        &self,
+        text: &str,
+    ) -> impl Future<Output = Result<Embedding, EmbeddingError>> + Send + '_ {
+        self.backend
+            .embed(EmbeddingRequest::new(self.model.as_str(), text))
+    }
 }
 
 #[cfg(test)]

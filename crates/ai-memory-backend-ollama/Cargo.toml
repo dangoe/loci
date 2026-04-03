@@ -1,5 +1,5 @@
 [package]
-name = "ai-memory-ollama"
+name = "ai-memory-backend-ollama"
 version.workspace = true
 edition.workspace = true
 

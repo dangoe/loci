@@ -10,7 +10,7 @@ path = "src/main.rs"
 [dependencies]
 ai-memory-core = { path = "../ai-memory-core" }
 ai-memory-storage-qdrant = { path = "../ai-memory-storage-qdrant" }
-ai-memory-ollama = { path = "../ai-memory-ollama" }
+ai-memory-backend-ollama = { path = "../ai-memory-backend-ollama" }
 clap = { version = "4", features = ["derive", "env"] }
 serde_json.workspace = true
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

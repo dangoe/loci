@@ -1,7 +1,7 @@
 [workspace]
 members = [
     "crates/ai-memory-core",
-    "crates/ai-memory-ollama",
+    "crates/ai-memory-backend-ollama",
     "crates/ai-memory-storage-qdrant",
     "crates/ai-memory-cli",
 ]

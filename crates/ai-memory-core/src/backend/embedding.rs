@@ -58,7 +58,7 @@ pub struct EmbeddingResponse {
     pub usage: Option<TokenUsage>,
 }
 
-pub trait EmbeddingBackend {
+pub trait EmbeddingBackend: Send + Sync {
     fn embed(
         &self,
         req: EmbeddingRequest,

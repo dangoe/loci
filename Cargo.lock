@@ -18,11 +18,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "ai-memory-cli"
+name = "ai-memory-backend-ollama"
 version = "0.1.0"
 dependencies = [
  "ai-memory-core",
- "ai-memory-ollama",
+ "log",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "ai-memory-cli"
+version = "0.1.0"
+dependencies = [
+ "ai-memory-backend-ollama",
+ "ai-memory-core",
  "ai-memory-storage-qdrant",
  "clap",
  "serde_json",
@@ -41,17 +52,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "uuid",
-]
-
-[[package]]
-name = "ai-memory-ollama"
-version = "0.1.0"
-dependencies = [
- "ai-memory-core",
- "log",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
 ]
 
 [[package]]

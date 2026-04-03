@@ -1,13 +1,8 @@
 use std::collections::HashMap;
 
-use ai_memory_core::embedding::Embedding;
-use ai_memory_core::embedding::TextEmbedder;
+use ai_memory_core::embedding::{Embedding, TextEmbedder};
 use ai_memory_core::error::MemoryStoreError;
-use ai_memory_core::memory::Memory;
-use ai_memory_core::memory::MemoryEntry;
-use ai_memory_core::memory::MemoryInput;
-use ai_memory_core::memory::MemoryQuery;
-use ai_memory_core::memory::Score;
+use ai_memory_core::memory::{Memory, MemoryEntry, MemoryInput, MemoryQuery, Score};
 use ai_memory_core::store::MemoryStore;
 use chrono::{DateTime, Utc};
 use qdrant_client::Payload;

@@ -131,7 +131,7 @@ pub struct TokenUsage {
     pub total_tokens: Option<u32>,
 }
 
-pub trait TextGenerationBackend {
+pub trait TextGenerationBackend: Send + Sync {
     fn generate(
         &self,
         req: TextGenerationRequest,
