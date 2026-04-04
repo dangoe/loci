@@ -5,11 +5,13 @@
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures::Stream;
 
 use crate::error::ContextualizerError;
 use crate::memory::{MemoryEntry, MemoryQuery, Score};
+use crate::model_provider::common::ModelProviderParams;
 use crate::model_provider::text_generation::{self, TextGenerationRequest, TextGenerationResponse};
 use crate::store::MemoryStore;
 
@@ -40,6 +42,22 @@ pub struct ContextualizerConfig {
     pub min_score: Score,
     /// Metadata filters applied when querying the memory store.
     pub filters: HashMap<String, String>,
+    /// Optional text-generation tuning parameters.
+    pub tuning: Option<ContextualizerTuningConfig>,
+}
+
+/// Provider-agnostic generation tuning options for contextualized prompts.
+#[derive(Debug, Clone, Default)]
+pub struct ContextualizerTuningConfig {
+    pub temperature: Option<f32>,
+    pub max_tokens: Option<u32>,
+    pub top_p: Option<f32>,
+    pub repeat_penalty: Option<f32>,
+    pub repeat_last_n: Option<u32>,
+    pub thinking: Option<text_generation::ThinkingMode>,
+    pub stop: Option<Vec<String>>,
+    pub keep_alive: Option<Duration>,
+    pub extra_params: ModelProviderParams,
 }
 
 /// Enhances a user prompt with relevant memories before calling an LLM.
@@ -102,14 +120,41 @@ where
 
             let system_prompt = self.build_system_prompt(memory_entries);
 
-            let req = TextGenerationRequest::new(
+            let mut req = TextGenerationRequest::new(
                 self.config.text_generation_model.to_string(),
                 prompt,
             )
-            .with_system(system_prompt)
-            .with_temperature(0.2)
-            .with_repeat_penalty(1.5)
-            .with_thinking(text_generation::ThinkingMode::Disabled);
+            .with_system(system_prompt);
+
+            if let Some(tuning) = &self.config.tuning {
+                if let Some(v) = tuning.temperature {
+                    req = req.with_temperature(v);
+                }
+                if let Some(v) = tuning.max_tokens {
+                    req = req.with_max_tokens(v);
+                }
+                if let Some(v) = tuning.top_p {
+                    req = req.with_top_p(v);
+                }
+                if let Some(v) = tuning.repeat_penalty {
+                    req = req.with_repeat_penalty(v);
+                }
+                if let Some(v) = tuning.repeat_last_n {
+                    req = req.with_repeat_last_n(v);
+                }
+                if let Some(v) = &tuning.thinking {
+                    req = req.with_thinking(v.clone());
+                }
+                if let Some(v) = &tuning.stop {
+                    req = req.with_stop(v.clone());
+                }
+                if let Some(v) = tuning.keep_alive {
+                    req = req.with_keep_alive(v);
+                }
+                for (k, v) in &tuning.extra_params {
+                    req = req.with_extra(k.clone(), v.clone());
+                }
+            }
 
             use futures::StreamExt as _;
             let mut stream = self.text_generation_provider.generate_stream(req);
@@ -163,9 +208,12 @@ where
 #[cfg(test)]
 mod tests {
     use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
+    use std::sync::Mutex;
+    use std::time::Duration;
 
     use futures::StreamExt as _;
     use pretty_assertions::assert_eq;
+    use serde_json::json;
     use uuid::Uuid;
 
     use crate::{
@@ -176,6 +224,7 @@ mod tests {
             error::ModelProviderError,
             text_generation::{
                 TextGenerationModelProvider, TextGenerationRequest, TextGenerationResponse,
+                ThinkingMode,
             },
         },
     };
@@ -296,6 +345,7 @@ mod tests {
             max_memories: 5,
             min_score: Score::ZERO,
             filters: HashMap::new(),
+            tuning: None,
         }
     }
 
@@ -333,9 +383,25 @@ mod tests {
         let ctx = make_contextualizer(vec![], "reply");
         let prompt = ctx.build_system_prompt(vec![]);
         assert!(
-            prompt.contains("<no memory entries>"),
+            prompt.contains("None. Answer from general knowledge."),
             "expected placeholder, got: {prompt}",
         );
+    }
+
+    #[derive(Default)]
+    struct CapturingTextGenerationProvider {
+        last_req: Mutex<Option<TextGenerationRequest>>,
+    }
+
+    impl TextGenerationModelProvider for CapturingTextGenerationProvider {
+        fn generate(
+            &self,
+            req: TextGenerationRequest,
+        ) -> Pin<Box<dyn Future<Output = ModelProviderResult<TextGenerationResponse>> + Send + '_>>
+        {
+            *self.last_req.lock().unwrap() = Some(req.clone());
+            Box::pin(async move { Ok(TextGenerationResponse::done("ok".to_string(), req.model, None)) })
+        }
     }
 
     #[tokio::test]
@@ -394,5 +460,44 @@ mod tests {
             "expected ModelProvider error, got: {:?}",
             items[0],
         );
+    }
+
+    #[tokio::test]
+    async fn test_contextualize_applies_tuning_from_config() {
+        let provider = Arc::new(CapturingTextGenerationProvider::default());
+        let mut extra = HashMap::new();
+        extra.insert("seed".to_string(), json!(42));
+        let ctx = Contextualizer::new(
+            Arc::new(MockStore { entries: vec![] }),
+            provider.clone(),
+            ContextualizerConfig {
+                tuning: Some(ContextualizerTuningConfig {
+                    temperature: Some(0.3),
+                    max_tokens: Some(256),
+                    top_p: Some(0.85),
+                    repeat_penalty: Some(1.1),
+                    repeat_last_n: Some(32),
+                    thinking: Some(ThinkingMode::Disabled),
+                    stop: Some(vec!["<END>".to_string()]),
+                    keep_alive: Some(Duration::from_secs(120)),
+                    extra_params: extra,
+                }),
+                ..default_config()
+            },
+        );
+        let items: Vec<_> = ctx.contextualize("prompt").collect().await;
+        assert_eq!(items.len(), 1);
+        assert!(items[0].is_ok());
+
+        let req = provider.last_req.lock().unwrap().clone().unwrap();
+        assert_eq!(req.temperature, Some(0.3));
+        assert_eq!(req.max_tokens, Some(256));
+        assert_eq!(req.top_p, Some(0.85));
+        assert_eq!(req.repeat_penalty, Some(1.1));
+        assert_eq!(req.repeat_last_n, Some(32));
+        assert!(matches!(req.thinking, Some(ThinkingMode::Disabled)));
+        assert_eq!(req.stop, Some(vec!["<END>".to_string()]));
+        assert_eq!(req.keep_alive, Some(Duration::from_secs(120)));
+        assert_eq!(req.extra_params.get("seed"), Some(&json!(42)));
     }
 }

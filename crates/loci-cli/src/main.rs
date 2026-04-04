@@ -19,11 +19,15 @@ use log::{LevelFilter, debug, error, info};
 use uuid::Uuid;
 
 use loci_config::{
-    AppConfig, ConfigError, ModelProviderConfig, ModelProviderKind, StoreConfig, load_config,
+    AppConfig, ConfigError, ModelProviderConfig, ModelProviderKind, ModelThinkingConfig,
+    ModelThinkingEffortLevel, ModelTuningConfig, StoreConfig, load_config,
 };
-use loci_core::contextualization::{Contextualizer, ContextualizerConfig};
+use loci_core::contextualization::{
+    Contextualizer, ContextualizerConfig, ContextualizerTuningConfig,
+};
 use loci_core::embedding::DefaultTextEmbedder;
 use loci_core::memory::{MemoryInput, MemoryQuery, Score};
+use loci_core::model_provider::text_generation::{ThinkingEffortLevel, ThinkingMode};
 use loci_core::store::MemoryStore;
 use loci_memory_store_qdrant::config::QdrantConfig;
 use loci_memory_store_qdrant::store::QdrantMemoryStore;
@@ -176,7 +180,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         } => {
             let store = Arc::new(build_store(&config).await?);
             let llm_provider = Arc::new(build_llm_provider(&config)?);
-            let model_name = {
+            let model = {
                 let model_key = &config.routing.default_model;
                 config
                     .models
@@ -185,7 +189,6 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         section: "models".into(),
                         key: model_key.clone(),
                     })?
-                    .name
                     .clone()
             };
             let min_score = Score::new(min_score).map_err(|e| format!("invalid min_score: {e}"))?;
@@ -194,7 +197,8 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 max_memories,
                 min_score,
                 filters: HashMap::new(),
-                text_generation_model: model_name,
+                text_generation_model: model.name,
+                tuning: model.tuning.as_ref().map(model_tuning_to_contextualizer),
             };
 
             let contextualizer = Contextualizer::new(store, llm_provider, ctx_config);
@@ -342,6 +346,37 @@ fn build_ollama_provider(
     }
 }
 
+fn model_tuning_to_contextualizer(tuning: &ModelTuningConfig) -> ContextualizerTuningConfig {
+    ContextualizerTuningConfig {
+        temperature: tuning.temperature,
+        max_tokens: tuning.max_tokens,
+        top_p: tuning.top_p,
+        repeat_penalty: tuning.repeat_penalty,
+        repeat_last_n: tuning.repeat_last_n,
+        thinking: tuning.thinking.as_ref().map(model_thinking_to_core),
+        stop: tuning.stop.clone(),
+        keep_alive: tuning.keep_alive_secs.map(std::time::Duration::from_secs),
+        extra_params: tuning.extra_params.clone(),
+    }
+}
+
+fn model_thinking_to_core(thinking: &ModelThinkingConfig) -> ThinkingMode {
+    match thinking {
+        ModelThinkingConfig::Enabled => ThinkingMode::Enabled,
+        ModelThinkingConfig::Disabled => ThinkingMode::Disabled,
+        ModelThinkingConfig::Effort { level } => ThinkingMode::Effort {
+            level: match level {
+                ModelThinkingEffortLevel::Low => ThinkingEffortLevel::Low,
+                ModelThinkingEffortLevel::Medium => ThinkingEffortLevel::Medium,
+                ModelThinkingEffortLevel::High => ThinkingEffortLevel::High,
+            },
+        },
+        ModelThinkingConfig::Budgeted { max_tokens } => ThinkingMode::Budgeted {
+            max_tokens: *max_tokens,
+        },
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Memory command dispatch
 // ---------------------------------------------------------------------------
@@ -470,6 +505,22 @@ endpoint = "http://localhost:11434"
 [models.default]
 provider = "ollama"
 name = "qwen3:0.6b"
+
+# Optional model-specific tuning:
+# [models.default.tuning]
+# temperature = 0.2
+# max_tokens = 512
+# top_p = 0.95
+# repeat_penalty = 1.1
+# repeat_last_n = 64
+# keep_alive_secs = 300
+# stop = ["<END>"]
+# [models.default.tuning.thinking]
+# mode = "disabled" # or "enabled", "effort", "budgeted"
+# level = "low"     # for mode = "effort"
+# max_tokens = 256  # for mode = "budgeted"
+# [models.default.tuning.extra_params]
+# seed = 42
 
 ########################################
 # Embeddings

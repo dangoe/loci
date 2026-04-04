@@ -15,7 +15,7 @@ use std::path::Path;
 pub use embedding::EmbeddingProfileConfig;
 pub use error::ConfigError;
 pub use memory::MemoryConfig;
-pub use model::ModelConfig;
+pub use model::{ModelConfig, ModelThinkingConfig, ModelThinkingEffortLevel, ModelTuningConfig};
 pub use provider::{ModelProviderConfig, ModelProviderKind};
 pub use routing::RoutingConfig;
 pub use store::StoreConfig;
@@ -93,6 +93,7 @@ fn resolve_secrets(config: &mut AppConfig) -> Result<(), ConfigError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::io::Write as _;
 
     fn write_temp_config(content: &str) -> tempfile::NamedTempFile {
@@ -137,6 +138,7 @@ embedding = "default"
         assert!(config.providers.contains_key("ollama"));
         assert_eq!(config.models["default"].provider, "ollama");
         assert_eq!(config.models["default"].name, "qwen3:0.6b");
+        assert!(config.models["default"].tuning.is_none());
         assert_eq!(config.embeddings["default"].dimension, 768);
         assert_eq!(config.memory.store, "qdrant");
         assert_eq!(config.memory.collection, "memories");
@@ -362,5 +364,63 @@ embedding = "x"
         } else {
             panic!("expected Markdown store");
         }
+    }
+
+    #[test]
+    fn model_tuning_is_parsed_when_set() {
+        let cfg = r#"
+[providers.ollama]
+kind = "ollama"
+endpoint = "http://localhost:11434"
+
+[models.default]
+provider = "ollama"
+name = "qwen3:0.6b"
+
+[models.default.tuning]
+temperature = 0.2
+max_tokens = 512
+top_p = 0.95
+repeat_penalty = 1.2
+repeat_last_n = 64
+keep_alive_secs = 300
+stop = ["<END>"]
+
+[models.default.tuning.thinking]
+mode = "effort"
+level = "low"
+
+[models.default.tuning.extra_params]
+seed = 42
+
+[stores.qdrant]
+kind = "qdrant"
+url = "http://localhost:6333"
+
+[memory]
+store = "qdrant"
+collection = "memories"
+
+[routing]
+default_model = "default"
+embedding = "default"
+"#;
+        let f = write_temp_config(cfg);
+        let config = load_config(f.path()).unwrap();
+        let tuning = config.models["default"].tuning.as_ref().unwrap();
+        assert_eq!(tuning.temperature, Some(0.2));
+        assert_eq!(tuning.max_tokens, Some(512));
+        assert_eq!(tuning.top_p, Some(0.95));
+        assert_eq!(tuning.repeat_penalty, Some(1.2));
+        assert_eq!(tuning.repeat_last_n, Some(64));
+        assert_eq!(tuning.keep_alive_secs, Some(300));
+        assert_eq!(tuning.stop.as_ref().unwrap(), &vec!["<END>".to_string()]);
+        assert!(matches!(
+            tuning.thinking,
+            Some(ModelThinkingConfig::Effort {
+                level: ModelThinkingEffortLevel::Low
+            })
+        ));
+        assert_eq!(tuning.extra_params.get("seed"), Some(&json!(42)));
     }
 }
