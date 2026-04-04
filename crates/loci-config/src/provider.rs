@@ -4,32 +4,32 @@
 
 use serde::Deserialize;
 
-/// Which inference service hosts this provider.
+/// Which inference service hosts this model provider.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-pub enum ProviderKind {
+pub enum ModelProviderKind {
     Ollama,
     OpenAI,
     Anthropic,
 }
 
-impl std::fmt::Display for ProviderKind {
+impl std::fmt::Display for ModelProviderKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ProviderKind::Ollama => write!(f, "ollama"),
-            ProviderKind::OpenAI => write!(f, "openai"),
-            ProviderKind::Anthropic => write!(f, "anthropic"),
+            ModelProviderKind::Ollama => write!(f, "ollama"),
+            ModelProviderKind::OpenAI => write!(f, "openai"),
+            ModelProviderKind::Anthropic => write!(f, "anthropic"),
         }
     }
 }
 
-/// A named provider definition.
+/// A named model provider definition.
 #[derive(Debug, Clone, Deserialize)]
-pub struct ProviderConfig {
-    /// The provider kind (e.g. `"ollama"`, `"openai"`, `"anthropic"`).
-    pub kind: ProviderKind,
+pub struct ModelProviderConfig {
+    /// The model provider kind (e.g. `"ollama"`, `"openai"`, `"anthropic"`).
+    pub kind: ModelProviderKind,
 
-    /// The base URL for the provider's API.
+    /// The base URL for the model provider's API.
     pub endpoint: String,
 
     /// Optional API key. May be a literal value or `env:VAR_NAME`.

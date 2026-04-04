@@ -1,5 +1,5 @@
 [package]
-name = "loci-backend-ollama"
+name = "loci-model-provider-ollama"
 version.workspace = true
 edition.workspace = true
 

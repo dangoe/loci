@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 // This file is part of loci-memory-store-qdrant.
 
-/// Configuration for [`QdrantMemoryStore`][crate::QdrantMemoryStore].
+/// Configuration for [`QdrantMemoryStore`][crate::store::QdrantMemoryStore].
+#[derive(Debug, Clone)]
 pub struct QdrantConfig {
     /// The Qdrant collection name.
     pub collection_name: String,

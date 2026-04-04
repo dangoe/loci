@@ -33,7 +33,7 @@ const FIELD_CREATED_AT: &str = "created_at";
 pub struct QdrantMemoryStore<E> {
     client: Qdrant,
     config: QdrantConfig,
-    embedding_backend: E,
+    embedder: E,
 }
 
 impl<E: TextEmbedder> QdrantMemoryStore<E> {
@@ -47,7 +47,7 @@ impl<E: TextEmbedder> QdrantMemoryStore<E> {
         Ok(Self {
             client,
             config,
-            embedding_backend: embedder,
+            embedder: embedder,
         })
     }
 
@@ -71,7 +71,7 @@ impl<E: TextEmbedder> QdrantMemoryStore<E> {
                 .await
                 .map_err(|e| MemoryStoreError::Connection(e.to_string()))?;
 
-            let expected_dim = self.embedding_backend.embedding_dimension() as u64;
+            let expected_dim = self.embedder.embedding_dimension() as u64;
             if let Some(dim) = extract_vector_dimension(&info)
                 && dim != expected_dim
             {
@@ -82,7 +82,7 @@ impl<E: TextEmbedder> QdrantMemoryStore<E> {
                 )));
             }
         } else {
-            let dim = self.embedding_backend.embedding_dimension() as u64;
+            let dim = self.embedder.embedding_dimension() as u64;
             self.client
                 .create_collection(
                     CreateCollectionBuilder::new(&self.config.collection_name)
@@ -186,7 +186,7 @@ impl<E: TextEmbedder> MemoryStore for QdrantMemoryStore<E> {
     async fn save(&self, input: MemoryInput) -> Result<MemoryEntry, MemoryStoreError> {
         let memory = Memory::new(input.content, input.metadata);
         let embedding = self
-            .embedding_backend
+            .embedder
             .embed(&memory.content)
             .await
             .map_err(MemoryStoreError::Embedding)?;
@@ -210,7 +210,7 @@ impl<E: TextEmbedder> MemoryStore for QdrantMemoryStore<E> {
 
     async fn query(&self, query: MemoryQuery) -> Result<Vec<MemoryEntry>, MemoryStoreError> {
         let embedding = self
-            .embedding_backend
+            .embedder
             .embed(&query.topic)
             .await
             .map_err(MemoryStoreError::Embedding)?;
@@ -247,7 +247,7 @@ impl<E: TextEmbedder> MemoryStore for QdrantMemoryStore<E> {
         let created_at = extract_created_at_from_payload(&existing.payload)?;
 
         let embedding = self
-            .embedding_backend
+            .embedder
             .embed(&input.content)
             .await
             .map_err(MemoryStoreError::Embedding)?;
@@ -304,7 +304,7 @@ impl<E: TextEmbedder> MemoryStore for QdrantMemoryStore<E> {
             .await
             .map_err(|e| MemoryStoreError::Query(e.to_string()))?;
 
-        let dim = self.embedding_backend.embedding_dimension() as u64;
+        let dim = self.embedder.embedding_dimension() as u64;
         self.client
             .create_collection(
                 CreateCollectionBuilder::new(&self.config.collection_name)

@@ -16,7 +16,7 @@ pub use embedding::EmbeddingProfileConfig;
 pub use error::ConfigError;
 pub use memory::MemoryConfig;
 pub use model::ModelConfig;
-pub use provider::{ProviderConfig, ProviderKind};
+pub use provider::{ModelProviderConfig, ModelProviderKind};
 pub use routing::RoutingConfig;
 pub use store::StoreConfig;
 
@@ -32,9 +32,9 @@ mod store;
 /// Top-level application configuration.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct AppConfig {
-    /// Named provider definitions (compute backends).
+    /// Named model provider definitions.
     #[serde(default)]
-    pub providers: HashMap<String, ProviderConfig>,
+    pub providers: HashMap<String, ModelProviderConfig>,
 
     /// Named model aliases, each referencing a provider.
     #[serde(default)]

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // This file is part of loci-core.
 
-pub mod backend;
+pub mod model_provider;
 pub mod contextualization;
 pub mod embedding;
 pub mod error;

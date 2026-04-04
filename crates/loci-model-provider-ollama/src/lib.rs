@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Daniel Götten
 // SPDX-License-Identifier: MIT
-// This file is part of loci-backend-ollama.
+// This file is part of loci-model-provider-ollama.
 
-pub mod backend;
+pub mod provider;

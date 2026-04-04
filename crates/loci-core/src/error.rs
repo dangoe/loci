@@ -6,22 +6,22 @@ use std::fmt;
 
 use uuid::Uuid;
 
-use crate::backend::error::BackendError;
+use crate::model_provider::error::ModelProviderError;
 
-/// Errors produced by a [`crate::ContextEnhancer`].
+/// Errors produced by a [`crate::contextualization::Contextualizer`].
 #[derive(Debug)]
 pub enum ContextualizerError {
     /// The memory store returned an error during query.
     MemoryStore(MemoryStoreError),
-    /// The remote model call failed.
-    RemoteModel(BackendError),
+    /// The model provider call failed.
+    ModelProvider(ModelProviderError),
 }
 
 impl fmt::Display for ContextualizerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MemoryStore(e) => write!(f, "memory store error: {e}"),
-            Self::RemoteModel(e) => write!(f, "remote model error: {e}"),
+            Self::ModelProvider(e) => write!(f, "model provider error: {e}"),
         }
     }
 }
@@ -30,12 +30,12 @@ impl std::error::Error for ContextualizerError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::MemoryStore(e) => Some(e),
-            Self::RemoteModel(e) => Some(e),
+            Self::ModelProvider(e) => Some(e),
         }
     }
 }
 
-/// Errors produced by a [`MemoryStore`][crate::MemoryStore] implementation.
+/// Errors produced by a [`MemoryStore`][crate::store::MemoryStore] implementation.
 #[derive(Debug)]
 pub enum MemoryStoreError {
     Connection(String),
@@ -65,22 +65,29 @@ impl std::error::Error for MemoryStoreError {
     }
 }
 
-/// Errors produced by a [`TextEmbedder`][crate::TextEmbedder] implementation.
+/// Errors produced by a [`TextEmbedder`][crate::embedding::TextEmbedder] implementation.
 #[derive(Debug)]
 pub enum EmbeddingError {
-    /// The embedding backend returned a transport or protocol error.
-    TargetModel(BackendError),
-    /// The embedding backend returned a response containing no vectors.
+    /// The model provider returned a transport or protocol error.
+    ModelProvider(ModelProviderError),
+    /// The model provider returned a response containing no vectors.
     EmptyResponse,
 }
 
 impl fmt::Display for EmbeddingError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::TargetModel(msg) => write!(f, "Target model request error: {msg}"),
-            Self::EmptyResponse => write!(f, "embedding backend returned no vectors"),
+            Self::ModelProvider(e) => write!(f, "model provider error: {e}"),
+            Self::EmptyResponse => write!(f, "embedding model provider returned no vectors"),
         }
     }
 }
 
-impl std::error::Error for EmbeddingError {}
+impl std::error::Error for EmbeddingError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::ModelProvider(e) => Some(e),
+            Self::EmptyResponse => None,
+        }
+    }
+}

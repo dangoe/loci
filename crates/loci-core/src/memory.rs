@@ -57,7 +57,7 @@ impl fmt::Display for InvalidScore {
 
 impl std::error::Error for InvalidScore {}
 
-/// A stored memory. Intentionally embedding-free — backends that require
+/// A stored memory. Intentionally embedding-free — model providers that require
 /// vector similarity compute embeddings internally.
 #[derive(Debug, Clone)]
 pub struct Memory {
@@ -86,7 +86,7 @@ pub struct MemoryEntry {
     pub score: Score,
 }
 
-/// Input to [`crate::MemoryStore::query`]. Backends decide how to interpret the topic
+/// Input to [`crate::MemoryStore::query`]. Model providers decide how to interpret the topic
 /// (vector similarity, keyword search, etc.).
 #[derive(Debug, Clone)]
 pub struct MemoryQuery {

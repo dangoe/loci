@@ -18,8 +18,8 @@ use futures::StreamExt as _;
 use log::{LevelFilter, debug, error, info};
 use uuid::Uuid;
 
-use loci_backend_ollama::backend::{OllamaBackend, OllamaConfig};
-use loci_config::{AppConfig, ConfigError, ProviderConfig, ProviderKind, StoreConfig, load_config};
+use loci_model_provider_ollama::provider::{OllamaModelProvider, OllamaConfig};
+use loci_config::{AppConfig, ConfigError, ModelProviderConfig, ModelProviderKind, StoreConfig, load_config};
 use loci_core::contextualization::{Contextualizer, ContextualizerConfig};
 use loci_core::embedding::DefaultTextEmbedder;
 use loci_core::memory::{MemoryInput, MemoryQuery, Score};
@@ -173,7 +173,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             min_score,
         } => {
             let store = Arc::new(build_store(&config).await?);
-            let llm_backend = Arc::new(build_llm_backend(&config)?);
+            let llm_provider = Arc::new(build_llm_provider(&config)?);
             let model_name = {
                 let model_key = &config.routing.default_model;
                 config
@@ -195,7 +195,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 text_generation_model: model_name,
             };
 
-            let contextualizer = Contextualizer::new(store, llm_backend, ctx_config);
+            let contextualizer = Contextualizer::new(store, llm_provider, ctx_config);
             let mut stream = contextualizer.contextualize(&prompt);
             while let Some(result) = stream.next().await {
                 let chunk = result.map_err(|e| e.to_string())?;
@@ -212,7 +212,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 // ---------------------------------------------------------------------------
-// Store / backend construction
+// Store / model provider construction
 // ---------------------------------------------------------------------------
 
 /// Builds a `QdrantMemoryStore<DefaultTextEmbedder>` from the active config.
@@ -234,7 +234,7 @@ async fn build_store(
     match store_cfg {
         StoreConfig::Qdrant { url, .. } => {
             let embed_provider = resolve_embedding_provider(config)?;
-            let embed_backend = build_ollama_backend(embed_provider)?;
+            let embed_provider_instance = build_ollama_provider(embed_provider)?;
             let embed_profile_name = &config.routing.embedding;
             let embed_profile = config.embeddings.get(embed_profile_name).ok_or_else(|| {
                 ConfigError::MissingKey {
@@ -244,7 +244,7 @@ async fn build_store(
             })?;
 
             let embedder = DefaultTextEmbedder::new(
-                Arc::new(embed_backend),
+                Arc::new(embed_provider_instance),
                 &embed_profile.model,
                 embed_profile.dimension,
             );
@@ -267,16 +267,16 @@ async fn build_store(
     }
 }
 
-/// Builds an [`OllamaBackend`] for text generation using the default model's provider.
-fn build_llm_backend(config: &AppConfig) -> Result<OllamaBackend, Box<dyn std::error::Error>> {
+/// Builds an [`OllamaModelProvider`] for text generation using the default model's provider.
+fn build_llm_provider(config: &AppConfig) -> Result<OllamaModelProvider, Box<dyn std::error::Error>> {
     let provider = resolve_llm_provider(config)?;
-    build_ollama_backend(provider)
+    build_ollama_provider(provider)
 }
 
-/// Resolves the [`ProviderConfig`] for the active embedding profile.
+/// Resolves the [`ModelProviderConfig`] for the active embedding profile.
 fn resolve_embedding_provider(
     config: &AppConfig,
-) -> Result<&ProviderConfig, Box<dyn std::error::Error>> {
+) -> Result<&ModelProviderConfig, Box<dyn std::error::Error>> {
     let profile_name = &config.routing.embedding;
     let profile = config
         .embeddings
@@ -293,8 +293,8 @@ fn resolve_embedding_provider(
     })
 }
 
-/// Resolves the [`ProviderConfig`] for the default LLM model.
-fn resolve_llm_provider(config: &AppConfig) -> Result<&ProviderConfig, Box<dyn std::error::Error>> {
+/// Resolves the [`ModelProviderConfig`] for the default LLM model.
+fn resolve_llm_provider(config: &AppConfig) -> Result<&ModelProviderConfig, Box<dyn std::error::Error>> {
     let model_name = &config.routing.default_model;
     let model = config
         .models
@@ -311,25 +311,25 @@ fn resolve_llm_provider(config: &AppConfig) -> Result<&ProviderConfig, Box<dyn s
     })
 }
 
-/// Constructs an [`OllamaBackend`] from a provider config, failing if the
+/// Constructs an [`OllamaModelProvider`] from a provider config, failing if the
 /// provider kind is not `ollama`.
-fn build_ollama_backend(
-    provider: &ProviderConfig,
-) -> Result<OllamaBackend, Box<dyn std::error::Error>> {
+fn build_ollama_provider(
+    provider: &ModelProviderConfig,
+) -> Result<OllamaModelProvider, Box<dyn std::error::Error>> {
     match provider.kind {
-        ProviderKind::Ollama => {
+        ModelProviderKind::Ollama => {
             let cfg = OllamaConfig {
                 base_url: provider.endpoint.clone(),
                 timeout: None,
             };
-            info!("Using Ollama backend at {}", provider.endpoint);
-            Ok(OllamaBackend::new(cfg)?)
+            info!("Using Ollama model provider at {}", provider.endpoint);
+            Ok(OllamaModelProvider::new(cfg)?)
         }
-        ProviderKind::OpenAI => Err(Box::new(ConfigError::UnsupportedKind {
+        ModelProviderKind::OpenAI => Err(Box::new(ConfigError::UnsupportedKind {
             kind: "openai".into(),
             context: "provider".into(),
         })),
-        ProviderKind::Anthropic => Err(Box::new(ConfigError::UnsupportedKind {
+        ModelProviderKind::Anthropic => Err(Box::new(ConfigError::UnsupportedKind {
             kind: "anthropic".into(),
             context: "provider".into(),
         })),

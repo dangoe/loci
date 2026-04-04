@@ -4,8 +4,9 @@
 
 use std::{error::Error, fmt};
 
+/// Errors returned by a model provider (embedding or text generation).
 #[derive(Debug)]
-pub enum BackendError {
+pub enum ModelProviderError {
     Http {
         message: String,
         status: Option<u16>,
@@ -26,7 +27,7 @@ pub enum BackendError {
     },
 }
 
-impl fmt::Display for BackendError {
+impl fmt::Display for ModelProviderError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Http { message, status } => {
@@ -36,14 +37,14 @@ impl fmt::Display for BackendError {
                     write!(f, "HTTP error: {message}")
                 }
             }
-            Self::Transport { message } => write!(f, "Transport error: {message}"),
-            Self::Parse { message } => write!(f, "Parse error: {message}"),
-            Self::Timeout => write!(f, "Request timed out"),
-            Self::RateLimited => write!(f, "Rate limited by backend"),
-            Self::InvalidRequest { message } => write!(f, "Invalid request: {message}"),
+            Self::Transport { message } => write!(f, "transport error: {message}"),
+            Self::Parse { message } => write!(f, "parse error: {message}"),
+            Self::Timeout => write!(f, "request timed out"),
+            Self::RateLimited => write!(f, "rate limited by model provider"),
+            Self::InvalidRequest { message } => write!(f, "invalid request: {message}"),
             Self::Other { message } => write!(f, "{message}"),
         }
     }
 }
 
-impl Error for BackendError {}
+impl Error for ModelProviderError {}

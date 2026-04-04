@@ -11,7 +11,7 @@ path = "src/main.rs"
 loci-core = { path = "../loci-core" }
 loci-config = { path = "../loci-config" }
 loci-memory-store-qdrant = { path = "../loci-memory-store-qdrant" }
-loci-backend-ollama = { path = "../loci-backend-ollama" }
+loci-model-provider-ollama = { path = "../loci-model-provider-ollama" }
 clap = { version = "4", features = ["derive", "env"] }
 dirs.workspace = true
 futures.workspace = true

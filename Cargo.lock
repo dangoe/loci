@@ -1386,19 +1386,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
 
 [[package]]
-name = "loci-backend-ollama"
-version = "0.1.0"
-dependencies = [
- "async-stream",
- "futures",
- "loci-core",
- "log",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "loci-cli"
 version = "0.1.0"
 dependencies = [
@@ -1406,10 +1393,10 @@ dependencies = [
  "dirs",
  "env_logger",
  "futures",
- "loci-backend-ollama",
  "loci-config",
  "loci-core",
  "loci-memory-store-qdrant",
+ "loci-model-provider-ollama",
  "log",
  "serde_json",
  "systemd-journal-logger",
@@ -1455,6 +1442,19 @@ dependencies = [
  "testcontainers",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "loci-model-provider-ollama"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "futures",
+ "loci-core",
+ "log",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -6,8 +6,8 @@ use std::{collections::HashMap, pin::Pin};
 
 use serde::{Deserialize, Serialize};
 
-use crate::backend::{
-    common::{BackendParams, BackendResult},
+use crate::model_provider::{
+    common::{ModelProviderParams, ModelProviderResult},
     text_generation::TokenUsage,
 };
 
@@ -17,16 +17,16 @@ pub struct EmbeddingRequest {
     /// The embedding model identifier.
     pub model: String,
 
-    /// One or more texts to embed in a single call. Backends that only
+    /// One or more texts to embed in a single call. Model providers that only
     /// support a single input per request will issue multiple HTTP calls
     /// transparently and concatenate the results.
     pub input: Vec<String>,
 
-    /// Optional output dimension hint forwarded to the backend when supported.
+    /// Optional output dimension hint forwarded to the model provider when supported.
     pub embedding_dimension: Option<usize>,
 
-    /// Pass-through map for backend-specific options.
-    pub extra_params: BackendParams,
+    /// Pass-through map for model-provider-specific options.
+    pub extra_params: ModelProviderParams,
 }
 
 impl EmbeddingRequest {
@@ -56,7 +56,7 @@ impl EmbeddingRequest {
         self
     }
 
-    /// Adds a backend-specific extra parameter.
+    /// Adds a model-provider-specific extra parameter.
     pub fn with_extra(mut self, key: impl Into<String>, value: serde_json::Value) -> Self {
         self.extra_params.insert(key.into(), value);
         self
@@ -66,19 +66,24 @@ impl EmbeddingRequest {
 /// One embedding vector per input text.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbeddingResponse {
-    /// Parallel to `EmbedRequest::input` — one vector per input string.
+    /// Parallel to `EmbeddingRequest::input` — one vector per input string.
     pub embeddings: Vec<Vec<f32>>,
 
-    /// Embedding model name echoed back by the backend.
+    /// Embedding model name echoed back by the model provider.
     pub model: String,
 
     /// Token usage if reported.
     pub usage: Option<TokenUsage>,
 }
 
-pub trait EmbeddingBackend: Send + Sync {
+/// Low-level interface to a model provider capable of producing embedding vectors.
+///
+/// Implementations communicate with a specific inference service (e.g. Ollama,
+/// OpenAI) and translate [`EmbeddingRequest`] into the provider's wire format.
+/// Higher-level code should use [`crate::embedding::TextEmbedder`] instead.
+pub trait EmbeddingModelProvider: Send + Sync {
     fn embed(
         &self,
         req: EmbeddingRequest,
-    ) -> Pin<Box<dyn Future<Output = BackendResult<EmbeddingResponse>> + Send + '_>>;
+    ) -> Pin<Box<dyn Future<Output = ModelProviderResult<EmbeddingResponse>> + Send + '_>>;
 }

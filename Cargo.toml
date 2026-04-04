@@ -1,7 +1,7 @@
 [workspace]
 members = [
     "crates/loci-core",
-    "crates/loci-backend-ollama",
+    "crates/loci-model-provider-ollama",
     "crates/loci-memory-store-qdrant",
     "crates/loci-config",
     "crates/loci-cli",

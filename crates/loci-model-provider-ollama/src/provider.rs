@@ -1,14 +1,14 @@
 // Copyright (c) 2026 Daniel Götten
 // SPDX-License-Identifier: MIT
-// This file is part of loci-backend-ollama.
+// This file is part of loci-model-provider-ollama.
 
 use futures::StreamExt as _;
-use loci_core::backend::{
-    common::BackendResult,
-    embedding::{EmbeddingBackend, EmbeddingRequest, EmbeddingResponse},
-    error::BackendError,
+use loci_core::model_provider::{
+    common::ModelProviderResult,
+    embedding::{EmbeddingModelProvider, EmbeddingRequest, EmbeddingResponse},
+    error::ModelProviderError,
     text_generation::{
-        TextGenerationBackend, TextGenerationRequest, TextGenerationResponse, TokenUsage,
+        TextGenerationModelProvider, TextGenerationRequest, TextGenerationResponse, TokenUsage,
     },
 };
 use log::{debug, error};
@@ -18,7 +18,7 @@ use serde_json::Value;
 
 use std::{future::Future, pin::Pin, time::Duration};
 
-/// Configuration for the Ollama backend.
+/// Configuration for the Ollama model provider.
 #[derive(Debug, Clone)]
 pub struct OllamaConfig {
     /// Base URL of the Ollama instance.  Defaults to `http://localhost:11434`.
@@ -95,33 +95,32 @@ struct OllamaEmbeddingResponse {
     embeddings: Vec<Vec<f32>>,
 }
 
-/// A backend implementation for the Ollama API.
+/// An Ollama model provider implementing both text generation and embedding.
 #[derive(Debug, Clone)]
-pub struct OllamaBackend {
+pub struct OllamaModelProvider {
     config: OllamaConfig,
     client: Client,
 }
 
-/// Constructs a new `OllamaBackend` instance.
-impl OllamaBackend {
-    pub fn new(config: OllamaConfig) -> Result<Self, BackendError> {
+impl OllamaModelProvider {
+    /// Creates a new `OllamaModelProvider` instance.
+    pub fn new(config: OllamaConfig) -> Result<Self, ModelProviderError> {
         let mut builder = Client::builder();
         if let Some(timeout) = config.timeout {
             builder = builder.timeout(timeout);
         }
-        let client = builder.build().map_err(|e| BackendError::Other {
+        let client = builder.build().map_err(|e| ModelProviderError::Other {
             message: format!("Failed to build HTTP client: {e}"),
         })?;
         Ok(Self { config, client })
     }
 }
 
-/// Implements the `TextGenerationBackend` trait for `OllamaBackend`.
-impl TextGenerationBackend for OllamaBackend {
+impl TextGenerationModelProvider for OllamaModelProvider {
     fn generate(
         &self,
         req: TextGenerationRequest,
-    ) -> Pin<Box<dyn Future<Output = BackendResult<TextGenerationResponse>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = ModelProviderResult<TextGenerationResponse>> + Send + '_>> {
         Box::pin(async move {
             let body = OllamaTextGenerationRequest {
                 model: &req.model,
@@ -140,7 +139,7 @@ impl TextGenerationBackend for OllamaBackend {
                 .json(&body)
                 .send()
                 .await
-                .map_err(|e| BackendError::Transport {
+                .map_err(|e| ModelProviderError::Transport {
                     message: e.to_string(),
                 })?;
 
@@ -154,7 +153,7 @@ impl TextGenerationBackend for OllamaBackend {
             }
 
             let parse_response: OllamaTextGenerationResponse =
-                parsed.map_err(|e| BackendError::Parse {
+                parsed.map_err(|e| ModelProviderError::Parse {
                     message: e.to_string(),
                 })?;
 
@@ -185,7 +184,7 @@ impl TextGenerationBackend for OllamaBackend {
         req: TextGenerationRequest,
     ) -> Pin<
         Box<
-            dyn futures::Stream<Item = BackendResult<TextGenerationResponse>> + Send + '_,
+            dyn futures::Stream<Item = ModelProviderResult<TextGenerationResponse>> + Send + '_,
         >,
     > {
         Box::pin(async_stream::try_stream! {
@@ -206,13 +205,13 @@ impl TextGenerationBackend for OllamaBackend {
                 .json(&body)
                 .send()
                 .await
-                .map_err(|e| BackendError::Transport { message: e.to_string() })?;
+                .map_err(|e| ModelProviderError::Transport { message: e.to_string() })?;
 
             let mut byte_stream = http_response.bytes_stream();
             let mut buffer = String::new();
 
             while let Some(chunk) = byte_stream.next().await {
-                let bytes = chunk.map_err(|e| BackendError::Transport { message: e.to_string() })?;
+                let bytes = chunk.map_err(|e| ModelProviderError::Transport { message: e.to_string() })?;
                 buffer.push_str(&String::from_utf8_lossy(&bytes));
 
                 while let Some(newline_pos) = buffer.find('\n') {
@@ -224,7 +223,7 @@ impl TextGenerationBackend for OllamaBackend {
                     }
 
                     let chunk: OllamaStreamChunk = serde_json::from_str(&line)
-                        .map_err(|e| BackendError::Parse { message: e.to_string() })?;
+                        .map_err(|e| ModelProviderError::Parse { message: e.to_string() })?;
 
                     let is_done = chunk.done;
                     let usage = if is_done {
@@ -259,12 +258,11 @@ impl TextGenerationBackend for OllamaBackend {
     }
 }
 
-/// Implements the `EmbeddingBackend` trait for `OllamaBackend`.
-impl EmbeddingBackend for OllamaBackend {
+impl EmbeddingModelProvider for OllamaModelProvider {
     fn embed(
         &self,
         req: EmbeddingRequest,
-    ) -> Pin<Box<dyn Future<Output = BackendResult<EmbeddingResponse>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = ModelProviderResult<EmbeddingResponse>> + Send + '_>> {
         Box::pin(async move {
             let body = OllamaEmbeddingRequest {
                 model: &req.model,
@@ -280,7 +278,7 @@ impl EmbeddingBackend for OllamaBackend {
                 .json(&body)
                 .send()
                 .await
-                .map_err(|e| BackendError::Transport {
+                .map_err(|e| ModelProviderError::Transport {
                     message: format!("Failed to send request: {e}"),
                 })?;
 
@@ -288,7 +286,7 @@ impl EmbeddingBackend for OllamaBackend {
                 http_response
                     .json()
                     .await
-                    .map_err(|e| BackendError::Parse {
+                    .map_err(|e| ModelProviderError::Parse {
                         message: format!("Failed to parse response: {e}"),
                     })?;
 

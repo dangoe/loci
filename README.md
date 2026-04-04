@@ -15,32 +15,23 @@ layer between any client — a user, a script, an agent — and a target LLM.
 
 Instead of every conversation starting from a blank slate, loci:
 
-1. **Associates each conversation with a session** identified by a session ID, looked up
-   from a pluggable session store.
-2. **Retrieves relevant memories** from a semantic vector store and injects them into the
+1. **Retrieves relevant memories** from a semantic vector store and injects them into the
    prompt as context before forwarding to the LLM.
-3. **Extracts new memories asynchronously** from each prompt/response pair so the system
-   continuously learns from interactions.
-4. **Applies eviction strategies** to keep the memory store focused and within bounds.
+2. **Streams model output** back to the caller via the `Contextualizer`.
 
-The proxy itself is stateless — all session and memory state lives in external stores,
-making it easy to scale horizontally or swap backends.
+The system is stateless in process — all memory state lives in Qdrant.
 
 ```
 Client / REPL
-     │  prompt + session_id
+     │  prompt
      ▼
 ┌──────────────────────────────────────┐
-│           loci Proxy                 │
-│  1. load session from SessionStore   │
-│  2. query MemoryStore (semantic)     │
-│  3. inject [MEMORY CONTEXT] block    │
-│  4. forward enriched prompt ───────► │  Target LLM
-│  ◄────────────────────────────────── │  (Ollama / any backend)
-│  5. stream / return response         │
-│  6. extract memories  (async)        │
-│  7. apply eviction strategies        │
-│  8. persist updated session          │
+│           loci Contextualizer        │
+│  1. query MemoryStore (semantic)     │
+│  2. inject [MEMORY CONTEXT] block    │
+│  3. forward enriched prompt ───────► │  Target LLM
+│  ◄────────────────────────────────── │  (Ollama / any model provider)
+│  4. stream response                  │
 └──────────────────────────────────────┘
      │  response
      ▼
@@ -59,7 +50,8 @@ The following is fully implemented and working today.
 |---|---|---|
 | `loci-core` | `crates/loci-core` | Traits, domain types, `Contextualizer` |
 | `loci-memory-store-qdrant` | `crates/loci-memory-store-qdrant` | Qdrant-backed `MemoryStore` with deduplication |
-| `loci-backend-ollama` | `crates/loci-backend-ollama` | Ollama embedding + text generation backend |
+| `loci-model-provider-ollama` | `crates/loci-model-provider-ollama` | Ollama embedding + text generation model provider |
+| `loci-config` | `crates/loci-config` | TOML config loading and secret resolution |
 | `loci-cli` | `crates/loci-cli` | `loci` CLI binary for CRUD + prompt enhancement |
 
 ### Core Abstractions (`loci-core`)
@@ -68,31 +60,31 @@ The following is fully implemented and working today.
 |---|---|
 | `MemoryStore` | Save, query, update, delete, clear memories |
 | `TextEmbedder` | Embed text into a vector |
-| `EmbeddingBackend` | Raw embedding backend (HTTP, model name) |
-| `TextGenerationBackend` | Raw text generation backend |
+| `EmbeddingModelProvider` | Raw embedding model provider (HTTP, model name) |
+| `TextGenerationModelProvider` | Raw text generation model provider |
 
 Key domain types: `Memory`, `MemoryEntry`, `MemoryInput`, `MemoryQuery`, `Score`, `Embedding`.
 
-The `Contextualizer` retrieves relevant memories and prepends a `[MEMORY CONTEXT]` block to
-the user's prompt before calling the LLM.
+The `Contextualizer` retrieves relevant memories and prepends a system prompt block to the
+user's prompt before calling the LLM.
 
-### Storage (`loci-storage-qdrant`)
+### Storage (`loci-memory-store-qdrant`)
 
 `QdrantMemoryStore` uses [Qdrant](https://qdrant.tech/) for cosine-similarity vector search.
 
 Features:
-- Configurable deduplication (similarity threshold — reuses existing memory ID instead of
+- Configurable deduplication (similarity threshold — reuses existing memory instead of
   creating a duplicate)
 - Metadata filtering (AND semantics, exact match)
-- Min/max score thresholds and max result limits
+- Min score threshold and max result limits
 
-### Backends (`loci-backend-ollama`)
+### Model Providers (`loci-model-provider-ollama`)
 
-`OllamaBackend` implements both `EmbeddingBackend` and `TextGenerationBackend` against a
-local [Ollama](https://ollama.com/) instance.
+`OllamaBackend` implements both `EmbeddingModelProvider` and `TextGenerationModelProvider`
+against a local [Ollama](https://ollama.com/) instance.
 
-Default models used by the CLI:
-- Embedding: `nomic-embed-text` (768 dimensions)
+Default models in the generated config:
+- Embedding: `qwen3-embedding:0.6b` (768 dimensions)
 - Text generation: `qwen3:0.6b`
 
 ---
@@ -111,15 +103,27 @@ docker compose up -d
 ```
 
 This starts:
-- **Qdrant** on `http://localhost:6334` (gRPC) / `http://localhost:6333` (HTTP)
+- **Qdrant** on `http://localhost:6333` (HTTP) / `http://localhost:6334` (gRPC)
 - **Ollama** on `http://localhost:11434`
 
 Pull the required Ollama models once:
 
 ```bash
-ollama pull nomic-embed-text
+ollama pull qwen3-embedding:0.6b
 ollama pull qwen3:0.6b
 ```
+
+### Configure
+
+Generate a default config file:
+
+```bash
+cargo run --bin loci -- config init
+# Written to: ~/.config/loci/config.toml
+```
+
+Edit the file to point to your preferred models. The generated file contains comments
+explaining every option.
 
 ### Build
 
@@ -142,18 +146,16 @@ cargo run --bin loci -- <subcommand>
 
 | Flag | Env var | Default | Description |
 |---|---|---|---|
-| `--qdrant-url` | `QDRANT_URL` | `http://localhost:6334` | Qdrant gRPC endpoint |
-| `--ollama-url` | `OLLAMA_URL` | `http://localhost:11434` | Ollama base URL |
-| `--collection` | `COLLECTION_NAME` | `memories` | Qdrant collection name |
-| `--similarity-threshold` | `SIMILARITY_THRESHOLD` | _(none)_ | Deduplication threshold [0.0, 1.0] |
+| `--config` / `-c` | `LOCI_CONFIG` | `~/.config/loci/config.toml` | Path to TOML config file |
+| `--verbose` / `-v` | — | off | Enable debug logging |
 
-### `loci save`
+### `loci memory save`
 
 Store a new memory.
 
 ```bash
-loci save --content "The project uses Qdrant for vector storage"
-loci save --content "Deployment target is Kubernetes" --meta env=production --meta team=platform
+loci memory save --content "The project uses Qdrant for vector storage"
+loci memory save --content "Deployment target is Kubernetes" --meta env=production --meta team=platform
 ```
 
 | Flag | Description |
@@ -161,13 +163,13 @@ loci save --content "Deployment target is Kubernetes" --meta env=production --me
 | `--content <text>` | Memory text (required) |
 | `--meta KEY=VALUE` | Metadata key-value pair (repeatable) |
 
-### `loci query`
+### `loci memory query`
 
 Retrieve semantically similar memories.
 
 ```bash
-loci query --topic "vector database"
-loci query --topic "deployment" --max-results 3 --min-score 0.7 --filter env=production
+loci memory query --topic "vector database"
+loci memory query --topic "deployment" --max-results 3 --min-score 0.7 --filter env=production
 ```
 
 | Flag | Default | Description |
@@ -177,28 +179,28 @@ loci query --topic "deployment" --max-results 3 --min-score 0.7 --filter env=pro
 | `--min-score <f64>` | `0.0` | Minimum similarity score [0.0, 1.0] |
 | `--filter KEY=VALUE` | _(none)_ | Metadata filter (repeatable, AND semantics) |
 
-### `loci update`
+### `loci memory update`
 
 Update the content or metadata of an existing memory by UUID.
 
 ```bash
-loci update --id <uuid> --content "Updated content" --meta key=value
+loci memory update --id <uuid> --content "Updated content" --meta key=value
 ```
 
-### `loci delete`
+### `loci memory delete`
 
 Remove a memory by UUID.
 
 ```bash
-loci delete --id <uuid>
+loci memory delete --id <uuid>
 ```
 
-### `loci clear`
+### `loci memory clear`
 
 Remove **all** memories from the collection.
 
 ```bash
-loci clear
+loci memory clear
 ```
 
 ### `loci prompt`
@@ -207,15 +209,23 @@ Enhance a prompt with relevant memories and send it to the LLM.
 
 ```bash
 loci prompt "What storage backend do we use?"
-loci prompt "Summarise our deployment setup" --llm-model llama3.2 --max-memories 8
+loci prompt "Summarise our deployment setup" --max-memories 8 --min-score 0.5
 ```
 
-| Flag | Env var | Default | Description |
-|---|---|---|---|
-| `<prompt>` | — | _(required)_ | Prompt text (positional) |
-| `--llm-model <name>` | `LLM_MODEL` | `qwen3:0.6b` | Ollama model for generation |
-| `--max-memories <n>` | — | `5` | Max memories to inject as context |
-| `--min-score <f64>` | — | `0.0` | Minimum similarity score for context memories |
+| Flag | Default | Description |
+|---|---|---|
+| `<prompt>` | _(required)_ | Prompt text (positional) |
+| `--max-memories <n>` | `5` | Max memories to inject as context |
+| `--min-score <f64>` | `0.5` | Minimum similarity score for context memories |
+
+### `loci config init`
+
+Scaffold a default configuration file at the config path.
+
+```bash
+loci config init
+loci --config /path/to/config.toml config init
+```
 
 ---
 

@@ -8,39 +8,10 @@ use std::sync::Arc;
 
 use futures::Stream;
 
-use crate::backend::text_generation::{self, TextGenerationRequest, TextGenerationResponse};
+use crate::model_provider::text_generation::{self, TextGenerationRequest, TextGenerationResponse};
 use crate::error::ContextualizerError;
 use crate::memory::{MemoryEntry, MemoryQuery, Score};
 use crate::store::MemoryStore;
-
-/// A prompt provided by the user together with contextual memory entries.
-///
-/// This is an internal transport DTO used to carry both the original user
-/// prompt and any retrieved memories. The fields are intentionally private:
-/// this type is intended for internal use by the `Contextualizer`. Callers
-/// should interact with the `Contextualizer` API and not construct or inspect
-/// this type directly.
-#[derive(Debug, Clone)]
-struct ContextualizedPrompt {
-    user_prompt: String,
-    memory_entries: Vec<MemoryEntry>,
-}
-
-impl ContextualizedPrompt {
-    /// Construct a new `ContextualizedPrompt`.
-    ///
-    /// Accepts any type that can be converted into `String` and any iterator
-    /// of `MemoryEntry` for ergonomics.
-    pub fn new(
-        user_prompt: impl Into<String>,
-        memory_entries: impl IntoIterator<Item = MemoryEntry>,
-    ) -> Self {
-        Self {
-            user_prompt: user_prompt.into(),
-            memory_entries: memory_entries.into_iter().collect(),
-        }
-    }
-}
 
 /// Configuration for a [`Contextualizer`].
 ///
@@ -51,9 +22,8 @@ impl ContextualizedPrompt {
 pub struct ContextualizerConfig {
     /// The model to use for text generation.
     ///
-    /// Note: the default value is an empty string. Callers should set a
-    /// concrete model identifier via `with_config` or provide a fully
-    /// initialized `ContextualizerConfig` when constructing a `Contextualizer`.
+    /// Note: the default value is an empty string. Callers should provide a
+    /// fully initialized `ContextualizerConfig` when constructing a `Contextualizer`.
     pub text_generation_model: String,
     /// Maximum number of memories to retrieve and inject into the prompt.
     pub max_memories: usize,
@@ -69,37 +39,36 @@ pub struct ContextualizerConfig {
 /// 1. Queries the memory store for entries relevant to the prompt.
 /// 2. Constructs a system prompt that summarizes retrieved memories (the
 ///    preferred mechanism to condition many LLMs).
-/// 3. Calls the configured text-generation backend with the enriched request.
+/// 3. Calls the configured text-generation model provider with the enriched request.
 /// 4. Streams model output back to the caller.
 ///
 /// The `Contextualizer` is generic over a `MemoryStore` implementation and a
-/// text generation backend. It keeps `Arc` references to each dependency so
+/// text generation model provider. It keeps `Arc` references to each dependency so
 /// instances can be cheaply cloned or shared across threads.
-pub struct Contextualizer<M: MemoryStore, E: text_generation::TextGenerationBackend> {
+pub struct Contextualizer<M: MemoryStore, E: text_generation::TextGenerationModelProvider> {
     memory_store: Arc<M>,
-    text_generation_backend: Arc<E>,
+    text_generation_provider: Arc<E>,
     config: ContextualizerConfig,
 }
 
 impl<M, E> Contextualizer<M, E>
 where
     M: MemoryStore + 'static,
-    E: text_generation::TextGenerationBackend + 'static,
+    E: text_generation::TextGenerationModelProvider + 'static,
 {
     /// Creates a new `Contextualizer` with the provided configuration.
     ///
-    /// The `memory_store` and `text_generation_backend` are stored by `Arc`
+    /// The `memory_store` and `text_generation_provider` are stored by `Arc`
     /// for cheap cloning and concurrent use. Supply a properly initialized
-    /// `ContextualizerConfig` (see `ContextualizerConfig::default`) or call
-    /// `with_config` to change configuration after construction.
+    /// `ContextualizerConfig`.
     pub fn new(
         memory_store: Arc<M>,
-        text_generation_backend: Arc<E>,
+        text_generation_provider: Arc<E>,
         config: ContextualizerConfig,
     ) -> Self {
         Self {
             memory_store,
-            text_generation_backend,
+            text_generation_provider,
             config,
         }
     }
@@ -107,8 +76,8 @@ where
     /// Contextualize a user prompt and stream model responses.
     ///
     /// The returned stream yields `TextGenerationResponse` items produced by the
-    /// configured text-generation backend. If memory retrieval or the remote
-    /// model call fails the stream will yield `Err(ContextualizerError)`.
+    /// configured text-generation model provider. If memory retrieval or the model
+    /// provider call fails the stream will yield `Err(ContextualizerError)`.
     ///
     /// The `prompt` is the user-provided input; relevant memories are retrieved
     /// from the `MemoryStore` and attached to the request as a system prompt.
@@ -122,19 +91,17 @@ where
 
             log::debug!("retrieved {} relevant memories", memory_entries.len());
 
-            let contextualized_prompt = ContextualizedPrompt::new(prompt, memory_entries);
-
-            let system_prompt = self.build_system_prompt(contextualized_prompt.memory_entries);
+            let system_prompt = self.build_system_prompt(memory_entries);
 
             let req = TextGenerationRequest::new(
                 self.config.text_generation_model.to_string(),
-                contextualized_prompt.user_prompt,
+                prompt,
             ).with_system(system_prompt);
 
             use futures::StreamExt as _;
-            let mut stream = self.text_generation_backend.generate_stream(req);
+            let mut stream = self.text_generation_provider.generate_stream(req);
             while let Some(result) = stream.next().await {
-                let chunk = result.map_err(ContextualizerError::RemoteModel)?;
+                let chunk = result.map_err(ContextualizerError::ModelProvider)?;
                 yield chunk;
             }
         })
@@ -183,9 +150,9 @@ mod tests {
     use uuid::Uuid;
 
     use crate::{
-        backend::{
-            common::BackendResult,
-            text_generation::{TextGenerationBackend, TextGenerationResponse},
+        model_provider::{
+            common::ModelProviderResult,
+            text_generation::{TextGenerationModelProvider, TextGenerationResponse},
         },
         error::MemoryStoreError,
         memory::{Memory, MemoryInput, MemoryQuery, Score},
@@ -239,15 +206,15 @@ mod tests {
         }
     }
 
-    struct MockTextGenerationBackend {
+    struct MockTextGenerationProvider {
         reply: String,
     }
 
-    impl TextGenerationBackend for MockTextGenerationBackend {
+    impl TextGenerationModelProvider for MockTextGenerationProvider {
         fn generate(
             &self,
             req: TextGenerationRequest,
-        ) -> Pin<Box<dyn Future<Output = BackendResult<TextGenerationResponse>> + Send + '_>>
+        ) -> Pin<Box<dyn Future<Output = ModelProviderResult<TextGenerationResponse>> + Send + '_>>
         {
             let reply = self.reply.clone();
             Box::pin(async move { Ok(TextGenerationResponse::done(reply, req.model, None)) })
