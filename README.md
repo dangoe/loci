@@ -94,7 +94,8 @@ Default models in the generated config:
 ### Prerequisites
 
 - [Rust](https://rustup.rs/) (2024 edition)
-- [Docker](https://www.docker.com/) (for Qdrant and Ollama)
+- [Docker](https://www.docker.com/) (for Qdrant)
+- [Ollama](https://ollama.com/) — install and run natively (see "Ollama (native)" below)
 
 ### Start infrastructure
 
@@ -104,9 +105,12 @@ docker compose up -d
 
 This starts:
 - **Qdrant** on `http://localhost:6333` (HTTP) / `http://localhost:6334` (gRPC)
-- **Ollama** on `http://localhost:11434`
 
-Pull the required Ollama models once:
+Note: Ollama is not started by the Docker compose setup in this repository. Due to GPU usage constraints Ollama must be installed and run natively on your machine (see "Ollama (native)" below).
+
+### Ollama (native)
+
+Ollama must be installed and started natively (it is not started by `docker compose` in this repository due to GPU usage constraints). Install instructions and platform-specific details are available at https://ollama.com/. Once Ollama is running (the default HTTP API is `http://localhost:11434`), pull the required models:
 
 ```bash
 ollama pull qwen3-embedding:0.6b
