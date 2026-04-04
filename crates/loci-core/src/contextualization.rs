@@ -13,6 +13,15 @@ use crate::memory::{MemoryEntry, MemoryQuery, Score};
 use crate::model_provider::text_generation::{self, TextGenerationRequest, TextGenerationResponse};
 use crate::store::MemoryStore;
 
+const SYSTEM_PROMPT_BASE_TEMPLATE: &str = "You are a helpful assistant with a long-term memory of past conversations.
+Rules:
+- Speak naturally. Never mention retrieval, context, memory stores, or system internals.
+- When drawing on a memory, phrase it as personal recall: \"I remember...\", \"You mentioned once...\", etc.
+- Only use memories that are clearly relevant to the current question. Ignore the rest silently.
+- If no memory applies, answer from general knowledge without commenting on the absence of memory.
+- Never fabricate or embellish. If you are uncertain, say so. Only speculate if the user explicitly asks you to.
+- Be concise. Avoid unnecessary preamble.";
+
 /// Configuration for a [`Contextualizer`].
 ///
 /// This configuration controls how many memories are retrieved and how the
@@ -96,7 +105,11 @@ where
             let req = TextGenerationRequest::new(
                 self.config.text_generation_model.to_string(),
                 prompt,
-            ).with_system(system_prompt);
+            )
+            .with_system(system_prompt)
+            .with_temperature(0.2)
+            .with_repeat_penalty(1.5)
+            .with_thinking(text_generation::ThinkingMode::Disabled);
 
             use futures::StreamExt as _;
             let mut stream = self.text_generation_provider.generate_stream(req);
@@ -109,19 +122,23 @@ where
 
     fn build_system_prompt(&self, memory_entries: Vec<MemoryEntry>) -> String {
         let mut buf = String::new();
-        buf.push_str("You are a helpful, personable assistant with a private long-term memory.\n");
-        buf.push_str("When you use the items below, present them as things you remember (e.g. \"I remember that...\").\n");
-        buf.push_str("Do NOT mention retrieval, the memory store, the word \"context\", or any system internals. Do not say \"this was provided\" or \"retrieved memories\".\n");
-        buf.push_str("Be honest: do not fabricate. If none of the memories apply, state that you have no relevant memory and proceed from general knowledge.\n");
-        buf.push_str("Memories:\n");
+        buf.push_str(
+            SYSTEM_PROMPT_BASE_TEMPLATE
+                .replace('\n', "\n- ")
+                .replace("- ", "- ")
+                .as_str(),
+        );
+        buf.push_str("\n");
+        buf.push_str("## Relevant memories\n");
 
-        if !memory_entries.is_empty() {
+        if memory_entries.is_empty() {
+            buf.push_str("None. Answer from general knowledge.\n");
+        } else {
             for entry in memory_entries {
                 buf.push_str(&format!("- {}\n", entry.memory.content));
             }
-        } else {
-            buf.push_str("<no memory entries>\n");
         }
+
         buf
     }
 
@@ -164,8 +181,6 @@ mod tests {
     };
 
     use super::*;
-
-    // ── Mock store — returns a fixed list of entries ──────────────────────────
 
     struct MockStore {
         entries: Vec<MemoryEntry>,
@@ -211,8 +226,6 @@ mod tests {
         }
     }
 
-    // ── Mock store — always fails on query ───────────────────────────────────
-
     struct FailingStore;
 
     impl MemoryStore for FailingStore {
@@ -250,8 +263,6 @@ mod tests {
         }
     }
 
-    // ── Mock text-generation provider — returns a fixed reply ─────────────────
-
     struct MockTextGenerationProvider {
         reply: String,
     }
@@ -267,8 +278,6 @@ mod tests {
         }
     }
 
-    // ── Mock text-generation provider — always fails ──────────────────────────
-
     struct FailingTextGenerationProvider;
 
     impl TextGenerationModelProvider for FailingTextGenerationProvider {
@@ -280,8 +289,6 @@ mod tests {
             Box::pin(async move { Err(ModelProviderError::Timeout) })
         }
     }
-
-    // ── Helpers ───────────────────────────────────────────────────────────────
 
     fn default_config() -> ContextualizerConfig {
         ContextualizerConfig {
@@ -312,8 +319,6 @@ mod tests {
         }
     }
 
-    // ── Tests: build_system_prompt ────────────────────────────────────────────
-
     #[test]
     fn test_build_system_prompt_includes_each_memory_content() {
         let ctx = make_contextualizer(vec![], "reply");
@@ -332,8 +337,6 @@ mod tests {
             "expected placeholder, got: {prompt}",
         );
     }
-
-    // ── Tests: contextualize ──────────────────────────────────────────────────
 
     #[tokio::test]
     async fn test_contextualize_returns_model_response_text() {

@@ -8,7 +8,8 @@ use loci_core::model_provider::{
     embedding::{EmbeddingModelProvider, EmbeddingRequest, EmbeddingResponse},
     error::ModelProviderError,
     text_generation::{
-        TextGenerationModelProvider, TextGenerationRequest, TextGenerationResponse, TokenUsage,
+        TextGenerationModelProvider, TextGenerationRequest, TextGenerationResponse,
+        ThinkingEffortLevel, ThinkingMode, TokenUsage,
     },
 };
 use log::{debug, error};
@@ -43,6 +44,8 @@ struct OllamaTextGenerationRequest<'a> {
     model: &'a str,
     prompt: &'a str,
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    think: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     system: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -114,6 +117,87 @@ impl OllamaModelProvider {
         })?;
         Ok(Self { config, client })
     }
+
+    /// Build an Ollama text generation request from a generic request.
+    ///
+    /// - Merges `extra_params` into `options`, with typed fields overriding extras.
+    /// - Maps `thinking` into the top-level `think` field:
+    ///   - `Enabled` -> `true`
+    ///   - `Disabled` -> `false`
+    ///   - `Preset { preset_name }` -> string preset name
+    ///   - `Budgeted { .. }` -> fallback to `true` (enabled) per instructions
+    /// - Formats `keep_alive` as a duration string like "5m" or "30s".
+    fn build_text_request<'a>(
+        &self,
+        req: &'a TextGenerationRequest,
+        stream: bool,
+    ) -> OllamaTextGenerationRequest<'a> {
+        // Start with extras
+        let mut opts_map = serde_json::Map::new();
+        for (k, v) in req.extra_params.iter() {
+            opts_map.insert(k.clone(), v.clone());
+        }
+
+        // Typed fields override extra_params
+        if let Some(t) = req.temperature {
+            opts_map.insert("temperature".to_string(), Value::from(t));
+        }
+        if let Some(p) = req.top_p {
+            opts_map.insert("top_p".to_string(), Value::from(p));
+        }
+        if let Some(max) = req.max_tokens {
+            opts_map.insert("max_tokens".to_string(), Value::from(max));
+        }
+        if let Some(stops) = &req.stop {
+            let arr: Vec<Value> = stops.iter().map(|s| Value::from(s.clone())).collect();
+            opts_map.insert("stop".to_string(), Value::from(arr));
+        }
+        if let Some(rp) = req.repeat_penalty {
+            opts_map.insert("repeat_penalty".to_string(), Value::from(rp));
+        }
+        if let Some(rl) = req.repeat_last_n {
+            opts_map.insert("repeat_last_n".to_string(), Value::from(rl));
+        }
+
+        let options = if opts_map.is_empty() {
+            None
+        } else {
+            Some(Value::Object(opts_map))
+        };
+
+        // Map thinking mode to top-level `think` parameter. Budgeted falls back to enabled.
+        let think = match &req.thinking {
+            Some(ThinkingMode::Enabled) => Some(Value::Bool(true)),
+            Some(ThinkingMode::Disabled) => Some(Value::Bool(false)),
+            Some(ThinkingMode::Effort { level }) => Some(match level {
+                ThinkingEffortLevel::Low => Value::String("low".to_string()),
+                ThinkingEffortLevel::Medium => Value::String("medium".to_string()),
+                ThinkingEffortLevel::High => Value::String("high".to_string()),
+            }),
+            Some(ThinkingMode::Budgeted { .. }) => Some(Value::Bool(true)), // fall back to Enabled
+            None => None,
+        };
+
+        // Format keep_alive as "Xm" if whole minutes, otherwise "Ns"
+        let keep_alive = req.keep_alive.map(|d| {
+            let secs = d.as_secs();
+            if secs != 0 && secs % 60 == 0 {
+                format!("{}m", secs / 60)
+            } else {
+                format!("{}s", secs)
+            }
+        });
+
+        OllamaTextGenerationRequest {
+            model: &req.model,
+            prompt: &req.prompt,
+            stream,
+            think,
+            system: req.system.as_deref(),
+            options,
+            keep_alive,
+        }
+    }
 }
 
 impl TextGenerationModelProvider for OllamaModelProvider {
@@ -123,14 +207,7 @@ impl TextGenerationModelProvider for OllamaModelProvider {
     ) -> Pin<Box<dyn Future<Output = ModelProviderResult<TextGenerationResponse>> + Send + '_>>
     {
         Box::pin(async move {
-            let body = OllamaTextGenerationRequest {
-                model: &req.model,
-                prompt: &req.prompt,
-                stream: false,
-                system: req.system.as_deref(),
-                options: None,
-                keep_alive: None,
-            };
+            let body = self.build_text_request(&req, false);
 
             debug!("Sending request to Ollama: {:?}", body);
 
@@ -186,14 +263,7 @@ impl TextGenerationModelProvider for OllamaModelProvider {
     ) -> Pin<Box<dyn futures::Stream<Item = ModelProviderResult<TextGenerationResponse>> + Send + '_>>
     {
         Box::pin(async_stream::try_stream! {
-            let body = OllamaTextGenerationRequest {
-                model: &req.model,
-                prompt: &req.prompt,
-                stream: true,
-                system: req.system.as_deref(),
-                options: None,
-                keep_alive: None,
-            };
+            let body = self.build_text_request(&req, true);
 
             debug!("Sending streaming request to Ollama: {:?}", body);
 

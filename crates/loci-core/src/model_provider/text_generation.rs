@@ -36,16 +36,58 @@ pub struct TextGenerationRequest {
     /// Nucleus sampling probability cutoff.  `None` uses model provider default.
     pub top_p: Option<f32>,
 
+    /// Penalises tokens that have already appeared in the generated text, reducing
+    /// repetition.  Maps to `repeat_penalty` (Ollama/llama.cpp),
+    /// `frequency_penalty` (OpenAI/Cohere), etc.
+    /// Typical range: `[1.0, 1.5]` for Ollama; `[0.0, 2.0]` for OpenAI.
+    /// `None` uses model provider default.
+    pub repeat_penalty: Option<f32>,
+
+    /// Number of most-recent tokens to consider when applying `repeat_penalty`.
+    /// Primarily meaningful for Ollama/llama.cpp; other providers ignore it
+    /// gracefully.
+    /// `None` uses model provider default.
+    pub repeat_last_n: Option<u32>,
+
+    /// Controls chain-of-thought / reasoning mode for models that support it
+    /// (e.g. Qwen3, DeepSeek-R1, Claude claude-sonnet-4-20250514+, OpenAI o-series).
+    /// `None` uses the model provider default (typically off).
+    pub thinking: Option<ThinkingMode>,
+
     /// Stop sequences.  Generation halts when any of these strings appears.
     pub stop: Option<Vec<String>>,
 
-    /// How long the model provider should keep the model loaded in memory after the
-    /// request completes. Primarily meaningful for Ollama; other model providers
-    /// ignore it gracefully.
+    /// How long the model provider should keep the model loaded in memory after
+    /// the request completes.  Primarily meaningful for Ollama; other model
+    /// providers ignore it gracefully.
     pub keep_alive: Option<Duration>,
 
-    /// Pass-through map for model-provider-specific options not covered above.
+    /// Pass-through map for model-provider-specific options not covered above
+    /// (e.g. `presence_penalty` for OpenAI, `top_k` for Ollama).
     pub extra_params: ModelProviderParams,
+}
+
+/// Controls extended chain-of-thought / reasoning mode.
+#[derive(Debug, Clone)]
+pub enum ThinkingMode {
+    /// Enable thinking with provider default budget.
+    Enabled,
+    /// Coarse effort hint. Maps to `reasoning_effort` (OpenAI) or equivalent.
+    /// Well-known values: `"low"`, `"medium"`, `"high"`.
+    Effort { level: ThinkingEffortLevel },
+    /// Enable thinking with an explicit token budget (honoured by providers that
+    /// support it, e.g. Anthropic).  Other providers treat this as `Enabled`.
+    Budgeted { max_tokens: u32 },
+    /// Disable thinking explicitly (useful for models where it is on by default,
+    /// e.g. o-series via `reasoning_effort: "none"`).
+    Disabled,
+}
+
+#[derive(Debug, Clone)]
+pub enum ThinkingEffortLevel {
+    Low,
+    Medium,
+    High,
 }
 
 impl TextGenerationRequest {
@@ -58,6 +100,9 @@ impl TextGenerationRequest {
             temperature: None,
             max_tokens: None,
             top_p: None,
+            repeat_penalty: None,
+            repeat_last_n: None,
+            thinking: None,
             stop: None,
             keep_alive: None,
             extra_params: HashMap::new(),
@@ -85,6 +130,24 @@ impl TextGenerationRequest {
     /// Sets the nucleus-sampling probability cutoff.
     pub fn with_top_p(mut self, p: f32) -> Self {
         self.top_p = Some(p);
+        self
+    }
+
+    /// Sets the repetition penalty.
+    pub fn with_repeat_penalty(mut self, penalty: f32) -> Self {
+        self.repeat_penalty = Some(penalty);
+        self
+    }
+
+    /// Sets the number of most-recent tokens to consider when applying the repetition penalty.
+    pub fn with_repeat_last_n(mut self, n: u32) -> Self {
+        self.repeat_last_n = Some(n);
+        self
+    }
+
+    /// Sets the thinking mode.
+    pub fn with_thinking(mut self, thinking: ThinkingMode) -> Self {
+        self.thinking = Some(thinking);
         self
     }
 
