@@ -17,6 +17,10 @@ pub trait MemoryStore: Send + Sync {
         &self,
         input: MemoryInput,
     ) -> impl Future<Output = Result<MemoryEntry, MemoryStoreError>> + Send + '_;
+    fn get(
+        &self,
+        id: Uuid,
+    ) -> impl Future<Output = Result<MemoryEntry, MemoryStoreError>> + Send + '_;
     fn query(
         &self,
         query: MemoryQuery,

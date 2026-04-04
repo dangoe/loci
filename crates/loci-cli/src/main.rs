@@ -38,14 +38,8 @@ use loci_model_provider_ollama::provider::{OllamaConfig, OllamaModelProvider};
 #[command(name = "loci", about = "loci CLI")]
 struct Cli {
     /// Path to the TOML configuration file.
-    #[arg(
-        long,
-        short,
-        default_value = "",
-        env = "LOCI_CONFIG",
-        hide_default_value = true
-    )]
-    config: String,
+    #[arg(long, short, env = "LOCI_CONFIG", hide_env_values = true)]
+    config: Option<PathBuf>,
 
     /// Verbose output.
     #[arg(long, short)]
@@ -89,7 +83,6 @@ enum MemoryCommand {
     /// Save a new memory entry.
     Save {
         /// Memory content.
-        #[arg(long)]
         content: String,
         /// Metadata as key=value pairs (repeatable).
         #[arg(long = "meta", value_parser = parse_key_value)]
@@ -101,7 +94,6 @@ enum MemoryCommand {
     /// Query memory entries by semantic similarity.
     Query {
         /// Topic to search for.
-        #[arg(long)]
         topic: String,
         /// Maximum number of results.
         #[arg(long, default_value_t = 10)]
@@ -112,36 +104,29 @@ enum MemoryCommand {
         /// Filter by metadata key=value pairs (repeatable).
         #[arg(long = "filter", value_parser = parse_key_value)]
         filters: Vec<(String, String)>,
-        /// Query mode: lookup or use (reserved for downstream behavior control).
-        #[arg(long, default_value = "lookup", value_parser = parse_query_mode)]
-        mode: MemoryQueryMode,
+    },
+    /// Get a memory entry by ID.
+    Get {
+        /// Memory entry ID.
+        id: Uuid,
     },
     /// Update an existing memory entry by ID.
     Update {
         /// Memory entry ID.
-        #[arg(long)]
         id: Uuid,
-        /// New content.
-        #[arg(long)]
-        content: String,
+        /// New content (optional).
+        content: Option<String>,
         /// New metadata as key=value pairs (repeatable).
         #[arg(long = "meta", value_parser = parse_key_value)]
         metadata: Vec<(String, String)>,
+        /// Optional tier override (candidate|stable|core).
+        #[arg(long, value_parser = parse_memory_tier)]
+        tier: Option<MemoryTier>,
     },
     /// Delete a memory entry by ID.
     Delete {
         /// Memory entry ID.
-        #[arg(long)]
         id: Uuid,
-    },
-    /// Set the tier of an existing memory entry.
-    SetTier {
-        /// Memory entry ID.
-        #[arg(long)]
-        id: Uuid,
-        /// Tier (candidate|stable|core).
-        #[arg(long, value_parser = parse_memory_tier)]
-        tier: MemoryTier,
     },
     /// Clear all memories from the collection.
     Clear,
@@ -169,7 +154,7 @@ async fn main() {
 }
 
 async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
-    let config_path = resolve_config_path(&cli.config);
+    let config_path = resolve_config_path(cli.config);
 
     // The `config init` command must be handled before loading the config file,
     // as the file may not exist yet.
@@ -423,33 +408,54 @@ async fn run_memory_command(
             max_results,
             min_score,
             filters,
-            mode,
         } => {
             debug!(
-                "query memory: topic={topic}, max_results={max_results}, min_score={min_score}, filters={:?}, mode={:?}",
-                filters, mode
+                "query memory: topic={topic}, max_results={max_results}, min_score={min_score}, filters={:?}",
+                filters
             );
             let query = MemoryQuery {
                 topic,
                 max_results,
                 min_score: Score::new(min_score).map_err(|e| format!("invalid min_score: {e}"))?,
                 filters: pairs_to_map(filters),
-                mode,
+                mode: MemoryQueryMode::Lookup,
             };
             let entries = store.query(query).await?;
             let json: Vec<_> = entries.iter().map(entry_to_json).collect();
             println!("{}", serde_json::to_string_pretty(&json)?);
         }
+        MemoryCommand::Get { id } => {
+            debug!("get memory entry: id={id}");
+            let entry = store.get(id).await?;
+            println!("{}", serde_json::to_string_pretty(&entry_to_json(&entry))?);
+        }
         MemoryCommand::Update {
             id,
             content,
             metadata,
+            tier,
         } => {
             debug!(
-                "update memory entry: id={id}, content={content}, metadata={:?}",
-                metadata
+                "update memory entry: id={id}, content={:?}, metadata={:?}, tier={:?}",
+                content, metadata, tier
             );
-            let input = MemoryInput::new(content, pairs_to_map(metadata));
+            if content.is_none() && metadata.is_empty() && tier.is_none() {
+                return Err(
+                    "nothing to update; provide content, --meta, and/or --tier to change a memory"
+                        .into(),
+                );
+            }
+
+            let existing = store.get(id).await?;
+            let content = content.unwrap_or(existing.memory.content);
+            let metadata = if metadata.is_empty() {
+                existing.memory.metadata
+            } else {
+                pairs_to_map(metadata)
+            };
+            let tier = tier.unwrap_or(existing.memory.tier);
+
+            let input = MemoryInput::new_with_tier(content, metadata, tier);
             let entry = store.update(id, input).await?;
             println!("{}", serde_json::to_string_pretty(&entry_to_json(&entry))?);
         }
@@ -460,11 +466,6 @@ async fn run_memory_command(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({ "deleted": id.to_string() }))?
             );
-        }
-        MemoryCommand::SetTier { id, tier } => {
-            debug!("set memory tier: id={id}, tier={:?}", tier);
-            let entry = store.set_tier(id, tier).await?;
-            println!("{}", serde_json::to_string_pretty(&entry_to_json(&entry))?);
         }
         MemoryCommand::Clear => {
             debug!("clear memory");
@@ -594,11 +595,11 @@ embedding = "default"
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Resolves the config file path: uses the provided value when non-empty,
+/// Resolves the config file path: uses the provided value when set,
 /// otherwise falls back to `~/.config/loci/config.toml`.
-fn resolve_config_path(cli_value: &str) -> PathBuf {
-    if !cli_value.is_empty() {
-        return PathBuf::from(cli_value);
+fn resolve_config_path(cli_value: Option<PathBuf>) -> PathBuf {
+    if let Some(path) = cli_value {
+        return path;
     }
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -623,16 +624,6 @@ fn parse_memory_tier(s: &str) -> Result<MemoryTier, String> {
     }
 
     Ok(tier)
-}
-
-fn parse_query_mode(s: &str) -> Result<MemoryQueryMode, String> {
-    match s {
-        "lookup" => Ok(MemoryQueryMode::Lookup),
-        "use" => Ok(MemoryQueryMode::Use),
-        _ => Err(format!(
-            "invalid query mode {s:?}; expected one of: lookup, use"
-        )),
-    }
 }
 
 /// Converts a list of `(key, value)` pairs into a [`HashMap`].
@@ -702,24 +693,18 @@ mod tests {
 
     #[test]
     fn resolve_config_path_uses_cli_value_when_set() {
-        let p = resolve_config_path("/tmp/my-config.toml");
+        let p = resolve_config_path(Some(PathBuf::from("/tmp/my-config.toml")));
         assert_eq!(p, PathBuf::from("/tmp/my-config.toml"));
     }
 
     #[test]
     fn resolve_config_path_falls_back_to_xdg_when_empty() {
-        let p = resolve_config_path("");
+        let p = resolve_config_path(None);
         assert!(p.ends_with("loci/config.toml"));
     }
 
     #[test]
     fn parse_memory_tier_rejects_ephemeral() {
         assert!(parse_memory_tier("ephemeral").is_err());
-    }
-
-    #[test]
-    fn parse_query_mode_accepts_known_values() {
-        assert_eq!(parse_query_mode("lookup").unwrap(), MemoryQueryMode::Lookup);
-        assert_eq!(parse_query_mode("use").unwrap(), MemoryQueryMode::Use);
     }
 }

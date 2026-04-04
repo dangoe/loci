@@ -245,6 +245,13 @@ mod tests {
             async move { Ok(entry) }
         }
 
+        fn get(
+            &self,
+            id: Uuid,
+        ) -> impl Future<Output = Result<MemoryEntry, MemoryStoreError>> + Send + '_ {
+            async move { Err(MemoryStoreError::NotFound(id)) }
+        }
+
         fn query(
             &self,
             _query: MemoryQuery,
@@ -287,6 +294,13 @@ mod tests {
         fn save(
             &self,
             _input: MemoryInput,
+        ) -> impl Future<Output = Result<MemoryEntry, MemoryStoreError>> + Send + '_ {
+            async move { Err(MemoryStoreError::Connection("always fails".to_string())) }
+        }
+
+        fn get(
+            &self,
+            _id: Uuid,
         ) -> impl Future<Output = Result<MemoryEntry, MemoryStoreError>> + Send + '_ {
             async move { Err(MemoryStoreError::Connection("always fails".to_string())) }
         }

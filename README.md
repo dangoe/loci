@@ -159,14 +159,14 @@ cargo run --bin loci -- <subcommand>
 Store a new memory.
 
 ```bash
-loci memory save --content "The project uses Qdrant for vector storage"
-loci memory save --content "Deployment target is Kubernetes" --meta env=production --meta team=platform
-loci memory save --content "This is a curated fact" --tier core --meta source=manual
+loci memory save "The project uses Qdrant for vector storage"
+loci memory save "Deployment target is Kubernetes" --meta env=production --meta team=platform
+loci memory save "This is a curated fact" --tier core --meta source=manual
 ```
 
-| Flag | Description |
+| Argument / Flag | Description |
 |---|---|
-| `--content <text>` | Memory text (required) |
+| `<content>` | Memory text (required positional argument) |
 | `--meta KEY=VALUE` | Metadata key-value pair (repeatable) |
 | `--tier <candidate|stable|core>` | Optional persisted tier override |
 
@@ -175,41 +175,49 @@ loci memory save --content "This is a curated fact" --tier core --meta source=ma
 Retrieve semantically similar memories.
 
 ```bash
-loci memory query --topic "vector database"
-loci memory query --topic "deployment" --max-results 3 --min-score 0.7 --filter env=production
-loci memory query --topic "platform" --mode use
+loci memory query "vector database"
+loci memory query "deployment" --max-results 3 --min-score 0.7 --filter env=production
+loci memory query "platform"
 ```
 
-| Flag | Default | Description |
+| Argument / Flag | Default | Description |
 |---|---|---|
-| `--topic <text>` | _(required)_ | Query topic |
+| `<topic>` | _(required)_ | Query topic |
 | `--max-results <n>` | `10` | Maximum number of results |
 | `--min-score <f64>` | `0.0` | Minimum weighted score [0.0, 1.0] |
 | `--filter KEY=VALUE` | _(none)_ | Metadata filter (repeatable, AND semantics) |
-| `--mode <lookup|use>` | `lookup` | Query mode (reserved for behavior control) |
+
+### `loci memory get`
+
+Fetch one memory entry by UUID.
+
+```bash
+loci memory get <uuid>
+```
 
 ### `loci memory update`
 
-Update the content or metadata of an existing memory by UUID.
+Update an existing memory by UUID.
 
 ```bash
-loci memory update --id <uuid> --content "Updated content" --meta key=value
+loci memory update <uuid> "Updated content" --meta key=value
+loci memory update <uuid> --tier core
+loci memory update <uuid> --meta source=manual
 ```
 
-### `loci memory set-tier`
-
-Set the tier of an existing memory by UUID.
-
-```bash
-loci memory set-tier --id <uuid> --tier core
-```
+| Argument / Flag | Description |
+|---|---|
+| `<uuid>` | Memory entry ID (required) |
+| `[content]` | New content (optional positional argument) |
+| `--meta KEY=VALUE` | Replace metadata with provided pairs (repeatable) |
+| `--tier <candidate|stable|core>` | Optional tier override |
 
 ### `loci memory delete`
 
 Remove a memory by UUID.
 
 ```bash
-loci memory delete --id <uuid>
+loci memory delete <uuid>
 ```
 
 ### `loci memory clear`

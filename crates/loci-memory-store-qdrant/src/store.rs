@@ -345,6 +345,14 @@ impl<E: TextEmbedder> MemoryStore for QdrantMemoryStore<E> {
         })
     }
 
+    async fn get(&self, id: Uuid) -> Result<MemoryEntry, MemoryStoreError> {
+        let memory = self.load_memory(id).await?;
+        Ok(MemoryEntry {
+            memory,
+            score: Score::new(1.0).expect("1.0 is always a valid score"),
+        })
+    }
+
     async fn query(&self, query: MemoryQuery) -> Result<Vec<MemoryEntry>, MemoryStoreError> {
         let embedding = self
             .embedder
