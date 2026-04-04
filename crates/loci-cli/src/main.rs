@@ -92,7 +92,7 @@ enum Command {
         max_memories: usize,
 
         /// Minimum similarity score for memory retrieval (0.0–1.0)
-        #[arg(long, default_value_t = 0.0)]
+        #[arg(long, default_value_t = 0.6)]
         min_score: f64,
     },
 }
@@ -254,9 +254,9 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             };
 
             let contextualizer =
-                Contextualizer::new(Arc::clone(&store), Arc::clone(&ollama)).with_config(config);
+                Contextualizer::new(Arc::clone(&store), Arc::clone(&ollama), config);
 
-            let mut stream = contextualizer.enhance_stream(&prompt);
+            let mut stream = contextualizer.contextualize(&prompt);
             while let Some(result) = stream.next().await {
                 let chunk = result.map_err(|e| e.to_string())?;
                 print!("{}", chunk.text);
