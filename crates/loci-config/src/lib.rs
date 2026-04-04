@@ -118,7 +118,7 @@ dimension = 768
 
 [stores.qdrant]
 kind = "qdrant"
-url = "http://localhost:6333"
+url = "http://localhost:6334"
 
 [memory]
 store = "qdrant"
@@ -186,7 +186,7 @@ api_key = "env:LOCI_TEST_SECRET"
 
 [stores.qdrant]
 kind = "qdrant"
-url = "http://localhost:6333"
+url = "http://localhost:6334"
 
 [memory]
 store = "qdrant"
@@ -218,7 +218,7 @@ api_key = "env:LOCI_TEST_MISSING_VAR"
 
 [stores.qdrant]
 kind = "qdrant"
-url = "http://localhost:6333"
+url = "http://localhost:6334"
 
 [memory]
 store = "qdrant"
@@ -262,7 +262,7 @@ endpoint = "http://localhost:11434"
 
 [stores.qdrant]
 kind = "qdrant"
-url = "http://localhost:6333"
+url = "http://localhost:6334"
 
 [memory]
 store = "qdrant"
@@ -285,7 +285,7 @@ embedding = "default"
         let cfg = r#"
 [stores.qdrant]
 kind = "qdrant"
-url = "http://localhost:6333"
+url = "http://localhost:6334"
 api_key = "env:LOCI_QDRANT_KEY"
 
 [memory]
@@ -323,7 +323,7 @@ endpoint = "http://localhost:11434"
 
 [stores.qdrant]
 kind = "qdrant"
-url = "http://localhost:6333"
+url = "http://localhost:6334"
 
 [memory]
 store = "qdrant"
@@ -395,7 +395,7 @@ seed = 42
 
 [stores.qdrant]
 kind = "qdrant"
-url = "http://localhost:6333"
+url = "http://localhost:6334"
 
 [memory]
 store = "qdrant"
