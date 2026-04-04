@@ -6,31 +6,33 @@ Project-specific overrides and additions to `.github/skills/rust-testing.md`.
 
 ```bash
 cargo test                                   # run all tests across the workspace
-cargo test -p loci-core                 # run tests for a single crate
-cargo test -p loci-core <name>          # run tests matching substring
+cargo test -p loci-core                      # run tests for a single crate
+cargo test -p loci-core <name>               # run tests matching substring
+cargo test -p loci-config                    # config parser/loader tests
+cargo test -p loci-memory-store-qdrant --features integration -- --test-threads=1
 cargo test -- --nocapture                    # show println! output
-cargo test -- --test-threads=1               # serialise tests (useful for I/O tests)
+cargo test -- --test-threads=1               # serialize tests when needed
 ```
 
 ## Test Dependencies in Use
 
 | Crate | Used in | Purpose |
 |-------|---------|---------|
-| _(none yet)_ | — | — |
+| `pretty_assertions` | multiple crates | improved assertion diffs |
+| `rstest` | `loci-core`, `loci-config` | parameterized tests |
+| `tempfile` | `loci-config` | temp config files in unit tests |
+| `tokio` | async tests | `#[tokio::test]` runtime |
+| `testcontainers` | `loci-memory-store-qdrant` integration tests | real Qdrant container tests |
 
 ## Integration Tests
 
-`loci-neo4j` integration tests use [testcontainers](https://crates.io/crates/testcontainers)
-to spin up a real Neo4j 5 instance via Docker. They are marked `#[ignore]` and must be opted into
-explicitly:
+`loci-memory-store-qdrant` integration tests use
+[testcontainers](https://crates.io/crates/testcontainers) to spin up a real Qdrant instance.
+They are guarded with `#[cfg_attr(not(feature = "integration"), ignore)]`:
 
 ```bash
-# Run all Neo4j integration tests (Docker must be running)
-cargo test -p loci-neo4j -- --ignored --test-threads=1
-
-# Run a single integration test
-cargo test -p loci-neo4j <name> -- --ignored
+cargo test -p loci-memory-store-qdrant --features integration -- --test-threads=1
+cargo test -p loci-memory-store-qdrant --features integration test_saved_memory_is_returned_by_query -- --test-threads=1
 ```
 
-`--test-threads=1` is recommended because each test starts its own container; running them
-serially avoids exhausting Docker resources.
+Use `--test-threads=1` for integration tests to avoid resource contention from parallel containers.

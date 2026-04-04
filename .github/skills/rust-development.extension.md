@@ -2,52 +2,49 @@
 
 Project-specific overrides and additions to `.github/skills/rust-development.md`.
 
-## Build & Test Commands
+## Build, Lint, and Test Commands
 
 ```bash
-cargo build                            # debug build (all crates)
-cargo build --release                  # release build
-cargo check                            # fast type-check
-cargo test                             # run all tests
-cargo test -p loci-core           # run tests for a single crate
-cargo test -p loci-core <name>    # run a single test by name (substring match)
-cargo clippy                           # lint — must pass with zero warnings
-cargo fmt                              # format code
-cargo fmt --check                      # verify formatting (CI)
+cargo check                                                # type-check workspace
+cargo build                                                # workspace build
+cargo test                                                 # run workspace tests
+cargo test -p loci-core <name>                            # run one test by name
+cargo test -p loci-memory-store-qdrant --features integration -- --test-threads=1
+cargo clippy                                               # lint
+cargo fmt --check                                          # formatting check
 ```
 
 ## Workspace Structure
 
 | Crate | Path | Purpose |
 |-------|------|---------|
-| `loci-core` | `crates/loci-core` | `MemoryStore` trait, `EmbeddingPort` trait, domain types, `MemoryService<S,E>` |
-| `loci-neo4j` | `crates/loci-neo4j` | `Neo4jMemoryStore` — `impl MemoryStore` backed by Neo4j vector index |
+| `loci-core` | `crates/loci-core` | Domain types and core traits (`MemoryStore`, `TextEmbedder`, model-provider traits) plus `Contextualizer` |
+| `loci-memory-store-qdrant` | `crates/loci-memory-store-qdrant` | `QdrantMemoryStore` implementation with tiering and deduplication |
+| `loci-model-provider-ollama` | `crates/loci-model-provider-ollama` | `OllamaModelProvider` for embeddings and text generation |
+| `loci-config` | `crates/loci-config` | Config schema and loader (`env:` secret resolution) |
+| `loci-cli` | `crates/loci-cli` | CLI entry point and command handling |
 
-## Domain Types (loci-core)
+## Runtime Status
 
-| Type | Description |
-|------|-------------|
-| `Embedding` | Newtype over `Vec<f32>`; use `.values()` / `.dimension()` |
-| `Memory` | `id`, `content`, `embedding`, `metadata`, `created_at` |
-| `MemoryEntry` | Query result: `Memory` + `Score` |
-| `MemoryQuery` | Pre-computed `Embedding` + `max_results` |
-| `Score` | Validated `f64` in [0.0, 1.0]; constructed with `Score::new(v)?` |
-| `MemoryService<S, E>` | Composes store + embedding; call `.memorize()`, `.retrieve()`, `.forget()` |
+- Implemented at runtime: `qdrant` store + `ollama` provider.
+- Config may parse `openai`, `anthropic`, and `markdown`, but runtime currently returns
+  `UnsupportedKind` when those are selected.
 
-## Trait Design Rules
+## Core Domain Notes (`loci-core`)
 
-- `MemoryStore` and `EmbeddingPort` use native AFIT (`async fn` directly in trait).
-- Both traits are `Send + Sync` supertrait-bounded.
-- Production types are prefixed `Native`; test doubles are prefixed `Mock`.
-- New backend crates follow the same pattern as `loci-neo4j`: one `Config` struct, one store struct, `impl MemoryStore for ...` in `store.rs`.
+- `MemoryStore` is text-centric: `save/get/query/update/set_tier/delete/clear`.
+- `Memory` stores lifecycle fields (`tier`, `seen_count`, `first_seen`, `last_seen`, `expires_at`);
+  embeddings are computed in store/provider layers, not stored on `Memory`.
+- `Contextualizer` queries memories using `MemoryQueryMode::Use` and streams model output.
 
 ## Dependencies in Use
 
 | Crate | Used in | Purpose |
 |-------|---------|---------|
-| `chrono` | both | `DateTime<Utc>` timestamps |
-| `serde` | core | derive `Serialize`/`Deserialize` on domain types |
-| `serde_json` | neo4j | metadata serialisation to/from JSON string node property |
-| `uuid` | both | `Uuid::new_v4()` for memory IDs |
-| `neo4rs` | neo4j | async Neo4j driver |
-| `log` | neo4j | deduplication debug logging |
+| `qdrant-client` | `loci-memory-store-qdrant` | Qdrant API client |
+| `reqwest` | `loci-core`, `loci-model-provider-ollama` | HTTP model-provider communication |
+| `clap` | `loci-cli` | CLI parsing |
+| `chrono` | `loci-core`, `loci-memory-store-qdrant` | Timestamp and TTL handling |
+| `serde` / `serde_json` / `toml` | config + providers | Config and payload serialization |
+| `tokio` / `futures` / `async-stream` | core + cli + providers | Async runtime and streaming |
+| `uuid` | core + store + cli | Memory IDs |

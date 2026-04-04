@@ -46,22 +46,22 @@ The following is fully implemented and working today.
 
 ### Workspace
 
-| Crate | Path | Purpose |
-|---|---|---|
-| `loci-core` | `crates/loci-core` | Traits, domain types, `Contextualizer` |
-| `loci-memory-store-qdrant` | `crates/loci-memory-store-qdrant` | Qdrant-backed `MemoryStore` with lifecycle-aware retrieval |
-| `loci-model-provider-ollama` | `crates/loci-model-provider-ollama` | Ollama embedding + text generation model provider |
-| `loci-config` | `crates/loci-config` | TOML config loading and secret resolution |
-| `loci-cli` | `crates/loci-cli` | `loci` CLI binary for CRUD + prompt enhancement |
+| Crate                        | Path                                | Purpose                                                    |
+| ---------------------------- | ----------------------------------- | ---------------------------------------------------------- |
+| `loci-core`                  | `crates/loci-core`                  | Traits, domain types, `Contextualizer`                     |
+| `loci-memory-store-qdrant`   | `crates/loci-memory-store-qdrant`   | Qdrant-backed `MemoryStore` with lifecycle-aware retrieval |
+| `loci-model-provider-ollama` | `crates/loci-model-provider-ollama` | Ollama embedding + text generation model provider          |
+| `loci-config`                | `crates/loci-config`                | TOML config loading and secret resolution                  |
+| `loci-cli`                   | `crates/loci-cli`                   | `loci` CLI binary for CRUD + prompt enhancement            |
 
 ### Core Abstractions (`loci-core`)
 
-| Trait | Purpose |
-|---|---|
-| `MemoryStore` | Save, query, update, set tier, delete, clear memories |
-| `TextEmbedder` | Embed text into a vector |
-| `EmbeddingModelProvider` | Raw embedding model provider (HTTP, model name) |
-| `TextGenerationModelProvider` | Raw text generation model provider |
+| Trait                         | Purpose                                               |
+| ----------------------------- | ----------------------------------------------------- |
+| `MemoryStore`                 | Save, query, update, set tier, delete, clear memories |
+| `TextEmbedder`                | Embed text into a vector                              |
+| `EmbeddingModelProvider`      | Raw embedding model provider (HTTP, model name)       |
+| `TextGenerationModelProvider` | Raw text generation model provider                    |
 
 Key domain types: `Memory`, `MemoryEntry`, `MemoryInput`, `MemoryQuery`, `MemoryTier`, `MemoryQueryMode`, `Score`, `Embedding`.
 
@@ -70,6 +70,7 @@ Key domain types: `Memory`, `MemoryEntry`, `MemoryInput`, `MemoryQuery`, `Memory
 `QdrantMemoryStore` uses [Qdrant](https://qdrant.tech/) for cosine-similarity vector search.
 
 Features:
+
 - Configurable deduplication (`similarity_threshold`) to reuse near-duplicates
 - Tiered memory lifecycle (`Candidate`, `Stable`, `Core`; `Ephemeral` is request-scoped only)
 - Per-tier TTL defaults and query-time expiry filtering
@@ -81,10 +82,11 @@ Features:
 
 ### Model Providers (`loci-model-provider-ollama`)
 
-`OllamaBackend` implements both `EmbeddingModelProvider` and `TextGenerationModelProvider`
+`OllamaModelProvider` implements both `EmbeddingModelProvider` and `TextGenerationModelProvider`
 against a local [Ollama](https://ollama.com/) instance.
 
 Default models in the generated config:
+
 - Embedding: `qwen3-embedding:0.6b` (768 dimensions)
 - Text generation: `qwen3:0.6b`
 
@@ -105,6 +107,7 @@ docker compose up -d
 ```
 
 This starts:
+
 - **Qdrant** on `http://localhost:6333` (HTTP) / `http://localhost:6334` (gRPC)
 
 Note: Ollama is not started by the Docker compose setup in this repository. Due to GPU usage constraints Ollama must be installed and run natively on your machine (see "Ollama (native)" below).
@@ -149,10 +152,10 @@ cargo run --bin loci -- <subcommand>
 
 ### Global options
 
-| Flag | Env var | Default | Description |
-|---|---|---|---|
-| `--config` / `-c` | `LOCI_CONFIG` | `~/.config/loci/config.toml` | Path to TOML config file |
-| `--verbose` / `-v` | — | off | Enable debug logging |
+| Flag               | Env var       | Default                      | Description              |
+| ------------------ | ------------- | ---------------------------- | ------------------------ |
+| `--config` / `-c`  | `LOCI_CONFIG` | `~/.config/loci/config.toml` | Path to TOML config file |
+| `--verbose` / `-v` | —             | off                          | Enable debug logging     |
 
 ### `loci memory save`
 
@@ -164,11 +167,11 @@ loci memory save "Deployment target is Kubernetes" --meta env=production --meta 
 loci memory save "This is a curated fact" --tier core --meta source=manual
 ```
 
-| Argument / Flag | Description |
-|---|---|
-| `<content>` | Memory text (required positional argument) |
-| `--meta KEY=VALUE` | Metadata key-value pair (repeatable) |
-| `--tier <candidate|stable|core>` | Optional persisted tier override |
+| Argument / Flag    | Description                                |
+| ------------------ | ------------------------------------------ | ------ | -------------------------------- |
+| `<content>`        | Memory text (required positional argument) |
+| `--meta KEY=VALUE` | Metadata key-value pair (repeatable)       |
+| `--tier <candidate | stable                                     | core>` | Optional persisted tier override |
 
 ### `loci memory query`
 
@@ -180,12 +183,12 @@ loci memory query "deployment" --max-results 3 --min-score 0.7 --filter env=prod
 loci memory query "platform"
 ```
 
-| Argument / Flag | Default | Description |
-|---|---|---|
-| `<topic>` | _(required)_ | Query topic |
-| `--max-results <n>` | `10` | Maximum number of results |
-| `--min-score <f64>` | `0.0` | Minimum weighted score [0.0, 1.0] |
-| `--filter KEY=VALUE` | _(none)_ | Metadata filter (repeatable, AND semantics) |
+| Argument / Flag      | Default      | Description                                 |
+| -------------------- | ------------ | ------------------------------------------- |
+| `<topic>`            | _(required)_ | Query topic                                 |
+| `--max-results <n>`  | `10`         | Maximum number of results                   |
+| `--min-score <f64>`  | `0.0`        | Minimum weighted score [0.0, 1.0]           |
+| `--filter KEY=VALUE` | _(none)_     | Metadata filter (repeatable, AND semantics) |
 
 ### `loci memory get`
 
@@ -205,12 +208,12 @@ loci memory update <uuid> --tier core
 loci memory update <uuid> --meta source=manual
 ```
 
-| Argument / Flag | Description |
-|---|---|
-| `<uuid>` | Memory entry ID (required) |
-| `[content]` | New content (optional positional argument) |
+| Argument / Flag    | Description                                       |
+| ------------------ | ------------------------------------------------- | ------ | ---------------------- |
+| `<uuid>`           | Memory entry ID (required)                        |
+| `[content]`        | New content (optional positional argument)        |
 | `--meta KEY=VALUE` | Replace metadata with provided pairs (repeatable) |
-| `--tier <candidate|stable|core>` | Optional tier override |
+| `--tier <candidate | stable                                            | core>` | Optional tier override |
 
 ### `loci memory delete`
 
@@ -237,11 +240,11 @@ loci prompt "What storage backend do we use?"
 loci prompt "Summarise our deployment setup" --max-memories 8 --min-score 0.5
 ```
 
-| Flag | Default | Description |
-|---|---|---|
-| `<prompt>` | _(required)_ | Prompt text (positional) |
-| `--max-memories <n>` | `5` | Max memories to inject as context |
-| `--min-score <f64>` | `0.5` | Minimum weighted score for context memories |
+| Flag                 | Default      | Description                                 |
+| -------------------- | ------------ | ------------------------------------------- |
+| `<prompt>`           | _(required)_ | Prompt text (positional)                    |
+| `--max-memories <n>` | `5`          | Max memories to inject as context           |
+| `--min-score <f64>`  | `0.5`        | Minimum weighted score for context memories |
 
 ### `loci config init`
 
@@ -305,11 +308,11 @@ The trait is open for extension; custom strategies can be plugged in.
 
 An `EvictionStrategy` trait applied after extraction to keep the memory store healthy:
 
-| Strategy | Description |
-|---|---|
-| **TTL** | Expire memories older than a configurable duration |
-| **Max-Count / LRU** | Keep only the _N_ most recently accessed memories |
-| **Score-based** | Evict memories whose relevance score falls below a threshold |
+| Strategy            | Description                                                  |
+| ------------------- | ------------------------------------------------------------ |
+| **TTL**             | Expire memories older than a configurable duration           |
+| **Max-Count / LRU** | Keep only the _N_ most recently accessed memories            |
+| **Score-based**     | Evict memories whose relevance score falls below a threshold |
 
 Strategies are composable — multiple strategies can be applied in sequence.
 

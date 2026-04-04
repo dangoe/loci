@@ -5,9 +5,7 @@ Check for a project-specific extension at `.github/skills/rust-testing.extension
 ## 1. Test Location
 
 - **Unit tests** — `#[cfg(test)] mod tests { ... }` at the bottom of the file under test
-- **Complex modules** — When a module (`mod.rs`) accumulates many tests, split into:
-  - `mocks.rs` — trait mock implementations (included only in test builds)
-  - `tests.rs` — test cases that use those mocks
+- **Complex modules** — split test helpers cleanly when inline tests become noisy
 - **Integration tests** — `tests/` directory for tests that exercise the binary or multiple modules together
 
 ## 2. Test Frameworks
@@ -17,6 +15,7 @@ Check for a project-specific extension at `.github/skills/rust-testing.extension
 | `rstest` | Parameterised tests via `#[rstest]` and `#[values(...)]` |
 | `pretty_assertions` | Drop-in replacement for `assert_eq!` with readable diffs |
 | `tempfile` | Temporary files and directories for config/I/O tests |
+| `tokio` | Async test runtime for async APIs |
 
 ## 3. Mock Strategy
 
@@ -53,7 +52,7 @@ fn test_parse_level(#[values("low", "auto", "high")] input: &str) {
 ## 5. Naming
 
 - Test functions: `snake_case`, descriptive of the scenario
-- Prefer `test_<behaviour>_when_<condition>` or `test_<what>_returns_<expected_outcome>`
+- Prefer `test_<behavior>_when_<condition>` or `test_<what>_returns_<expected_outcome>`
 - Test helper functions: no `test_` prefix; name them like production helpers
 
 ## 6. Coverage Expectations
@@ -64,7 +63,8 @@ Every module should cover:
 - ✅ All error paths (missing file, corrupt input, permission denied, etc.)
 - ✅ Boundary / edge values for parsed inputs
 - ✅ Each enum variant for functions that branch on type
-- ⚠️ Integration with the real filesystem only via `tempfile`; never rely on fixed paths
+- ✅ Async success/error paths for async traits/providers
+- ⚠️ Integration with external systems should be feature-gated and deterministic
 
 ## 7. Pre-Commit Verification
 

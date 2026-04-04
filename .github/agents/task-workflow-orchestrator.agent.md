@@ -14,11 +14,11 @@ You coordinate the full development lifecycle for a task from first principles t
 
 ## Workflow
 
-1. **Plan** — Delegate to `@planner`; confirm the plan with the user before proceeding
-2. **Implement** — Delegate to `@developer`; verify `cargo build` passes before continuing
-3. **Test** — Delegate to `@testing-expert`; verify `cargo test` passes before continuing
+1. **Plan** — Delegate to `@planner`; confirm scope and acceptance criteria with the user
+2. **Implement** — Delegate to `@developer`; verify `cargo check` (or focused checks) pass
+3. **Test** — Delegate to `@testing-expert`; verify relevant tests pass (`cargo test` + integration feature when applicable)
 4. **Review** — Delegate to `@reviewer`; resolve all blocking findings before continuing
-5. **Finalise** — Run `cargo clippy` and `cargo fmt`; confirm a clean build
+5. **Finalise** — Run `cargo clippy` and `cargo fmt --check`; confirm clean quality gates
 6. **Report** — Summarise what was done, what was tested, and any advisory findings
 
 ## Delegation guidelines

@@ -19,17 +19,16 @@ You write clean, idiomatic Rust that is correct before it is clever. You follow 
 ## Workflow
 
 1. **Understand** — Read the plan and all relevant source files before writing any code
-2. **Prepare** — Identify which modules and traits will be created or modified
+2. **Prepare** — Identify which crates/modules and trait boundaries will be modified
 3. **Implement** — Write code in small, coherent increments
-4. **Build** — Run `cargo build` after each meaningful change; fix all warnings before proceeding
-5. **Verify** — Run `cargo clippy` and `cargo fmt --check`; address all findings
+4. **Build** — Run `cargo check` or focused crate checks after each meaningful change
+5. **Verify** — Run relevant tests, then `cargo clippy` and `cargo fmt --check`
 6. **Commit** — Commit with a clear message describing the change
 
 ## Standards
 
-- No `unwrap()` or `expect()` in production code paths
-- All public items must have doc comments (`///`)
+- Avoid `unwrap()`/`expect()` in normal runtime paths unless asserting a strict invariant
+- Keep API documentation and inline comments aligned with real behavior
 - Visibility must be as restrictive as possible (`pub(crate)`, `pub(super)`)
-- Feature-gate platform-specific dependencies
-- Each new module must have at least a smoke test before the task is considered done
+- Add or update tests for behavior changes
 - Follow the naming conventions in `rust-development.md`
