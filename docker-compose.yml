@@ -7,29 +7,5 @@ services:
     volumes:
       - qdrant_storage:/qdrant/storage
 
-  ollama:
-    image: ollama/ollama
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_storage:/root/.ollama
-
-  ollama-init:
-    image: ollama/ollama
-    volumes:
-      - ollama_storage:/root/.ollama
-    depends_on:
-      - ollama
-    entrypoint:
-      [
-        "/bin/sh",
-        "-c",
-        "sleep 10 && ollama pull nomic-embed-text && ollama pull qwen3:0.6b",
-      ]
-    environment:
-      - OLLAMA_HOST=http://ollama:11434
-    restart: "no"
-
 volumes:
   qdrant_storage:
-  ollama_storage:

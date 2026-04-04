@@ -2,67 +2,46 @@
 // SPDX-License-Identifier: MIT
 // This file is part of loci-cli.
 
-//! Binary entry-point for the `ai-memory` CLI.
+//! Binary entry-point for the `loci` CLI.
 //!
-//! Exposes all [`MemoryStore`] operations through a `clap`-derived command
-//! hierarchy. Global options accept environment-variable fallbacks so the CLI
-//! works naturally in Docker / CI environments.
+//! All infrastructure configuration (providers, stores, models, embeddings) is
+//! read from a TOML config file (default: `~/.config/loci/config.toml`).
+//! The CLI itself only exposes operational flags and sub-commands.
 
 use std::collections::HashMap;
 use std::io::Write as _;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use futures::StreamExt as _;
-use log::{LevelFilter, error, info};
+use log::{LevelFilter, debug, error, info};
 use uuid::Uuid;
 
 use loci_backend_ollama::backend::{OllamaBackend, OllamaConfig};
+use loci_config::{AppConfig, ConfigError, ProviderConfig, ProviderKind, StoreConfig, load_config};
 use loci_core::contextualization::{Contextualizer, ContextualizerConfig};
 use loci_core::embedding::DefaultTextEmbedder;
-use loci_core::memory::{MemoryEntry, MemoryInput, MemoryQuery, Score};
+use loci_core::memory::{MemoryInput, MemoryQuery, Score};
 use loci_core::store::MemoryStore;
 use loci_memory_store_qdrant::config::QdrantConfig;
 use loci_memory_store_qdrant::store::QdrantMemoryStore;
-
-/// Embedding model pulled by `ollama-init` in docker-compose.
-const EMBED_MODEL: &str = "nomic-embed-text";
-/// Output dimension of `nomic-embed-text`.
-const EMBED_DIM: usize = 768;
-/// Default LLM model pulled by `ollama-init` in docker-compose.
-const DEFAULT_LLM_MODEL: &str = "qwen3:0.6b";
 
 /// Top-level CLI arguments and global options.
 #[derive(Parser)]
 #[command(name = "loci", about = "loci CLI")]
 struct Cli {
-    /// Qdrant gRPC URL
+    /// Path to the TOML configuration file.
     #[arg(
         long,
         short,
-        default_value = "http://localhost:6334",
-        env = "QDRANT_URL"
+        default_value = "",
+        env = "LOCI_CONFIG",
+        hide_default_value = true
     )]
-    qdrant_url: String,
+    config: String,
 
-    /// Ollama base URL
-    #[arg(
-        long,
-        short,
-        default_value = "http://localhost:11434",
-        env = "OLLAMA_URL"
-    )]
-    ollama_url: String,
-
-    /// Qdrant collection name
-    #[arg(long, short, default_value = "memories", env = "COLLECTION_NAME")]
-    collection: String,
-
-    /// Cosine similarity threshold for deduplication (0.0–1.0)
-    #[arg(long, short, env = "SIMILARITY_THRESHOLD")]
-    similarity_threshold: Option<f64>,
-
-    /// Verbose output
+    /// Verbose output.
     #[arg(long, short)]
     verbose: bool,
 
@@ -73,76 +52,85 @@ struct Cli {
 /// Available sub-commands.
 #[derive(Subcommand)]
 enum Command {
-    /// Memory store operations
+    /// Memory store operations.
     Memory {
         #[command(subcommand)]
         command: MemoryCommand,
     },
-    /// Enhance a prompt with memory context and call an LLM
+    /// Enhance a prompt with memory context and call an LLM.
     Prompt {
-        /// The prompt to process
+        /// The prompt to process.
         prompt: String,
 
-        /// LLM model name
-        #[arg(long, default_value = DEFAULT_LLM_MODEL, env = "LLM_MODEL")]
-        llm_model: String,
-
-        /// Maximum number of memories to inject into the prompt
+        /// Maximum number of memories to inject into the prompt.
         #[arg(long, default_value_t = 5)]
         max_memories: usize,
 
-        /// Minimum similarity score for memory retrieval (0.0–1.0)
-        #[arg(long, default_value_t = 0.6)]
+        /// Minimum similarity score for memory retrieval (0.0–1.0).
+        #[arg(long, default_value_t = 0.5)]
         min_score: f64,
+    },
+    /// Configuration management.
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
     },
 }
 
+/// Memory sub-commands.
 #[derive(Subcommand)]
 enum MemoryCommand {
-    /// Save a new memory entry
+    /// Save a new memory entry.
     Save {
-        /// Memory content
+        /// Memory content.
         #[arg(long)]
         content: String,
-        /// Metadata as key=value pairs (repeatable)
+        /// Metadata as key=value pairs (repeatable).
         #[arg(long = "meta", value_parser = parse_key_value)]
         metadata: Vec<(String, String)>,
     },
-    /// Query memory entries by semantic similarity
+    /// Query memory entries by semantic similarity.
     Query {
-        /// Topic to search for
+        /// Topic to search for.
         #[arg(long)]
         topic: String,
-        /// Maximum number of results
+        /// Maximum number of results.
         #[arg(long, default_value_t = 10)]
         max_results: usize,
-        /// Minimum similarity score (0.0–1.0)
+        /// Minimum similarity score (0.0–1.0).
         #[arg(long, default_value_t = 0.0)]
         min_score: f64,
-        /// Filter by metadata key=value pairs (repeatable)
+        /// Filter by metadata key=value pairs (repeatable).
         #[arg(long = "filter", value_parser = parse_key_value)]
         filters: Vec<(String, String)>,
     },
-    /// Update an existing memory entry by ID
+    /// Update an existing memory entry by ID.
     Update {
-        /// Memory entry ID
+        /// Memory entry ID.
         #[arg(long)]
         id: Uuid,
-        /// New content
+        /// New content.
         #[arg(long)]
         content: String,
-        /// New metadata as key=value pairs (repeatable)
+        /// New metadata as key=value pairs (repeatable).
         #[arg(long = "meta", value_parser = parse_key_value)]
         metadata: Vec<(String, String)>,
     },
-    /// Delete a memory entry by ID
+    /// Delete a memory entry by ID.
     Delete {
-        /// Memory entry ID
+        /// Memory entry ID.
         #[arg(long)]
         id: Uuid,
     },
-    /// Clear all memories from the collection
+    /// Clear all memories from the collection.
     Clear,
+}
+
+/// Config sub-commands.
+#[derive(Subcommand)]
+enum ConfigCommand {
+    /// Scaffold a default configuration file at the config path.
+    Init,
 }
 
 #[tokio::main]
@@ -160,102 +148,54 @@ async fn main() {
 }
 
 async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
-    let ollama_config = OllamaConfig {
-        base_url: cli.ollama_url.clone(),
-        timeout: None,
-    };
+    let config_path = resolve_config_path(&cli.config);
 
-    info!("Using Ollama URL: {}", cli.ollama_url);
+    // The `config init` command must be handled before loading the config file,
+    // as the file may not exist yet.
+    if let Command::Config {
+        command: ConfigCommand::Init,
+    } = &cli.command
+    {
+        return cmd_config_init(&config_path);
+    }
 
-    let ollama = Arc::new(OllamaBackend::new(ollama_config)?);
-    let embedder = DefaultTextEmbedder::new(
-        Arc::clone(&ollama) as Arc<dyn loci_core::backend::embedding::EmbeddingBackend>,
-        EMBED_MODEL,
-        EMBED_DIM,
-    );
-
-    let qdrant_config = QdrantConfig {
-        collection_name: cli.collection,
-        similarity_threshold: cli.similarity_threshold,
-    };
-
-    info!("Using Qdrant URL: {}", cli.qdrant_url);
-    info!("Initializing memory store...");
-
-    let store = QdrantMemoryStore::new(&cli.qdrant_url, qdrant_config, embedder)?;
-    store.initialize().await?;
-
-    info!("Memory store initialized.");
+    info!("Loading config from {}", config_path.display());
+    let config = load_config(&config_path)?;
 
     match cli.command {
-        Command::Memory { command } => match command {
-            MemoryCommand::Save { content, metadata } => {
-                let input = MemoryInput::new(content, pairs_to_map(metadata));
-                let entry = store.save(input).await?;
-                println!("{}", serde_json::to_string_pretty(&entry_to_json(&entry))?);
-            }
-            MemoryCommand::Query {
-                topic,
-                max_results,
-                min_score,
-                filters,
-            } => {
-                let query = MemoryQuery {
-                    topic,
-                    max_results,
-                    min_score: Score::new(min_score)
-                        .map_err(|e| format!("invalid min_score: {e}"))?,
-                    filters: pairs_to_map(filters),
-                };
-                let entries = store.query(query).await?;
-                let json: Vec<_> = entries.iter().map(entry_to_json).collect();
-                println!("{}", serde_json::to_string_pretty(&json)?);
-            }
-            MemoryCommand::Update {
-                id,
-                content,
-                metadata,
-            } => {
-                let input = MemoryInput::new(content, pairs_to_map(metadata));
-                let entry = store.update(id, input).await?;
-                println!("{}", serde_json::to_string_pretty(&entry_to_json(&entry))?);
-            }
-            MemoryCommand::Delete { id } => {
-                store.delete(id).await?;
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(
-                        &serde_json::json!({ "deleted": id.to_string() })
-                    )?
-                );
-            }
-            MemoryCommand::Clear => {
-                store.clear().await?;
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&serde_json::json!({ "cleared": true }))?
-                );
-            }
-        },
+        Command::Memory { command } => {
+            let store = build_store(&config).await?;
+            run_memory_command(store, command).await
+        }
         Command::Prompt {
             prompt,
-            llm_model,
             max_memories,
             min_score,
         } => {
-            let store = Arc::new(store);
+            let store = Arc::new(build_store(&config).await?);
+            let llm_backend = Arc::new(build_llm_backend(&config)?);
+            let model_name = {
+                let model_key = &config.routing.default_model;
+                config
+                    .models
+                    .get(model_key)
+                    .ok_or_else(|| ConfigError::MissingKey {
+                        section: "models".into(),
+                        key: model_key.clone(),
+                    })?
+                    .name
+                    .clone()
+            };
             let min_score = Score::new(min_score).map_err(|e| format!("invalid min_score: {e}"))?;
 
-            let config = ContextualizerConfig {
+            let ctx_config = ContextualizerConfig {
                 max_memories,
                 min_score,
                 filters: HashMap::new(),
-                text_generation_model: llm_model,
+                text_generation_model: model_name,
             };
 
-            let contextualizer =
-                Contextualizer::new(Arc::clone(&store), Arc::clone(&ollama), config);
-
+            let contextualizer = Contextualizer::new(store, llm_backend, ctx_config);
             let mut stream = contextualizer.contextualize(&prompt);
             while let Some(result) = stream.next().await {
                 let chunk = result.map_err(|e| e.to_string())?;
@@ -265,10 +205,317 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     println!();
                 }
             }
+            Ok(())
+        }
+        Command::Config { .. } => unreachable!("handled above"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Store / backend construction
+// ---------------------------------------------------------------------------
+
+/// Builds a `QdrantMemoryStore<DefaultTextEmbedder>` from the active config.
+///
+/// Fails fast with [`ConfigError::UnsupportedKind`] if the configured store
+/// or embedding provider is not yet implemented.
+async fn build_store(
+    config: &AppConfig,
+) -> Result<QdrantMemoryStore<DefaultTextEmbedder>, Box<dyn std::error::Error>> {
+    let store_name = &config.memory.store;
+    let store_cfg = config
+        .stores
+        .get(store_name)
+        .ok_or_else(|| ConfigError::MissingKey {
+            section: "stores".into(),
+            key: store_name.clone(),
+        })?;
+
+    match store_cfg {
+        StoreConfig::Qdrant { url, .. } => {
+            let embed_provider = resolve_embedding_provider(config)?;
+            let embed_backend = build_ollama_backend(embed_provider)?;
+            let embed_profile_name = &config.routing.embedding;
+            let embed_profile = config.embeddings.get(embed_profile_name).ok_or_else(|| {
+                ConfigError::MissingKey {
+                    section: "embeddings".into(),
+                    key: embed_profile_name.clone(),
+                }
+            })?;
+
+            let embedder = DefaultTextEmbedder::new(
+                Arc::new(embed_backend),
+                &embed_profile.model,
+                embed_profile.dimension,
+            );
+
+            let qdrant_config = QdrantConfig {
+                collection_name: config.memory.collection.clone(),
+                similarity_threshold: config.memory.similarity_threshold,
+            };
+
+            info!("Connecting to Qdrant at {url}");
+            let store = QdrantMemoryStore::new(url, qdrant_config, embedder)?;
+            store.initialize().await?;
+            info!("Memory store initialized.");
+            Ok(store)
+        }
+        StoreConfig::Markdown { .. } => Err(Box::new(ConfigError::UnsupportedKind {
+            kind: "markdown".into(),
+            context: "memory store".into(),
+        })),
+    }
+}
+
+/// Builds an [`OllamaBackend`] for text generation using the default model's provider.
+fn build_llm_backend(config: &AppConfig) -> Result<OllamaBackend, Box<dyn std::error::Error>> {
+    let provider = resolve_llm_provider(config)?;
+    build_ollama_backend(provider)
+}
+
+/// Resolves the [`ProviderConfig`] for the active embedding profile.
+fn resolve_embedding_provider(
+    config: &AppConfig,
+) -> Result<&ProviderConfig, Box<dyn std::error::Error>> {
+    let profile_name = &config.routing.embedding;
+    let profile = config
+        .embeddings
+        .get(profile_name)
+        .ok_or_else(|| ConfigError::MissingKey {
+            section: "embeddings".into(),
+            key: profile_name.clone(),
+        })?;
+    config.providers.get(&profile.provider).ok_or_else(|| {
+        Box::new(ConfigError::MissingKey {
+            section: "providers".into(),
+            key: profile.provider.clone(),
+        }) as Box<dyn std::error::Error>
+    })
+}
+
+/// Resolves the [`ProviderConfig`] for the default LLM model.
+fn resolve_llm_provider(config: &AppConfig) -> Result<&ProviderConfig, Box<dyn std::error::Error>> {
+    let model_name = &config.routing.default_model;
+    let model = config
+        .models
+        .get(model_name)
+        .ok_or_else(|| ConfigError::MissingKey {
+            section: "models".into(),
+            key: model_name.clone(),
+        })?;
+    config.providers.get(&model.provider).ok_or_else(|| {
+        Box::new(ConfigError::MissingKey {
+            section: "providers".into(),
+            key: model.provider.clone(),
+        }) as Box<dyn std::error::Error>
+    })
+}
+
+/// Constructs an [`OllamaBackend`] from a provider config, failing if the
+/// provider kind is not `ollama`.
+fn build_ollama_backend(
+    provider: &ProviderConfig,
+) -> Result<OllamaBackend, Box<dyn std::error::Error>> {
+    match provider.kind {
+        ProviderKind::Ollama => {
+            let cfg = OllamaConfig {
+                base_url: provider.endpoint.clone(),
+                timeout: None,
+            };
+            info!("Using Ollama backend at {}", provider.endpoint);
+            Ok(OllamaBackend::new(cfg)?)
+        }
+        ProviderKind::OpenAI => Err(Box::new(ConfigError::UnsupportedKind {
+            kind: "openai".into(),
+            context: "provider".into(),
+        })),
+        ProviderKind::Anthropic => Err(Box::new(ConfigError::UnsupportedKind {
+            kind: "anthropic".into(),
+            context: "provider".into(),
+        })),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Memory command dispatch
+// ---------------------------------------------------------------------------
+
+async fn run_memory_command(
+    store: QdrantMemoryStore<DefaultTextEmbedder>,
+    command: MemoryCommand,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match command {
+        MemoryCommand::Save { content, metadata } => {
+            debug!(
+                "save memory entry: content={content}, metadata={:?}",
+                metadata
+            );
+            let input = MemoryInput::new(content, pairs_to_map(metadata));
+            let entry = store.save(input).await?;
+            println!("{}", serde_json::to_string_pretty(&entry_to_json(&entry))?);
+        }
+        MemoryCommand::Query {
+            topic,
+            max_results,
+            min_score,
+            filters,
+        } => {
+            debug!(
+                "query memory: topic={topic}, max_results={max_results}, min_score={min_score}, filters={:?}",
+                filters
+            );
+            let query = MemoryQuery {
+                topic,
+                max_results,
+                min_score: Score::new(min_score).map_err(|e| format!("invalid min_score: {e}"))?,
+                filters: pairs_to_map(filters),
+            };
+            let entries = store.query(query).await?;
+            let json: Vec<_> = entries.iter().map(entry_to_json).collect();
+            println!("{}", serde_json::to_string_pretty(&json)?);
+        }
+        MemoryCommand::Update {
+            id,
+            content,
+            metadata,
+        } => {
+            debug!(
+                "update memory entry: id={id}, content={content}, metadata={:?}",
+                metadata
+            );
+            let input = MemoryInput::new(content, pairs_to_map(metadata));
+            let entry = store.update(id, input).await?;
+            println!("{}", serde_json::to_string_pretty(&entry_to_json(&entry))?);
+        }
+        MemoryCommand::Delete { id } => {
+            debug!("delete memory entry: id={id}");
+            store.delete(id).await?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({ "deleted": id.to_string() }))?
+            );
+        }
+        MemoryCommand::Clear => {
+            debug!("clear memory");
+            store.clear().await?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({ "cleared": true }))?
+            );
         }
     }
-
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Config init
+// ---------------------------------------------------------------------------
+
+fn cmd_config_init(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    if path.exists() {
+        return Err(format!(
+            "config file already exists at {}; remove it first if you want to regenerate it",
+            path.display()
+        )
+        .into());
+    }
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            format!(
+                "could not create config directory '{}': {e}",
+                parent.display()
+            )
+        })?;
+    }
+
+    std::fs::write(path, DEFAULT_CONFIG_TEMPLATE)
+        .map_err(|e| format!("could not write config file '{}': {e}", path.display()))?;
+
+    println!("Config file written to {}", path.display());
+    Ok(())
+}
+
+/// Template written by `loci config init`.
+const DEFAULT_CONFIG_TEMPLATE: &str = r#"########################################
+# Providers (Compute Layer)
+########################################
+
+[providers.ollama]
+kind = "ollama"
+endpoint = "http://localhost:11434"
+
+# Uncomment and fill in to use OpenAI:
+# [providers.openai]
+# kind = "openai"
+# endpoint = "https://api.openai.com/v1"
+# api_key = "env:OPENAI_API_KEY"
+
+# Uncomment and fill in to use Anthropic:
+# [providers.anthropic]
+# kind = "anthropic"
+# endpoint = "https://api.anthropic.com"
+# api_key = "env:ANTHROPIC_API_KEY"
+
+########################################
+# Models (Inference Abstraction)
+########################################
+
+[models.default]
+provider = "ollama"
+name = "qwen3:0.6b"
+
+########################################
+# Embeddings
+########################################
+
+[embeddings.default]
+provider = "ollama"
+model = "qwen3-embedding:0.6b"
+dimension = 768
+
+########################################
+# Memory Store (Persistence Layer)
+########################################
+
+[stores.qdrant]
+kind = "qdrant"
+url = "http://localhost:6333"
+# api_key = "env:QDRANT_API_KEY"
+
+########################################
+# Memory Configuration
+########################################
+
+[memory]
+store = "qdrant"
+collection = "memories"
+# similarity_threshold = 0.95  # optional deduplication threshold (0.0–1.0)
+
+########################################
+# Routing / Defaults
+########################################
+
+[routing]
+default_model = "default"
+fallback_models = []
+embedding = "default"
+"#;
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Resolves the config file path: uses the provided value when non-empty,
+/// otherwise falls back to `~/.config/loci/config.toml`.
+fn resolve_config_path(cli_value: &str) -> PathBuf {
+    if !cli_value.is_empty() {
+        return PathBuf::from(cli_value);
+    }
+    dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("loci")
+        .join("config.toml")
 }
 
 /// Parses a `key=value` string into a `(String, String)` pair.
@@ -284,9 +531,8 @@ fn pairs_to_map(pairs: Vec<(String, String)>) -> HashMap<String, String> {
     pairs.into_iter().collect()
 }
 
-/// Serialises a [`MemoryEntry`] into a [`serde_json::Value`] suitable for
-/// pretty-printing to stdout.
-fn entry_to_json(e: &MemoryEntry) -> serde_json::Value {
+/// Serialises a [`loci_core::memory::MemoryEntry`] to a [`serde_json::Value`].
+fn entry_to_json(e: &loci_core::memory::MemoryEntry) -> serde_json::Value {
     serde_json::json!({
         "id": e.memory.id.to_string(),
         "content": e.memory.content,
@@ -297,7 +543,7 @@ fn entry_to_json(e: &MemoryEntry) -> serde_json::Value {
 }
 
 fn setup_logging(verbose: bool) {
-    #[cfg(feature = "journald")]
+    #[cfg(feature = "systemd-journal-logger")]
     {
         JournalLog::new()
             .expect("Failed to connect to journald")
@@ -305,7 +551,7 @@ fn setup_logging(verbose: bool) {
             .expect("Failed to install journald logger");
     }
 
-    #[cfg(not(feature = "journald"))]
+    #[cfg(not(feature = "systemd-journal-logger"))]
     {
         env_logger::init();
     }
@@ -338,5 +584,17 @@ mod tests {
     #[test]
     fn parse_key_value_missing_equals_returns_err() {
         assert!(parse_key_value("noequalssign").is_err());
+    }
+
+    #[test]
+    fn resolve_config_path_uses_cli_value_when_set() {
+        let p = resolve_config_path("/tmp/my-config.toml");
+        assert_eq!(p, PathBuf::from("/tmp/my-config.toml"));
+    }
+
+    #[test]
+    fn resolve_config_path_falls_back_to_xdg_when_empty() {
+        let p = resolve_config_path("");
+        assert!(p.ends_with("loci/config.toml"));
     }
 }

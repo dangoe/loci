@@ -17,7 +17,7 @@ pub struct EmbeddingRequest {
     /// The embedding model identifier.
     pub model: String,
 
-    /// One or more texts to embed in a single call.  Backends that only
+    /// One or more texts to embed in a single call. Backends that only
     /// support a single input per request will issue multiple HTTP calls
     /// transparently and concatenate the results.
     pub input: Vec<String>,
