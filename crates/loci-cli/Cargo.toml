@@ -7,6 +7,9 @@ edition.workspace = true
 name = "loci"
 path = "src/main.rs"
 
+[features]
+systemd-journal-logger = ["dep:systemd-journal-logger"]
+
 [dependencies]
 loci-core = { path = "../loci-core" }
 loci-config = { path = "../loci-config" }
@@ -17,8 +20,8 @@ dirs.workspace = true
 futures.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
-uuid = { version = "1", features = ["v4"] }
+tokio.workspace = true
+uuid.workspace = true
 env_logger = "0.11.10"
 systemd-journal-logger = { version = "2.2", optional = true }
 log.workspace = true

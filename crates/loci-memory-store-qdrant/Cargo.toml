@@ -7,7 +7,7 @@ edition.workspace = true
 integration = []
 
 [dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio.workspace = true
 loci-core = { path = "../loci-core" }
 chrono.workspace = true
 log.workspace = true
@@ -16,5 +16,4 @@ serde_json.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
-testcontainers = { version = "0.27", features  = ["http_wait_plain"] }
-uuid.workspace = true
+testcontainers = { version = "0.27", features = ["http_wait_plain"] }
