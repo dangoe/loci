@@ -49,7 +49,7 @@ The following is fully implemented and working today.
 | Crate | Path | Purpose |
 |---|---|---|
 | `loci-core` | `crates/loci-core` | Traits, domain types, `Contextualizer` |
-| `loci-memory-store-qdrant` | `crates/loci-memory-store-qdrant` | Qdrant-backed `MemoryStore` with deduplication |
+| `loci-memory-store-qdrant` | `crates/loci-memory-store-qdrant` | Qdrant-backed `MemoryStore` with lifecycle-aware retrieval |
 | `loci-model-provider-ollama` | `crates/loci-model-provider-ollama` | Ollama embedding + text generation model provider |
 | `loci-config` | `crates/loci-config` | TOML config loading and secret resolution |
 | `loci-cli` | `crates/loci-cli` | `loci` CLI binary for CRUD + prompt enhancement |
@@ -58,23 +58,24 @@ The following is fully implemented and working today.
 
 | Trait | Purpose |
 |---|---|
-| `MemoryStore` | Save, query, update, delete, clear memories |
+| `MemoryStore` | Save, query, update, set tier, delete, clear memories |
 | `TextEmbedder` | Embed text into a vector |
 | `EmbeddingModelProvider` | Raw embedding model provider (HTTP, model name) |
 | `TextGenerationModelProvider` | Raw text generation model provider |
 
-Key domain types: `Memory`, `MemoryEntry`, `MemoryInput`, `MemoryQuery`, `Score`, `Embedding`.
-
-The `Contextualizer` retrieves relevant memories and prepends a system prompt block to the
-user's prompt before calling the LLM.
+Key domain types: `Memory`, `MemoryEntry`, `MemoryInput`, `MemoryQuery`, `MemoryTier`, `MemoryQueryMode`, `Score`, `Embedding`.
 
 ### Storage (`loci-memory-store-qdrant`)
 
 `QdrantMemoryStore` uses [Qdrant](https://qdrant.tech/) for cosine-similarity vector search.
 
 Features:
-- Configurable deduplication (similarity threshold — reuses existing memory instead of
-  creating a duplicate)
+- Configurable deduplication (`similarity_threshold`) to reuse near-duplicates
+- Tiered memory lifecycle (`Candidate`, `Stable`, `Core`; `Ephemeral` is request-scoped only)
+- Per-tier TTL defaults and query-time expiry filtering
+- Weighted retrieval ranking (`similarity * tier_weight`)
+- Source-corroboration promotion (`Candidate -> Stable`) when the same fact is observed from a different `source` metadata value
+- Manual curation path (`set_tier`) for promoting to `Core`
 - Metadata filtering (AND semantics, exact match)
 - Min score threshold and max result limits
 
@@ -160,12 +161,14 @@ Store a new memory.
 ```bash
 loci memory save --content "The project uses Qdrant for vector storage"
 loci memory save --content "Deployment target is Kubernetes" --meta env=production --meta team=platform
+loci memory save --content "This is a curated fact" --tier core --meta source=manual
 ```
 
 | Flag | Description |
 |---|---|
 | `--content <text>` | Memory text (required) |
 | `--meta KEY=VALUE` | Metadata key-value pair (repeatable) |
+| `--tier <candidate|stable|core>` | Optional persisted tier override |
 
 ### `loci memory query`
 
@@ -174,14 +177,16 @@ Retrieve semantically similar memories.
 ```bash
 loci memory query --topic "vector database"
 loci memory query --topic "deployment" --max-results 3 --min-score 0.7 --filter env=production
+loci memory query --topic "platform" --mode use
 ```
 
 | Flag | Default | Description |
 |---|---|---|
 | `--topic <text>` | _(required)_ | Query topic |
 | `--max-results <n>` | `10` | Maximum number of results |
-| `--min-score <f64>` | `0.0` | Minimum similarity score [0.0, 1.0] |
+| `--min-score <f64>` | `0.0` | Minimum weighted score [0.0, 1.0] |
 | `--filter KEY=VALUE` | _(none)_ | Metadata filter (repeatable, AND semantics) |
+| `--mode <lookup|use>` | `lookup` | Query mode (reserved for behavior control) |
 
 ### `loci memory update`
 
@@ -189,6 +194,14 @@ Update the content or metadata of an existing memory by UUID.
 
 ```bash
 loci memory update --id <uuid> --content "Updated content" --meta key=value
+```
+
+### `loci memory set-tier`
+
+Set the tier of an existing memory by UUID.
+
+```bash
+loci memory set-tier --id <uuid> --tier core
 ```
 
 ### `loci memory delete`
@@ -220,7 +233,7 @@ loci prompt "Summarise our deployment setup" --max-memories 8 --min-score 0.5
 |---|---|---|
 | `<prompt>` | _(required)_ | Prompt text (positional) |
 | `--max-memories <n>` | `5` | Max memories to inject as context |
-| `--min-score <f64>` | `0.5` | Minimum similarity score for context memories |
+| `--min-score <f64>` | `0.5` | Minimum weighted score for context memories |
 
 ### `loci config init`
 
@@ -229,6 +242,16 @@ Scaffold a default configuration file at the config path.
 ```bash
 loci config init
 loci --config /path/to/config.toml config init
+```
+
+### Memory config keys
+
+```toml
+[memory]
+store = "qdrant"
+collection = "memories"
+# similarity_threshold = 0.95     # deduplicate by semantic similarity
+# promotion_source_threshold = 2  # promote Candidate -> Stable when corroborated by a different source
 ```
 
 ---

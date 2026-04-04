@@ -26,7 +26,7 @@ use loci_core::contextualization::{
     Contextualizer, ContextualizerConfig, ContextualizerTuningConfig,
 };
 use loci_core::embedding::DefaultTextEmbedder;
-use loci_core::memory::{MemoryInput, MemoryQuery, Score};
+use loci_core::memory::{MemoryInput, MemoryQuery, MemoryQueryMode, MemoryTier, Score};
 use loci_core::model_provider::text_generation::{ThinkingEffortLevel, ThinkingMode};
 use loci_core::store::MemoryStore;
 use loci_memory_store_qdrant::config::QdrantConfig;
@@ -94,6 +94,9 @@ enum MemoryCommand {
         /// Metadata as key=value pairs (repeatable).
         #[arg(long = "meta", value_parser = parse_key_value)]
         metadata: Vec<(String, String)>,
+        /// Optional tier (candidate|stable|core).
+        #[arg(long, value_parser = parse_memory_tier)]
+        tier: Option<MemoryTier>,
     },
     /// Query memory entries by semantic similarity.
     Query {
@@ -109,6 +112,9 @@ enum MemoryCommand {
         /// Filter by metadata key=value pairs (repeatable).
         #[arg(long = "filter", value_parser = parse_key_value)]
         filters: Vec<(String, String)>,
+        /// Query mode: lookup or use (reserved for downstream behavior control).
+        #[arg(long, default_value = "lookup", value_parser = parse_query_mode)]
+        mode: MemoryQueryMode,
     },
     /// Update an existing memory entry by ID.
     Update {
@@ -127,6 +133,15 @@ enum MemoryCommand {
         /// Memory entry ID.
         #[arg(long)]
         id: Uuid,
+    },
+    /// Set the tier of an existing memory entry.
+    SetTier {
+        /// Memory entry ID.
+        #[arg(long)]
+        id: Uuid,
+        /// Tier (candidate|stable|core).
+        #[arg(long, value_parser = parse_memory_tier)]
+        tier: MemoryTier,
     },
     /// Clear all memories from the collection.
     Clear,
@@ -258,6 +273,7 @@ async fn build_store(
             let qdrant_config = QdrantConfig {
                 collection_name: config.memory.collection.clone(),
                 similarity_threshold: config.memory.similarity_threshold,
+                promotion_source_threshold: config.memory.promotion_source_threshold,
             };
 
             info!("Connecting to Qdrant at {url}");
@@ -386,12 +402,19 @@ async fn run_memory_command(
     command: MemoryCommand,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match command {
-        MemoryCommand::Save { content, metadata } => {
+        MemoryCommand::Save {
+            content,
+            metadata,
+            tier,
+        } => {
             debug!(
-                "save memory entry: content={content}, metadata={:?}",
-                metadata
+                "save memory entry: content={content}, metadata={:?}, tier={:?}",
+                metadata, tier
             );
-            let input = MemoryInput::new(content, pairs_to_map(metadata));
+            let input = match tier {
+                Some(tier) => MemoryInput::new_with_tier(content, pairs_to_map(metadata), tier),
+                None => MemoryInput::new(content, pairs_to_map(metadata)),
+            };
             let entry = store.save(input).await?;
             println!("{}", serde_json::to_string_pretty(&entry_to_json(&entry))?);
         }
@@ -400,16 +423,18 @@ async fn run_memory_command(
             max_results,
             min_score,
             filters,
+            mode,
         } => {
             debug!(
-                "query memory: topic={topic}, max_results={max_results}, min_score={min_score}, filters={:?}",
-                filters
+                "query memory: topic={topic}, max_results={max_results}, min_score={min_score}, filters={:?}, mode={:?}",
+                filters, mode
             );
             let query = MemoryQuery {
                 topic,
                 max_results,
                 min_score: Score::new(min_score).map_err(|e| format!("invalid min_score: {e}"))?,
                 filters: pairs_to_map(filters),
+                mode,
             };
             let entries = store.query(query).await?;
             let json: Vec<_> = entries.iter().map(entry_to_json).collect();
@@ -435,6 +460,11 @@ async fn run_memory_command(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({ "deleted": id.to_string() }))?
             );
+        }
+        MemoryCommand::SetTier { id, tier } => {
+            debug!("set memory tier: id={id}, tier={:?}", tier);
+            let entry = store.set_tier(id, tier).await?;
+            println!("{}", serde_json::to_string_pretty(&entry_to_json(&entry))?);
         }
         MemoryCommand::Clear => {
             debug!("clear memory");
@@ -547,7 +577,8 @@ url = "http://localhost:6333"
 [memory]
 store = "qdrant"
 collection = "memories"
-# similarity_threshold = 0.95  # optional deduplication threshold (0.0–1.0)
+# similarity_threshold = 0.95        # optional deduplication threshold (0.0–1.0)
+# promotion_source_threshold = 2        # Candidate -> Stable after corroboration from N independent sources
 
 ########################################
 # Routing / Defaults
@@ -583,6 +614,27 @@ fn parse_key_value(s: &str) -> Result<(String, String), String> {
     Ok((k.to_string(), v.to_string()))
 }
 
+fn parse_memory_tier(s: &str) -> Result<MemoryTier, String> {
+    let tier = MemoryTier::parse(s)
+        .ok_or_else(|| format!("invalid tier {s:?}; expected one of: candidate, stable, core"))?;
+
+    if tier == MemoryTier::Ephemeral {
+        return Err("ephemeral tier is request-scoped and cannot be persisted".to_string());
+    }
+
+    Ok(tier)
+}
+
+fn parse_query_mode(s: &str) -> Result<MemoryQueryMode, String> {
+    match s {
+        "lookup" => Ok(MemoryQueryMode::Lookup),
+        "use" => Ok(MemoryQueryMode::Use),
+        _ => Err(format!(
+            "invalid query mode {s:?}; expected one of: lookup, use"
+        )),
+    }
+}
+
 /// Converts a list of `(key, value)` pairs into a [`HashMap`].
 fn pairs_to_map(pairs: Vec<(String, String)>) -> HashMap<String, String> {
     pairs.into_iter().collect()
@@ -594,6 +646,11 @@ fn entry_to_json(e: &loci_core::memory::MemoryEntry) -> serde_json::Value {
         "id": e.memory.id.to_string(),
         "content": e.memory.content,
         "metadata": e.memory.metadata,
+        "tier": e.memory.tier.as_str(),
+        "seen_count": e.memory.seen_count,
+        "first_seen": e.memory.first_seen.to_rfc3339(),
+        "last_seen": e.memory.last_seen.to_rfc3339(),
+        "expires_at": e.memory.expires_at.map(|dt| dt.to_rfc3339()),
         "created_at": e.memory.created_at.to_rfc3339(),
         "score": e.score.value(),
     })
@@ -653,5 +710,16 @@ mod tests {
     fn resolve_config_path_falls_back_to_xdg_when_empty() {
         let p = resolve_config_path("");
         assert!(p.ends_with("loci/config.toml"));
+    }
+
+    #[test]
+    fn parse_memory_tier_rejects_ephemeral() {
+        assert!(parse_memory_tier("ephemeral").is_err());
+    }
+
+    #[test]
+    fn parse_query_mode_accepts_known_values() {
+        assert_eq!(parse_query_mode("lookup").unwrap(), MemoryQueryMode::Lookup);
+        assert_eq!(parse_query_mode("use").unwrap(), MemoryQueryMode::Use);
     }
 }

@@ -17,4 +17,12 @@ pub struct MemoryConfig {
     /// When set, a new memory is not saved if an existing one already reaches
     /// this similarity score.
     pub similarity_threshold: Option<f64>,
+
+    /// Number of independent sources required to promote Candidate -> Stable.
+    #[serde(default = "default_promotion_source_threshold")]
+    pub promotion_source_threshold: u32,
+}
+
+fn default_promotion_source_threshold() -> u32 {
+    2
 }

@@ -10,4 +10,6 @@ pub struct QdrantConfig {
     /// Optional deduplication threshold. When `Some(t)`, a new memory is not stored
     /// if an existing one already has a cosine similarity score ≥ `t`.
     pub similarity_threshold: Option<f64>,
+    /// Number of independent sources required to promote Candidate -> Stable.
+    pub promotion_source_threshold: u32,
 }

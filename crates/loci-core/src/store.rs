@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::{
     error::MemoryStoreError,
-    memory::{MemoryEntry, MemoryInput, MemoryQuery},
+    memory::{MemoryEntry, MemoryInput, MemoryQuery, MemoryTier},
 };
 
 /// Persistent storage and semantic retrieval of [`crate::Memory`] entries.
@@ -25,6 +25,11 @@ pub trait MemoryStore: Send + Sync {
         &self,
         id: Uuid,
         input: MemoryInput,
+    ) -> impl Future<Output = Result<MemoryEntry, MemoryStoreError>> + Send + '_;
+    fn set_tier(
+        &self,
+        id: Uuid,
+        tier: MemoryTier,
     ) -> impl Future<Output = Result<MemoryEntry, MemoryStoreError>> + Send + '_;
     fn delete(&self, id: Uuid) -> impl Future<Output = Result<(), MemoryStoreError>> + Send + '_;
     fn clear(&self) -> impl Future<Output = Result<(), MemoryStoreError>> + Send + '_;

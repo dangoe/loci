@@ -8,7 +8,7 @@ use std::pin::Pin;
 
 use loci_core::embedding::{Embedding, TextEmbedder};
 use loci_core::error::{EmbeddingError, MemoryStoreError};
-use loci_core::memory::{MemoryInput, MemoryQuery, Score};
+use loci_core::memory::{MemoryInput, MemoryQuery, MemoryQueryMode, MemoryTier, Score};
 use loci_core::store::MemoryStore;
 use loci_memory_store_qdrant::config::QdrantConfig;
 use loci_memory_store_qdrant::store::QdrantMemoryStore;
@@ -94,6 +94,7 @@ async fn start_store(
     let config = QdrantConfig {
         collection_name: "memories".to_string(),
         similarity_threshold,
+        promotion_source_threshold: 2,
     };
 
     let store =
@@ -120,6 +121,7 @@ fn query(topic: &str, max_results: usize) -> MemoryQuery {
         max_results,
         min_score: Score::ZERO,
         filters: HashMap::new(),
+        mode: MemoryQueryMode::Lookup,
     }
 }
 
@@ -138,7 +140,7 @@ async fn test_saved_memory_is_returned_by_query() {
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].memory.id, entry.memory.id);
     assert_eq!(results[0].memory.content, "hello world");
-    assert!(results[0].score.value() > 0.9);
+    assert!(results[0].score.value() > 0.5);
 }
 
 #[tokio::test]
@@ -199,6 +201,7 @@ async fn test_metadata_is_persisted_and_restored() {
     let results = store.query(query("tagged content query", 1)).await.unwrap();
 
     assert_eq!(results[0].memory.metadata, metadata);
+    assert_eq!(results[0].memory.tier, MemoryTier::Candidate);
 }
 
 #[tokio::test]
@@ -231,6 +234,7 @@ async fn test_query_filters_by_metadata() {
             max_results: 10,
             min_score: Score::ZERO,
             filters: HashMap::from([("lang".to_string(), "en".to_string())]),
+            mode: MemoryQueryMode::Lookup,
         })
         .await
         .unwrap();
@@ -242,7 +246,7 @@ async fn test_query_filters_by_metadata() {
 #[tokio::test]
 #[cfg_attr(not(feature = "integration"), ignore)]
 async fn test_query_respects_min_score() {
-    // x-axis and y-axis are orthogonal → cosine = 0
+    // x-axis and y-axis are orthogonal -> cosine = 0
     let embedder = FakeTextEmbedder::new()
         .with("x-axis", unit_vec(0))
         .with("y-axis", unit_vec(1))
@@ -252,13 +256,14 @@ async fn test_query_respects_min_score() {
     store.save(input("x-axis")).await.unwrap();
     store.save(input("y-axis")).await.unwrap();
 
-    // min_score of 0.9 should exclude the orthogonal entry
+    // weighted min_score of 0.5 should exclude the orthogonal entry
     let results = store
         .query(MemoryQuery {
             topic: "query".to_string(),
             max_results: 10,
-            min_score: Score::new(0.9).unwrap(),
+            min_score: Score::new(0.5).unwrap(),
             filters: HashMap::new(),
+            mode: MemoryQueryMode::Lookup,
         })
         .await
         .unwrap();
@@ -304,7 +309,7 @@ async fn test_clear_removes_all_memories() {
 #[tokio::test]
 #[cfg_attr(not(feature = "integration"), ignore)]
 async fn test_deduplication_reuses_id_when_score_meets_threshold() {
-    // Both "original" and "near-duplicate" map to the same vector → cosine = 1.0 ≥ 0.9
+    // Both "original" and "near-duplicate" map to the same vector -> cosine = 1.0 >= 0.9
     let embedder = FakeTextEmbedder::new()
         .with("original", unit_vec(0))
         .with("near-duplicate", unit_vec(0));
@@ -319,7 +324,7 @@ async fn test_deduplication_reuses_id_when_score_meets_threshold() {
 #[tokio::test]
 #[cfg_attr(not(feature = "integration"), ignore)]
 async fn test_deduplication_stores_new_memory_when_score_below_threshold() {
-    // Orthogonal vectors → cosine ≈ 0 < 0.9 → stored separately
+    // Orthogonal vectors -> cosine ~= 0 < 0.9 -> stored separately
     let embedder = FakeTextEmbedder::new()
         .with("x-axis topic", unit_vec(0))
         .with("y-axis topic", unit_vec(1));
@@ -364,7 +369,7 @@ async fn test_update_returns_not_found_for_unknown_id() {
 #[tokio::test]
 #[cfg_attr(not(feature = "integration"), ignore)]
 async fn test_deduplication_does_not_collapse_different_metadata() {
-    // Same embedding but different metadata → must produce two distinct entries
+    // Same embedding but different metadata -> must produce two distinct entries
     let embedder = FakeTextEmbedder::new()
         .with("same content a", unit_vec(0))
         .with("same content b", unit_vec(0));
@@ -386,4 +391,75 @@ async fn test_deduplication_does_not_collapse_different_metadata() {
         .unwrap();
 
     assert_ne!(second.memory.id, first.memory.id);
+}
+
+#[tokio::test]
+#[cfg_attr(not(feature = "integration"), ignore)]
+async fn test_query_modes_do_not_increment_seen_count() {
+    let embedder = FakeTextEmbedder::new()
+        .with("remember this", unit_vec(0))
+        .with("query", unit_vec(0));
+    let (store, _container) = start_store(embedder, None).await;
+
+    let saved = store.save(input("remember this")).await.unwrap();
+    assert_eq!(saved.memory.seen_count, 1);
+
+    let _ = store
+        .query(MemoryQuery {
+            topic: "query".to_string(),
+            max_results: 1,
+            min_score: Score::ZERO,
+            filters: HashMap::new(),
+            mode: MemoryQueryMode::Use,
+        })
+        .await
+        .unwrap();
+
+    let looked_up = store.query(query("query", 1)).await.unwrap();
+    assert_eq!(looked_up[0].memory.seen_count, 1);
+}
+
+#[tokio::test]
+#[cfg_attr(not(feature = "integration"), ignore)]
+async fn test_candidate_promotes_when_same_fact_arrives_from_different_source() {
+    let embedder = FakeTextEmbedder::new()
+        .with("fact from source a", unit_vec(0))
+        .with("fact from source b", unit_vec(0));
+    let (store, _container) = start_store(embedder, Some(0.9)).await;
+
+    let first = store
+        .save(input_with_metadata(
+            "fact from source a",
+            HashMap::from([("source".to_string(), "https://a.example".to_string())]),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(first.memory.tier, MemoryTier::Candidate);
+
+    let second = store
+        .save(input_with_metadata(
+            "fact from source b",
+            HashMap::from([("source".to_string(), "https://b.example".to_string())]),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(second.memory.id, first.memory.id);
+    assert_eq!(second.memory.tier, MemoryTier::Stable);
+}
+
+#[tokio::test]
+#[cfg_attr(not(feature = "integration"), ignore)]
+async fn test_set_tier_promotes_to_core() {
+    let embedder = FakeTextEmbedder::new().with("curate me", unit_vec(0));
+    let (store, _container) = start_store(embedder, None).await;
+
+    let saved = store.save(input("curate me")).await.unwrap();
+    let updated = store
+        .set_tier(saved.memory.id, MemoryTier::Core)
+        .await
+        .unwrap();
+
+    assert_eq!(updated.memory.tier, MemoryTier::Core);
+    assert_eq!(updated.memory.expires_at, None);
 }

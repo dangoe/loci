@@ -5,22 +5,106 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use uuid::Uuid;
 
-/// Input passed to [`crate::MemoryStore::save`].
+/// Input passed to [`crate::MemoryStore::save`] and [`crate::MemoryStore::update`].
 ///
-/// The store assigns an ID and timestamp; callers only supply content and metadata.
+/// The store assigns IDs/timestamps and may apply lifecycle defaults.
 #[derive(Debug, Clone)]
 pub struct MemoryInput {
     pub content: String,
     pub metadata: HashMap<String, String>,
+    /// Optional explicit tier override.
+    ///
+    /// - `None` means "use store default" (currently `Candidate` on save,
+    ///   preserve existing on update).
+    pub tier: Option<MemoryTier>,
 }
 
 impl MemoryInput {
     pub fn new(content: String, metadata: HashMap<String, String>) -> Self {
-        Self { content, metadata }
+        Self {
+            content,
+            metadata,
+            tier: None,
+        }
     }
+
+    pub fn new_with_tier(
+        content: String,
+        metadata: HashMap<String, String>,
+        tier: MemoryTier,
+    ) -> Self {
+        Self {
+            content,
+            metadata,
+            tier: Some(tier),
+        }
+    }
+}
+
+/// A semantic memory tier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MemoryTier {
+    /// Request-scoped only, not persisted.
+    Ephemeral,
+    /// New persisted memory with shorter TTL and lower retrieval priority.
+    Candidate,
+    /// Promoted memory with longer TTL and higher retrieval priority.
+    Stable,
+    /// Manually curated long-term memory that does not expire.
+    Core,
+}
+
+impl MemoryTier {
+    /// Default retrieval weight used for score blending.
+    pub fn retrieval_weight(self) -> f64 {
+        match self {
+            Self::Ephemeral => 0.0,
+            Self::Candidate => 0.6,
+            Self::Stable => 0.9,
+            Self::Core => 1.0,
+        }
+    }
+
+    /// Default expiry horizon by tier.
+    pub fn default_ttl(self) -> Option<Duration> {
+        match self {
+            Self::Ephemeral => Some(Duration::zero()),
+            Self::Candidate => Some(Duration::days(30)),
+            Self::Stable => Some(Duration::days(365)),
+            Self::Core => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ephemeral => "ephemeral",
+            Self::Candidate => "candidate",
+            Self::Stable => "stable",
+            Self::Core => "core",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "ephemeral" => Some(Self::Ephemeral),
+            "candidate" => Some(Self::Candidate),
+            "stable" => Some(Self::Stable),
+            "core" => Some(Self::Core),
+            _ => None,
+        }
+    }
+}
+
+/// Query behavior mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryQueryMode {
+    /// Retrieval-only lookup. Does not affect lifecycle counters.
+    Lookup,
+    /// Retrieval used for prompt-context memory. Updates usage counters.
+    Use,
 }
 
 /// A similarity score in the range [0.0, 1.0].
@@ -64,17 +148,37 @@ pub struct Memory {
     pub id: Uuid,
     pub content: String,
     pub metadata: HashMap<String, String>,
+    pub tier: MemoryTier,
+    pub seen_count: u32,
+    pub first_seen: DateTime<Utc>,
+    pub last_seen: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
 }
 
 impl Memory {
-    /// Creates a new `Memory` with a generated ID and the current UTC timestamp.
+    /// Creates a new `Memory` defaulting to `Candidate` tier.
     pub fn new(content: String, metadata: HashMap<String, String>) -> Self {
+        Self::new_with_tier(content, metadata, MemoryTier::Candidate)
+    }
+
+    /// Creates a new `Memory` for a specific tier with default lifecycle fields.
+    pub fn new_with_tier(
+        content: String,
+        metadata: HashMap<String, String>,
+        tier: MemoryTier,
+    ) -> Self {
+        let now = Utc::now();
         Self {
             id: Uuid::new_v4(),
             content,
             metadata,
-            created_at: Utc::now(),
+            tier,
+            seen_count: 1,
+            first_seen: now,
+            last_seen: now,
+            expires_at: tier.default_ttl().map(|ttl| now + ttl),
+            created_at: now,
         }
     }
 }
@@ -92,10 +196,12 @@ pub struct MemoryEntry {
 pub struct MemoryQuery {
     pub topic: String,
     pub max_results: usize,
-    /// Minimum similarity score a result must reach to be included. In [0.0, 1.0].
+    /// Minimum final score a result must reach to be included. In [0.0, 1.0].
     pub min_score: Score,
     /// Only return entries whose metadata contains all of these key/value pairs.
     pub filters: HashMap<String, String>,
+    /// Query behavior mode.
+    pub mode: MemoryQueryMode,
 }
 
 #[cfg(test)]
@@ -144,6 +250,14 @@ mod tests {
         let input = MemoryInput::new("content".to_string(), metadata.clone());
         assert_eq!(input.content, "content");
         assert_eq!(input.metadata, metadata);
+        assert_eq!(input.tier, None);
+    }
+
+    #[test]
+    fn test_memory_input_new_with_tier_stores_tier() {
+        let input =
+            MemoryInput::new_with_tier("content".to_string(), HashMap::new(), MemoryTier::Core);
+        assert_eq!(input.tier, Some(MemoryTier::Core));
     }
 
     #[test]
@@ -159,5 +273,21 @@ mod tests {
         let m = Memory::new("my content".to_string(), metadata.clone());
         assert_eq!(m.content, "my content");
         assert_eq!(m.metadata, metadata);
+        assert_eq!(m.tier, MemoryTier::Candidate);
+        assert_eq!(m.seen_count, 1);
+        assert_eq!(m.first_seen, m.last_seen);
+        assert!(m.expires_at.is_some());
+    }
+
+    #[test]
+    fn test_core_default_ttl_is_none() {
+        assert_eq!(MemoryTier::Core.default_ttl(), None);
+    }
+
+    #[test]
+    fn test_memory_tier_roundtrip_str() {
+        assert_eq!(MemoryTier::parse("candidate"), Some(MemoryTier::Candidate));
+        assert_eq!(MemoryTier::Candidate.as_str(), "candidate");
+        assert_eq!(MemoryTier::parse("unknown"), None);
     }
 }

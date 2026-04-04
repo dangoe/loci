@@ -10,7 +10,7 @@ use std::time::Duration;
 use futures::Stream;
 
 use crate::error::ContextualizerError;
-use crate::memory::{MemoryEntry, MemoryQuery, Score};
+use crate::memory::{MemoryEntry, MemoryQuery, MemoryQueryMode, Score};
 use crate::model_provider::common::ModelProviderParams;
 use crate::model_provider::text_generation::{self, TextGenerationRequest, TextGenerationResponse};
 use crate::store::MemoryStore;
@@ -167,13 +167,8 @@ where
 
     fn build_system_prompt(&self, memory_entries: Vec<MemoryEntry>) -> String {
         let mut buf = String::new();
-        buf.push_str(
-            SYSTEM_PROMPT_BASE_TEMPLATE
-                .replace('\n', "\n- ")
-                .replace("- ", "- ")
-                .as_str(),
-        );
-        buf.push_str("\n");
+        buf.push_str(SYSTEM_PROMPT_BASE_TEMPLATE.replace('\n', "\n- ").as_str());
+        buf.push('\n');
         buf.push_str("## Relevant memories\n");
 
         if memory_entries.is_empty() {
@@ -196,6 +191,7 @@ where
             max_results: self.config.max_memories,
             min_score: self.config.min_score,
             filters: self.config.filters.clone(),
+            mode: MemoryQueryMode::Use,
         };
 
         self.memory_store
@@ -207,9 +203,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
     use std::sync::Mutex;
     use std::time::Duration;
+    use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 
     use futures::StreamExt as _;
     use pretty_assertions::assert_eq;
@@ -218,7 +214,9 @@ mod tests {
 
     use crate::{
         error::MemoryStoreError,
-        memory::{Memory, MemoryEntry, MemoryInput, MemoryQuery, Score},
+        memory::{
+            Memory, MemoryEntry, MemoryInput, MemoryQuery, MemoryQueryMode, MemoryTier, Score,
+        },
         model_provider::{
             common::ModelProviderResult,
             error::ModelProviderError,
@@ -257,10 +255,18 @@ mod tests {
 
         fn update(
             &self,
-            _id: Uuid,
+            id: Uuid,
             _input: MemoryInput,
         ) -> impl Future<Output = Result<MemoryEntry, MemoryStoreError>> + Send + '_ {
-            async move { Err(MemoryStoreError::NotFound(_id)) }
+            async move { Err(MemoryStoreError::NotFound(id)) }
+        }
+
+        fn set_tier(
+            &self,
+            id: Uuid,
+            _tier: MemoryTier,
+        ) -> impl Future<Output = Result<MemoryEntry, MemoryStoreError>> + Send + '_ {
+            async move { Err(MemoryStoreError::NotFound(id)) }
         }
 
         fn delete(
@@ -296,6 +302,14 @@ mod tests {
             &self,
             id: Uuid,
             _input: MemoryInput,
+        ) -> impl Future<Output = Result<MemoryEntry, MemoryStoreError>> + Send + '_ {
+            async move { Err(MemoryStoreError::NotFound(id)) }
+        }
+
+        fn set_tier(
+            &self,
+            id: Uuid,
+            _tier: MemoryTier,
         ) -> impl Future<Output = Result<MemoryEntry, MemoryStoreError>> + Send + '_ {
             async move { Err(MemoryStoreError::NotFound(id)) }
         }
@@ -400,7 +414,13 @@ mod tests {
         ) -> Pin<Box<dyn Future<Output = ModelProviderResult<TextGenerationResponse>> + Send + '_>>
         {
             *self.last_req.lock().unwrap() = Some(req.clone());
-            Box::pin(async move { Ok(TextGenerationResponse::done("ok".to_string(), req.model, None)) })
+            Box::pin(async move {
+                Ok(TextGenerationResponse::done(
+                    "ok".to_string(),
+                    req.model,
+                    None,
+                ))
+            })
         }
     }
 
@@ -499,5 +519,17 @@ mod tests {
         assert_eq!(req.stop, Some(vec!["<END>".to_string()]));
         assert_eq!(req.keep_alive, Some(Duration::from_secs(120)));
         assert_eq!(req.extra_params.get("seed"), Some(&json!(42)));
+    }
+
+    #[test]
+    fn test_query_memory_uses_use_mode() {
+        let query = MemoryQuery {
+            topic: "x".to_string(),
+            max_results: 1,
+            min_score: Score::ZERO,
+            filters: HashMap::new(),
+            mode: MemoryQueryMode::Use,
+        };
+        assert_eq!(query.mode, MemoryQueryMode::Use);
     }
 }
