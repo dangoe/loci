@@ -5,9 +5,10 @@ edition.workspace = true
 
 [features]
 integration = []
+background-delete = ["dep:tokio"]
 
 [dependencies]
-tokio.workspace = true
+tokio = { workspace = true, optional = true }
 loci-core = { path = "../loci-core" }
 chrono.workspace = true
 log.workspace = true
