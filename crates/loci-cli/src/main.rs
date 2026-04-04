@@ -62,9 +62,9 @@ enum Command {
         /// The prompt to process.
         prompt: String,
 
-        /// Maximum number of memories to inject into the prompt.
+        /// Maximum number of memory entries to inject into the prompt.
         #[arg(long, default_value_t = 5)]
-        max_memories: usize,
+        max_memory_entries: usize,
 
         /// Minimum similarity score for memory retrieval (0.0–1.0).
         #[arg(long, default_value_t = 0.5)]
@@ -128,8 +128,8 @@ enum MemoryCommand {
         /// Memory entry ID.
         id: Uuid,
     },
-    /// Clear all memories from the collection.
-    Clear,
+    /// Prunes all expired memory entries from the collection.
+    PruneExpired,
 }
 
 /// Config sub-commands.
@@ -175,7 +175,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
         Command::Prompt {
             prompt,
-            max_memories,
+            max_memory_entries,
             min_score,
         } => {
             let store = Arc::new(build_store(&config).await?);
@@ -194,7 +194,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let min_score = Score::new(min_score).map_err(|e| format!("invalid min_score: {e}"))?;
 
             let ctx_config = ContextualizerConfig {
-                max_memories,
+                max_memory_entries,
                 min_score,
                 filters: HashMap::new(),
                 text_generation_model: model.name,
@@ -447,13 +447,13 @@ async fn run_memory_command(
             }
 
             let existing = store.get(id).await?;
-            let content = content.unwrap_or(existing.memory.content);
+            let content = content.unwrap_or(existing.memory_entry.content);
             let metadata = if metadata.is_empty() {
-                existing.memory.metadata
+                existing.memory_entry.metadata
             } else {
                 pairs_to_map(metadata)
             };
-            let tier = tier.unwrap_or(existing.memory.tier);
+            let tier = tier.unwrap_or(existing.memory_entry.tier);
 
             let input = MemoryInput::new_with_tier(content, metadata, tier);
             let entry = store.update(id, input).await?;
@@ -467,12 +467,12 @@ async fn run_memory_command(
                 serde_json::to_string_pretty(&serde_json::json!({ "deleted": id.to_string() }))?
             );
         }
-        MemoryCommand::Clear => {
+        MemoryCommand::PruneExpired => {
             debug!("clear memory");
-            store.clear().await?;
+            store.prune_expired().await?;
             println!(
                 "{}",
-                serde_json::to_string_pretty(&serde_json::json!({ "cleared": true }))?
+                serde_json::to_string_pretty(&serde_json::json!({ "expired pruned": true }))?
             );
         }
     }
@@ -577,7 +577,7 @@ url = "http://localhost:6333"
 
 [memory]
 store = "qdrant"
-collection = "memories"
+collection = "memory_entries"
 # similarity_threshold = 0.95        # optional deduplication threshold (0.0–1.0)
 # promotion_source_threshold = 2        # Candidate -> Stable after corroboration from N independent sources
 
@@ -632,17 +632,17 @@ fn pairs_to_map(pairs: Vec<(String, String)>) -> HashMap<String, String> {
 }
 
 /// Serialises a [`loci_core::memory::MemoryEntry`] to a [`serde_json::Value`].
-fn entry_to_json(e: &loci_core::memory::MemoryEntry) -> serde_json::Value {
+fn entry_to_json(e: &loci_core::memory::MemoryQueryResult) -> serde_json::Value {
     serde_json::json!({
-        "id": e.memory.id.to_string(),
-        "content": e.memory.content,
-        "metadata": e.memory.metadata,
-        "tier": e.memory.tier.as_str(),
-        "seen_count": e.memory.seen_count,
-        "first_seen": e.memory.first_seen.to_rfc3339(),
-        "last_seen": e.memory.last_seen.to_rfc3339(),
-        "expires_at": e.memory.expires_at.map(|dt| dt.to_rfc3339()),
-        "created_at": e.memory.created_at.to_rfc3339(),
+        "id": e.memory_entry.id.to_string(),
+        "content": e.memory_entry.content,
+        "metadata": e.memory_entry.metadata,
+        "tier": e.memory_entry.tier.as_str(),
+        "seen_count": e.memory_entry.seen_count,
+        "first_seen": e.memory_entry.first_seen.to_rfc3339(),
+        "last_seen": e.memory_entry.last_seen.to_rfc3339(),
+        "expires_at": e.memory_entry.expires_at.map(|dt| dt.to_rfc3339()),
+        "created_at": e.memory_entry.created_at.to_rfc3339(),
         "score": e.score.value(),
     })
 }

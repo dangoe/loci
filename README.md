@@ -15,7 +15,7 @@ layer between any client — a user, a script, an agent — and a target LLM.
 
 Instead of every conversation starting from a blank slate, loci:
 
-1. **Retrieves relevant memories** from a semantic vector store and injects them into the
+1. **Retrieves relevant memory entries** from a semantic vector store and injects them into the
    prompt as context before forwarding to the LLM.
 2. **Streams model output** back to the caller via the `Contextualizer`.
 
@@ -56,14 +56,14 @@ The following is fully implemented and working today.
 
 ### Core Abstractions (`loci-core`)
 
-| Trait                         | Purpose                                               |
-| ----------------------------- | ----------------------------------------------------- |
-| `MemoryStore`                 | Save, query, update, set tier, delete, clear memories |
-| `TextEmbedder`                | Embed text into a vector                              |
-| `EmbeddingModelProvider`      | Raw embedding model provider (HTTP, model name)       |
-| `TextGenerationModelProvider` | Raw text generation model provider                    |
+| Trait                         | Purpose                                                             |
+| ----------------------------- | ------------------------------------------------------------------- |
+| `MemoryStore`                 | Save, query, update, set tier, delete, prune expired memory entries |
+| `TextEmbedder`                | Embed text into a vector                                            |
+| `EmbeddingModelProvider`      | Raw embedding model provider (HTTP, model name)                     |
+| `TextGenerationModelProvider` | Raw text generation model provider                                  |
 
-Key domain types: `Memory`, `MemoryEntry`, `MemoryInput`, `MemoryQuery`, `MemoryTier`, `MemoryQueryMode`, `Score`, `Embedding`.
+Key domain types: `MemoryEntry`, `MemoryQueryResult`, `MemoryInput`, `MemoryQuery`, `MemoryTier`, `MemoryQueryMode`, `Score`, `Embedding`.
 
 ### Storage (`loci-memory-store-qdrant`)
 
@@ -175,7 +175,7 @@ loci memory save "This is a curated fact" --tier core --meta source=manual
 
 ### `loci memory query`
 
-Retrieve semantically similar memories.
+Retrieve semantically similar memory entries.
 
 ```bash
 loci memory query "vector database"
@@ -223,9 +223,9 @@ Remove a memory by UUID.
 loci memory delete <uuid>
 ```
 
-### `loci memory clear`
+### `loci memory prune-expired`
 
-Remove **all** memories from the collection.
+Remove **all** expired memory entries from the collection.
 
 ```bash
 loci memory clear
@@ -233,18 +233,18 @@ loci memory clear
 
 ### `loci prompt`
 
-Enhance a prompt with relevant memories and send it to the LLM.
+Enhance a prompt with relevant memory entries and send it to the LLM.
 
 ```bash
 loci prompt "What storage backend do we use?"
-loci prompt "Summarise our deployment setup" --max-memories 8 --min-score 0.5
+loci prompt "Summarise our deployment setup" --max-memory-entries 8 --min-score 0.5
 ```
 
-| Flag                 | Default      | Description                                 |
-| -------------------- | ------------ | ------------------------------------------- |
-| `<prompt>`           | _(required)_ | Prompt text (positional)                    |
-| `--max-memories <n>` | `5`          | Max memories to inject as context           |
-| `--min-score <f64>`  | `0.5`        | Minimum weighted score for context memories |
+| Flag                       | Default      | Description                                       |
+| -------------------------- | ------------ | ------------------------------------------------- |
+| `<prompt>`                 | _(required)_ | Prompt text (positional)                          |
+| `--max-memory-entries <n>` | `5`          | Max memory entries to inject as context           |
+| `--min-score <f64>`        | `0.5`        | Minimum weighted score for context memory entries |
 
 ### `loci config init`
 
@@ -260,7 +260,7 @@ loci --config /path/to/config.toml config init
 ```toml
 [memory]
 store = "qdrant"
-collection = "memories"
+collection = "memory_entries"
 # similarity_threshold = 0.95     # deduplicate by semantic similarity
 # promotion_source_threshold = 2  # promote Candidate -> Stable when corroborated by a different source
 ```
@@ -298,23 +298,11 @@ After each LLM turn, the prompt/response pair is processed asynchronously by a
 `MemoryExtractionStrategy`. Two built-in strategies are planned:
 
 - **`LlmSummarizationStrategy`** — sends the pair to the LLM with a system prompt that
-  extracts factual statements as new memories.
+  extracts factual statements as new memory entries.
 - **`KeywordEntityStrategy`** — lightweight keyword and entity extraction that does not
   require an additional LLM call.
 
 The trait is open for extension; custom strategies can be plugged in.
-
-### Memory Eviction Strategies
-
-An `EvictionStrategy` trait applied after extraction to keep the memory store healthy:
-
-| Strategy            | Description                                                  |
-| ------------------- | ------------------------------------------------------------ |
-| **TTL**             | Expire memories older than a configurable duration           |
-| **Max-Count / LRU** | Keep only the _N_ most recently accessed memories            |
-| **Score-based**     | Evict memories whose relevance score falls below a threshold |
-
-Strategies are composable — multiple strategies can be applied in sequence.
 
 ### Enhanced REPL CLI
 

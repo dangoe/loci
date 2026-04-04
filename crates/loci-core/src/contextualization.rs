@@ -10,7 +10,7 @@ use std::time::Duration;
 use futures::Stream;
 
 use crate::error::ContextualizerError;
-use crate::memory::{MemoryEntry, MemoryQuery, MemoryQueryMode, Score};
+use crate::memory::{MemoryQuery, MemoryQueryMode, MemoryQueryResult, Score};
 use crate::model_provider::common::ModelProviderParams;
 use crate::model_provider::text_generation::{self, TextGenerationRequest, TextGenerationResponse};
 use crate::store::MemoryStore;
@@ -19,14 +19,14 @@ const SYSTEM_PROMPT_BASE_TEMPLATE: &str = "You are a helpful assistant with a lo
 Rules:
 - Speak naturally. Never mention retrieval, context, memory stores, or system internals.
 - When drawing on a memory, phrase it as personal recall: \"I remember...\", \"You mentioned once...\", etc.
-- Only use memories that are clearly relevant to the current question. Ignore the rest silently.
+- Only use memory_entries that are clearly relevant to the current question. Ignore the rest silently.
 - If no memory applies, answer from general knowledge without commenting on the absence of memory.
 - Never fabricate or embellish. If you are uncertain, say so. Only speculate if the user explicitly asks you to.
 - Be concise. Avoid unnecessary preamble.";
 
 /// Configuration for a [`Contextualizer`].
 ///
-/// This configuration controls how many memories are retrieved and how the
+/// This configuration controls how many memory entries are retrieved and how the
 /// memory store is queried, as well as which text generation model to use
 /// for downstream requests.
 #[derive(Debug, Clone)]
@@ -36,8 +36,8 @@ pub struct ContextualizerConfig {
     /// Note: the default value is an empty string. Callers should provide a
     /// fully initialized `ContextualizerConfig` when constructing a `Contextualizer`.
     pub text_generation_model: String,
-    /// Maximum number of memories to retrieve and inject into the prompt.
-    pub max_memories: usize,
+    /// Maximum number of memory entries to retrieve and inject into the prompt.
+    pub max_memory_entries: usize,
     /// Minimum similarity score a memory must have to be included.
     pub min_score: Score,
     /// Metadata filters applied when querying the memory store.
@@ -60,11 +60,11 @@ pub struct ContextualizerTuningConfig {
     pub extra_params: ModelProviderParams,
 }
 
-/// Enhances a user prompt with relevant memories before calling an LLM.
+/// Enhances a user prompt with relevant memory entries before calling an LLM.
 ///
 /// On each call to [`Contextualizer::contextualize`] the contextualizer:
 /// 1. Queries the memory store for entries relevant to the prompt.
-/// 2. Constructs a system prompt that summarizes retrieved memories (the
+/// 2. Constructs a system prompt that summarizes retrieved memory entries (the
 ///    preferred mechanism to condition many LLMs).
 /// 3. Calls the configured text-generation model provider with the enriched request.
 /// 4. Streams model output back to the caller.
@@ -106,7 +106,7 @@ where
     /// configured text-generation model provider. If memory retrieval or the model
     /// provider call fails the stream will yield `Err(ContextualizerError)`.
     ///
-    /// The `prompt` is the user-provided input; relevant memories are retrieved
+    /// The `prompt` is the user-provided input; relevant memory entries are retrieved
     /// from the `MemoryStore` and attached to the request as a system prompt.
     pub fn contextualize<'a>(
         &'a self,
@@ -116,7 +116,7 @@ where
         Box::pin(async_stream::try_stream! {
             let memory_entries = self.query_memory(prompt).await?;
 
-            log::debug!("retrieved {} relevant memories", memory_entries.len());
+            log::debug!("retrieved {} relevant memory_entries", memory_entries.len());
 
             let system_prompt = self.build_system_prompt(memory_entries);
 
@@ -165,17 +165,17 @@ where
         })
     }
 
-    fn build_system_prompt(&self, memory_entries: Vec<MemoryEntry>) -> String {
+    fn build_system_prompt(&self, memory_entries: Vec<MemoryQueryResult>) -> String {
         let mut buf = String::new();
         buf.push_str(SYSTEM_PROMPT_BASE_TEMPLATE.replace('\n', "\n- ").as_str());
         buf.push('\n');
-        buf.push_str("## Relevant memories\n");
+        buf.push_str("## Relevant memory entries\n");
 
         if memory_entries.is_empty() {
             buf.push_str("None. Answer from general knowledge.\n");
         } else {
             for entry in memory_entries {
-                buf.push_str(&format!("- {}\n", entry.memory.content));
+                buf.push_str(&format!("- {}\n", entry.memory_entry.content));
             }
         }
 
@@ -185,10 +185,10 @@ where
     async fn query_memory(
         &self,
         prompt: impl Into<String>,
-    ) -> Result<Vec<MemoryEntry>, ContextualizerError> {
+    ) -> Result<Vec<MemoryQueryResult>, ContextualizerError> {
         let query = MemoryQuery {
             topic: prompt.into(),
-            max_results: self.config.max_memories,
+            max_results: self.config.max_memory_entries,
             min_score: self.config.min_score,
             filters: self.config.filters.clone(),
             mode: MemoryQueryMode::Use,
@@ -215,7 +215,8 @@ mod tests {
     use crate::{
         error::MemoryStoreError,
         memory::{
-            Memory, MemoryEntry, MemoryInput, MemoryQuery, MemoryQueryMode, MemoryTier, Score,
+            MemoryEntry, MemoryInput, MemoryQuery, MemoryQueryMode, MemoryQueryResult, MemoryTier,
+            Score,
         },
         model_provider::{
             common::ModelProviderResult,
@@ -230,16 +231,16 @@ mod tests {
     use super::*;
 
     struct MockStore {
-        entries: Vec<MemoryEntry>,
+        entries: Vec<MemoryQueryResult>,
     }
 
     impl MemoryStore for MockStore {
         fn save(
             &self,
             input: MemoryInput,
-        ) -> impl Future<Output = Result<MemoryEntry, MemoryStoreError>> + Send + '_ {
-            let entry = MemoryEntry {
-                memory: Memory::new(input.content, input.metadata),
+        ) -> impl Future<Output = Result<MemoryQueryResult, MemoryStoreError>> + Send + '_ {
+            let entry = MemoryQueryResult {
+                memory_entry: MemoryEntry::new(input.content, input.metadata),
                 score: Score::ZERO,
             };
             async move { Ok(entry) }
@@ -248,14 +249,15 @@ mod tests {
         fn get(
             &self,
             id: Uuid,
-        ) -> impl Future<Output = Result<MemoryEntry, MemoryStoreError>> + Send + '_ {
+        ) -> impl Future<Output = Result<MemoryQueryResult, MemoryStoreError>> + Send + '_ {
             async move { Err(MemoryStoreError::NotFound(id)) }
         }
 
         fn query(
             &self,
             _query: MemoryQuery,
-        ) -> impl Future<Output = Result<Vec<MemoryEntry>, MemoryStoreError>> + Send + '_ {
+        ) -> impl Future<Output = Result<Vec<MemoryQueryResult>, MemoryStoreError>> + Send + '_
+        {
             let entries = self.entries.clone();
             async move { Ok(entries) }
         }
@@ -264,7 +266,7 @@ mod tests {
             &self,
             id: Uuid,
             _input: MemoryInput,
-        ) -> impl Future<Output = Result<MemoryEntry, MemoryStoreError>> + Send + '_ {
+        ) -> impl Future<Output = Result<MemoryQueryResult, MemoryStoreError>> + Send + '_ {
             async move { Err(MemoryStoreError::NotFound(id)) }
         }
 
@@ -272,7 +274,7 @@ mod tests {
             &self,
             id: Uuid,
             _tier: MemoryTier,
-        ) -> impl Future<Output = Result<MemoryEntry, MemoryStoreError>> + Send + '_ {
+        ) -> impl Future<Output = Result<MemoryQueryResult, MemoryStoreError>> + Send + '_ {
             async move { Err(MemoryStoreError::NotFound(id)) }
         }
 
@@ -283,7 +285,7 @@ mod tests {
             async move { Ok(()) }
         }
 
-        fn clear(&self) -> impl Future<Output = Result<(), MemoryStoreError>> + Send + '_ {
+        fn prune_expired(&self) -> impl Future<Output = Result<(), MemoryStoreError>> + Send + '_ {
             async move { Ok(()) }
         }
     }
@@ -294,21 +296,22 @@ mod tests {
         fn save(
             &self,
             _input: MemoryInput,
-        ) -> impl Future<Output = Result<MemoryEntry, MemoryStoreError>> + Send + '_ {
+        ) -> impl Future<Output = Result<MemoryQueryResult, MemoryStoreError>> + Send + '_ {
             async move { Err(MemoryStoreError::Connection("always fails".to_string())) }
         }
 
         fn get(
             &self,
             _id: Uuid,
-        ) -> impl Future<Output = Result<MemoryEntry, MemoryStoreError>> + Send + '_ {
+        ) -> impl Future<Output = Result<MemoryQueryResult, MemoryStoreError>> + Send + '_ {
             async move { Err(MemoryStoreError::Connection("always fails".to_string())) }
         }
 
         fn query(
             &self,
             _query: MemoryQuery,
-        ) -> impl Future<Output = Result<Vec<MemoryEntry>, MemoryStoreError>> + Send + '_ {
+        ) -> impl Future<Output = Result<Vec<MemoryQueryResult>, MemoryStoreError>> + Send + '_
+        {
             async move { Err(MemoryStoreError::Connection("always fails".to_string())) }
         }
 
@@ -316,7 +319,7 @@ mod tests {
             &self,
             id: Uuid,
             _input: MemoryInput,
-        ) -> impl Future<Output = Result<MemoryEntry, MemoryStoreError>> + Send + '_ {
+        ) -> impl Future<Output = Result<MemoryQueryResult, MemoryStoreError>> + Send + '_ {
             async move { Err(MemoryStoreError::NotFound(id)) }
         }
 
@@ -324,7 +327,7 @@ mod tests {
             &self,
             id: Uuid,
             _tier: MemoryTier,
-        ) -> impl Future<Output = Result<MemoryEntry, MemoryStoreError>> + Send + '_ {
+        ) -> impl Future<Output = Result<MemoryQueryResult, MemoryStoreError>> + Send + '_ {
             async move { Err(MemoryStoreError::NotFound(id)) }
         }
 
@@ -335,7 +338,7 @@ mod tests {
             async move { Ok(()) }
         }
 
-        fn clear(&self) -> impl Future<Output = Result<(), MemoryStoreError>> + Send + '_ {
+        fn prune_expired(&self) -> impl Future<Output = Result<(), MemoryStoreError>> + Send + '_ {
             async move { Ok(()) }
         }
     }
@@ -370,7 +373,7 @@ mod tests {
     fn default_config() -> ContextualizerConfig {
         ContextualizerConfig {
             text_generation_model: "test-model".to_string(),
-            max_memories: 5,
+            max_memory_entries: 5,
             min_score: Score::ZERO,
             filters: HashMap::new(),
             tuning: None,
@@ -378,7 +381,7 @@ mod tests {
     }
 
     fn make_contextualizer(
-        entries: Vec<MemoryEntry>,
+        entries: Vec<MemoryQueryResult>,
         reply: &str,
     ) -> Contextualizer<MockStore, MockTextGenerationProvider> {
         Contextualizer::new(
@@ -390,9 +393,9 @@ mod tests {
         )
     }
 
-    fn make_entry(content: &str) -> MemoryEntry {
-        MemoryEntry {
-            memory: Memory::new(content.to_string(), HashMap::new()),
+    fn make_entry(content: &str) -> MemoryQueryResult {
+        MemoryQueryResult {
+            memory_entry: MemoryEntry::new(content.to_string(), HashMap::new()),
             score: Score::ZERO,
         }
     }
@@ -407,7 +410,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_system_prompt_with_no_memories_contains_placeholder() {
+    fn test_build_system_prompt_with_no_memory_entries_contains_placeholder() {
         let ctx = make_contextualizer(vec![], "reply");
         let prompt = ctx.build_system_prompt(vec![]);
         assert!(
@@ -449,7 +452,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_contextualize_injects_retrieved_memories_into_system_prompt() {
+    async fn test_contextualize_injects_retrieved_memory_entries_into_system_prompt() {
         // The mock store returns this entry regardless of query topic.
         let entries = vec![make_entry("user prefers dark mode")];
         let ctx = make_contextualizer(entries, "noted");

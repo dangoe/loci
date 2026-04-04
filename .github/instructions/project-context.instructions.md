@@ -6,18 +6,18 @@ applyTo: "**"
 
 A Rust workspace for memory-augmented LLM prompts.
 
-`loci` stores semantic memories, retrieves relevant entries from Qdrant, and enriches prompts via a
+`loci` stores semantic memory entries, retrieves relevant entries from Qdrant, and enriches prompts via a
 `Contextualizer` before forwarding to an LLM provider.
 
 ## Workspace
 
-| Crate | Purpose |
-|-------|---------|
-| `loci-core` | Core traits and domain types (`MemoryStore`, `TextEmbedder`, `Contextualizer`) |
-| `loci-memory-store-qdrant` | Qdrant-backed memory store with deduplication, tiers, and metadata filtering |
-| `loci-model-provider-ollama` | Ollama model provider (embeddings + text generation, including streaming) |
-| `loci-config` | TOML config schema, parsing, and `env:` secret resolution |
-| `loci-cli` | `loci` binary (`memory`, `prompt`, `config init`) |
+| Crate                        | Purpose                                                                        |
+| ---------------------------- | ------------------------------------------------------------------------------ |
+| `loci-core`                  | Core traits and domain types (`MemoryStore`, `TextEmbedder`, `Contextualizer`) |
+| `loci-memory-store-qdrant`   | Qdrant-backed memory store with deduplication, tiers, and metadata filtering   |
+| `loci-model-provider-ollama` | Ollama model provider (embeddings + text generation, including streaming)      |
+| `loci-config`                | TOML config schema, parsing, and `env:` secret resolution                      |
+| `loci-cli`                   | `loci` binary (`memory`, `prompt`, `config init`)                              |
 
 ## Runtime Support
 

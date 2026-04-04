@@ -9,16 +9,10 @@ use chrono::{DateTime, Duration, Utc};
 use uuid::Uuid;
 
 /// Input passed to [`crate::MemoryStore::save`] and [`crate::MemoryStore::update`].
-///
-/// The store assigns IDs/timestamps and may apply lifecycle defaults.
 #[derive(Debug, Clone)]
 pub struct MemoryInput {
     pub content: String,
     pub metadata: HashMap<String, String>,
-    /// Optional explicit tier override.
-    ///
-    /// - `None` means "use store default" (currently `Candidate` on save,
-    ///   preserve existing on update).
     pub tier: Option<MemoryTier>,
 }
 
@@ -144,7 +138,7 @@ impl std::error::Error for InvalidScore {}
 /// A stored memory. Intentionally embedding-free — model providers that require
 /// vector similarity compute embeddings internally.
 #[derive(Debug, Clone)]
-pub struct Memory {
+pub struct MemoryEntry {
     pub id: Uuid,
     pub content: String,
     pub metadata: HashMap<String, String>,
@@ -156,13 +150,13 @@ pub struct Memory {
     pub created_at: DateTime<Utc>,
 }
 
-impl Memory {
-    /// Creates a new `Memory` defaulting to `Candidate` tier.
+impl MemoryEntry {
+    /// Creates a new `MemoryEntry` defaulting to `Candidate` tier.
     pub fn new(content: String, metadata: HashMap<String, String>) -> Self {
         Self::new_with_tier(content, metadata, MemoryTier::Candidate)
     }
 
-    /// Creates a new `Memory` for a specific tier with default lifecycle fields.
+    /// Creates a new `MemoryEntry` for a specific tier with default lifecycle fields.
     pub fn new_with_tier(
         content: String,
         metadata: HashMap<String, String>,
@@ -183,10 +177,10 @@ impl Memory {
     }
 }
 
-/// A query result pairing a [`Memory`] with its similarity [`Score`].
+/// A query result pairing a [`MemoryEntry`] with its similarity [`Score`].
 #[derive(Debug, Clone)]
-pub struct MemoryEntry {
-    pub memory: Memory,
+pub struct MemoryQueryResult {
+    pub memory_entry: MemoryEntry,
     pub score: Score,
 }
 
@@ -262,15 +256,15 @@ mod tests {
 
     #[test]
     fn test_memory_new_generates_unique_ids() {
-        let m1 = Memory::new("hello".to_string(), HashMap::new());
-        let m2 = Memory::new("hello".to_string(), HashMap::new());
+        let m1 = MemoryEntry::new("hello".to_string(), HashMap::new());
+        let m2 = MemoryEntry::new("hello".to_string(), HashMap::new());
         assert_ne!(m1.id, m2.id);
     }
 
     #[test]
     fn test_memory_new_stores_content_and_metadata() {
         let metadata = HashMap::from([("source".to_string(), "test".to_string())]);
-        let m = Memory::new("my content".to_string(), metadata.clone());
+        let m = MemoryEntry::new("my content".to_string(), metadata.clone());
         assert_eq!(m.content, "my content");
         assert_eq!(m.metadata, metadata);
         assert_eq!(m.tier, MemoryTier::Candidate);

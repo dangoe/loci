@@ -6,12 +6,15 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 
+use chrono::{Duration, Utc};
 use loci_core::embedding::{Embedding, TextEmbedder};
 use loci_core::error::{EmbeddingError, MemoryStoreError};
 use loci_core::memory::{MemoryInput, MemoryQuery, MemoryQueryMode, MemoryTier, Score};
 use loci_core::store::MemoryStore;
 use loci_memory_store_qdrant::config::QdrantConfig;
 use loci_memory_store_qdrant::store::QdrantMemoryStore;
+use qdrant_client::qdrant::{PointsIdsList, SetPayloadPointsBuilder};
+use qdrant_client::{Payload, Qdrant};
 use testcontainers::core::wait::HttpWaitStrategy;
 use testcontainers::core::{ContainerPort, IntoContainerPort, WaitFor};
 use testcontainers::runners::AsyncRunner;
@@ -92,7 +95,7 @@ async fn start_store(
     let url = format!("http://{host}:{port}");
 
     let config = QdrantConfig {
-        collection_name: "memories".to_string(),
+        collection_name: "memory_entries".to_string(),
         similarity_threshold,
         promotion_source_threshold: 2,
     };
@@ -138,8 +141,8 @@ async fn test_saved_memory_is_returned_by_query() {
     let results = store.query(query("hello world query", 1)).await.unwrap();
 
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].memory.id, entry.memory.id);
-    assert_eq!(results[0].memory.content, "hello world");
+    assert_eq!(results[0].memory_entry.id, entry.memory_entry.id);
+    assert_eq!(results[0].memory_entry.content, "hello world");
     assert!(results[0].score.value() > 0.5);
 }
 
@@ -159,7 +162,7 @@ async fn test_query_ranks_results_by_similarity() {
     let results = store.query(query("near x", 2)).await.unwrap();
 
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].memory.content, "x-axis");
+    assert_eq!(results[0].memory_entry.content, "x-axis");
     assert!(results[0].score.value() > results[1].score.value());
 }
 
@@ -200,8 +203,8 @@ async fn test_metadata_is_persisted_and_restored() {
 
     let results = store.query(query("tagged content query", 1)).await.unwrap();
 
-    assert_eq!(results[0].memory.metadata, metadata);
-    assert_eq!(results[0].memory.tier, MemoryTier::Candidate);
+    assert_eq!(results[0].memory_entry.metadata, metadata);
+    assert_eq!(results[0].memory_entry.tier, MemoryTier::Candidate);
 }
 
 #[tokio::test]
@@ -240,7 +243,7 @@ async fn test_query_filters_by_metadata() {
         .unwrap();
 
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].memory.content, "doc en");
+    assert_eq!(results[0].memory_entry.content, "doc en");
 }
 
 #[tokio::test]
@@ -269,7 +272,7 @@ async fn test_query_respects_min_score() {
         .unwrap();
 
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].memory.content, "x-axis");
+    assert_eq!(results[0].memory_entry.content, "x-axis");
 }
 
 #[tokio::test]
@@ -281,29 +284,68 @@ async fn test_deleted_memory_is_not_returned_by_query() {
     let (store, _container) = start_store(embedder, None).await;
 
     let entry = store.save(input("to be deleted")).await.unwrap();
-    store.delete(entry.memory.id).await.unwrap();
+    store.delete(entry.memory_entry.id).await.unwrap();
 
     let results = store.query(query("query", 10)).await.unwrap();
 
-    assert!(results.iter().all(|e| e.memory.id != entry.memory.id));
+    assert!(
+        results
+            .iter()
+            .all(|e| e.memory_entry.id != entry.memory_entry.id)
+    );
 }
 
 #[tokio::test]
 #[cfg_attr(not(feature = "integration"), ignore)]
-async fn test_clear_removes_all_memories() {
+async fn test_prune_expired_memory_entries() {
     let embedder = FakeTextEmbedder::new()
-        .with("alpha", unit_vec(0))
-        .with("beta", unit_vec(1))
+        .with("short-lived", unit_vec(0))
+        .with("long-lived", unit_vec(1))
         .with("query", unit_vec(0));
     let (store, _container) = start_store(embedder, None).await;
 
-    store.save(input("alpha")).await.unwrap();
-    store.save(input("beta")).await.unwrap();
-    store.clear().await.unwrap();
+    let short_lived = store
+        .save(MemoryInput {
+            content: "short-lived".to_string(),
+            metadata: HashMap::new(),
+            tier: Some(MemoryTier::Candidate),
+        })
+        .await
+        .unwrap();
+
+    let long_lived = store
+        .save(MemoryInput {
+            content: "long-lived".to_string(),
+            metadata: HashMap::new(),
+            tier: Some(MemoryTier::Core),
+        })
+        .await
+        .unwrap();
+
+    let host = _container.get_host().await.unwrap();
+    let port = _container.get_host_port_ipv4(QDRANT_PORT).await.unwrap();
+    let url = format!("http://{host}:{port}");
+    let client = Qdrant::from_url(&url).build().unwrap();
+
+    let mut expired_payload = Payload::new();
+    expired_payload.insert("expires_at", (Utc::now() - Duration::days(1)).to_rfc3339());
+    client
+        .set_payload(
+            SetPayloadPointsBuilder::new("memory_entries", expired_payload)
+                .points_selector(PointsIdsList {
+                    ids: vec![short_lived.memory_entry.id.to_string().into()],
+                })
+                .wait(true),
+        )
+        .await
+        .unwrap();
+
+    store.prune_expired().await.unwrap();
 
     let results = store.query(query("query", 10)).await.unwrap();
 
-    assert!(results.is_empty());
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].memory_entry.id, long_lived.memory_entry.id);
 }
 
 #[tokio::test]
@@ -318,7 +360,7 @@ async fn test_deduplication_reuses_id_when_score_meets_threshold() {
     let original = store.save(input("original")).await.unwrap();
     let duplicate = store.save(input("near-duplicate")).await.unwrap();
 
-    assert_eq!(duplicate.memory.id, original.memory.id);
+    assert_eq!(duplicate.memory_entry.id, original.memory_entry.id);
 }
 
 #[tokio::test]
@@ -333,7 +375,7 @@ async fn test_deduplication_stores_new_memory_when_score_below_threshold() {
     let first = store.save(input("x-axis topic")).await.unwrap();
     let second = store.save(input("y-axis topic")).await.unwrap();
 
-    assert_ne!(second.memory.id, first.memory.id);
+    assert_ne!(second.memory_entry.id, first.memory_entry.id);
 }
 
 #[tokio::test]
@@ -346,12 +388,12 @@ async fn test_update_changes_content_and_returns_updated_entry() {
 
     let saved = store.save(input("original content")).await.unwrap();
     let updated = store
-        .update(saved.memory.id, input("updated content"))
+        .update(saved.memory_entry.id, input("updated content"))
         .await
         .unwrap();
 
-    assert_eq!(updated.memory.id, saved.memory.id);
-    assert_eq!(updated.memory.content, "updated content");
+    assert_eq!(updated.memory_entry.id, saved.memory_entry.id);
+    assert_eq!(updated.memory_entry.content, "updated content");
 }
 
 #[tokio::test]
@@ -369,7 +411,7 @@ async fn test_update_returns_not_found_for_unknown_id() {
 #[tokio::test]
 #[cfg_attr(not(feature = "integration"), ignore)]
 async fn test_deduplication_does_not_collapse_different_metadata() {
-    // Same embedding but different metadata -> must produce two distinct entries
+    // Same embedding but different non-source metadata -> must produce two distinct entries
     let embedder = FakeTextEmbedder::new()
         .with("same content a", unit_vec(0))
         .with("same content b", unit_vec(0));
@@ -378,19 +420,19 @@ async fn test_deduplication_does_not_collapse_different_metadata() {
     let first = store
         .save(input_with_metadata(
             "same content a",
-            HashMap::from([("source".to_string(), "a".to_string())]),
+            HashMap::from([("label".to_string(), "a".to_string())]),
         ))
         .await
         .unwrap();
     let second = store
         .save(input_with_metadata(
             "same content b",
-            HashMap::from([("source".to_string(), "b".to_string())]),
+            HashMap::from([("label".to_string(), "b".to_string())]),
         ))
         .await
         .unwrap();
 
-    assert_ne!(second.memory.id, first.memory.id);
+    assert_ne!(second.memory_entry.id, first.memory_entry.id);
 }
 
 #[tokio::test]
@@ -402,7 +444,7 @@ async fn test_query_modes_do_not_increment_seen_count() {
     let (store, _container) = start_store(embedder, None).await;
 
     let saved = store.save(input("remember this")).await.unwrap();
-    assert_eq!(saved.memory.seen_count, 1);
+    assert_eq!(saved.memory_entry.seen_count, 1);
 
     let _ = store
         .query(MemoryQuery {
@@ -416,7 +458,7 @@ async fn test_query_modes_do_not_increment_seen_count() {
         .unwrap();
 
     let looked_up = store.query(query("query", 1)).await.unwrap();
-    assert_eq!(looked_up[0].memory.seen_count, 1);
+    assert_eq!(looked_up[0].memory_entry.seen_count, 1);
 }
 
 #[tokio::test]
@@ -434,7 +476,7 @@ async fn test_candidate_promotes_when_same_fact_arrives_from_different_source() 
         ))
         .await
         .unwrap();
-    assert_eq!(first.memory.tier, MemoryTier::Candidate);
+    assert_eq!(first.memory_entry.tier, MemoryTier::Candidate);
 
     let second = store
         .save(input_with_metadata(
@@ -444,8 +486,8 @@ async fn test_candidate_promotes_when_same_fact_arrives_from_different_source() 
         .await
         .unwrap();
 
-    assert_eq!(second.memory.id, first.memory.id);
-    assert_eq!(second.memory.tier, MemoryTier::Stable);
+    assert_eq!(second.memory_entry.id, first.memory_entry.id);
+    assert_eq!(second.memory_entry.tier, MemoryTier::Stable);
 }
 
 #[tokio::test]
@@ -456,10 +498,10 @@ async fn test_set_tier_promotes_to_core() {
 
     let saved = store.save(input("curate me")).await.unwrap();
     let updated = store
-        .set_tier(saved.memory.id, MemoryTier::Core)
+        .set_tier(saved.memory_entry.id, MemoryTier::Core)
         .await
         .unwrap();
 
-    assert_eq!(updated.memory.tier, MemoryTier::Core);
-    assert_eq!(updated.memory.expires_at, None);
+    assert_eq!(updated.memory_entry.tier, MemoryTier::Core);
+    assert_eq!(updated.memory_entry.expires_at, None);
 }

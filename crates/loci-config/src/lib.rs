@@ -122,7 +122,7 @@ url = "http://localhost:6334"
 
 [memory]
 store = "qdrant"
-collection = "memories"
+collection = "memory_entries"
 promotion_source_threshold = 2
 
 [routing]
@@ -142,7 +142,7 @@ embedding = "default"
         assert!(config.models["default"].tuning.is_none());
         assert_eq!(config.embeddings["default"].dimension, 768);
         assert_eq!(config.memory.store, "qdrant");
-        assert_eq!(config.memory.collection, "memories");
+        assert_eq!(config.memory.collection, "memory_entries");
         assert_eq!(config.memory.promotion_source_threshold, 2);
         assert_eq!(config.routing.default_model, "default");
         assert_eq!(config.routing.embedding, "default");
@@ -269,7 +269,7 @@ url = "http://localhost:6334"
 
 [memory]
 store = "qdrant"
-collection = "memories"
+collection = "memory_entries"
 promotion_source_threshold = 2
 similarity_threshold = 0.92
 
@@ -403,7 +403,7 @@ url = "http://localhost:6334"
 
 [memory]
 store = "qdrant"
-collection = "memories"
+collection = "memory_entries"
 promotion_source_threshold = 2
 
 [routing]
