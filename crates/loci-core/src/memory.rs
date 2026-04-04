@@ -100,6 +100,8 @@ pub struct MemoryQuery {
 
 #[cfg(test)]
 mod tests {
+    use pretty_assertions::assert_eq;
+
     use super::*;
 
     #[test]
@@ -116,9 +118,46 @@ mod tests {
     }
 
     #[test]
+    fn test_score_value_returns_stored_value() {
+        let s = Score::new(0.75).unwrap();
+        assert_eq!(s.value(), 0.75);
+    }
+
+    #[test]
+    fn test_score_zero_is_zero() {
+        assert_eq!(Score::ZERO.value(), 0.0);
+    }
+
+    #[test]
+    fn test_invalid_score_display_includes_value() {
+        let err = Score::new(1.5).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("1.5"),
+            "expected message to contain the bad value, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_memory_input_new_stores_fields() {
+        let metadata = HashMap::from([("key".to_string(), "val".to_string())]);
+        let input = MemoryInput::new("content".to_string(), metadata.clone());
+        assert_eq!(input.content, "content");
+        assert_eq!(input.metadata, metadata);
+    }
+
+    #[test]
     fn test_memory_new_generates_unique_ids() {
         let m1 = Memory::new("hello".to_string(), HashMap::new());
         let m2 = Memory::new("hello".to_string(), HashMap::new());
         assert_ne!(m1.id, m2.id);
+    }
+
+    #[test]
+    fn test_memory_new_stores_content_and_metadata() {
+        let metadata = HashMap::from([("source".to_string(), "test".to_string())]);
+        let m = Memory::new("my content".to_string(), metadata.clone());
+        assert_eq!(m.content, "my content");
+        assert_eq!(m.metadata, metadata);
     }
 }

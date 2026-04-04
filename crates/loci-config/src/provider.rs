@@ -35,3 +35,19 @@ pub struct ModelProviderConfig {
     /// Optional API key. May be a literal value or `env:VAR_NAME`.
     pub api_key: Option<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use pretty_assertions::assert_eq;
+    use rstest::rstest;
+
+    use super::*;
+
+    #[rstest]
+    #[case(ModelProviderKind::Ollama, "ollama")]
+    #[case(ModelProviderKind::OpenAI, "openai")]
+    #[case(ModelProviderKind::Anthropic, "anthropic")]
+    fn test_display(#[case] kind: ModelProviderKind, #[case] expected: &str) {
+        assert_eq!(kind.to_string(), expected);
+    }
+}

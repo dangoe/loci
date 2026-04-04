@@ -5,8 +5,8 @@
 use std::{pin::Pin, sync::Arc};
 
 use crate::{
-    model_provider::embedding::{EmbeddingModelProvider, EmbeddingRequest},
     error::EmbeddingError,
+    model_provider::embedding::{EmbeddingModelProvider, EmbeddingRequest},
 };
 
 /// An embedding vector represented as a sequence of `f32` values.
@@ -99,6 +99,17 @@ impl TextEmbedder for DefaultTextEmbedder {
 
 #[cfg(test)]
 mod tests {
+    use std::pin::Pin;
+    use std::sync::Arc;
+
+    use pretty_assertions::assert_eq;
+
+    use crate::model_provider::{
+        common::ModelProviderResult,
+        embedding::{EmbeddingModelProvider, EmbeddingRequest, EmbeddingResponse},
+        error::ModelProviderError,
+    };
+
     use super::*;
 
     #[test]
@@ -116,5 +127,96 @@ mod tests {
     fn test_from_vec() {
         let e: Embedding = vec![1.0_f32, 2.0].into();
         assert_eq!(e.dimension(), 2);
+    }
+
+    #[test]
+    fn test_empty_embedding_has_zero_dimension() {
+        assert_eq!(Embedding::new(vec![]).dimension(), 0);
+    }
+
+    // ── DefaultTextEmbedder ──────────────────────────────────────────────────
+
+    struct EmptyResponseProvider;
+
+    impl EmbeddingModelProvider for EmptyResponseProvider {
+        fn embed(
+            &self,
+            req: EmbeddingRequest,
+        ) -> Pin<Box<dyn Future<Output = ModelProviderResult<EmbeddingResponse>> + Send + '_>>
+        {
+            Box::pin(async move {
+                Ok(EmbeddingResponse {
+                    embeddings: vec![], // empty — should trigger EmptyResponse error
+                    model: req.model.clone(),
+                    usage: None,
+                })
+            })
+        }
+    }
+
+    struct ErrorProvider;
+
+    impl EmbeddingModelProvider for ErrorProvider {
+        fn embed(
+            &self,
+            _req: EmbeddingRequest,
+        ) -> Pin<Box<dyn Future<Output = ModelProviderResult<EmbeddingResponse>> + Send + '_>>
+        {
+            Box::pin(async move { Err(ModelProviderError::Timeout) })
+        }
+    }
+
+    struct FixedProvider {
+        values: Vec<f32>,
+    }
+
+    impl EmbeddingModelProvider for FixedProvider {
+        fn embed(
+            &self,
+            req: EmbeddingRequest,
+        ) -> Pin<Box<dyn Future<Output = ModelProviderResult<EmbeddingResponse>> + Send + '_>>
+        {
+            let values = self.values.clone();
+            Box::pin(async move {
+                Ok(EmbeddingResponse {
+                    embeddings: vec![values],
+                    model: req.model.clone(),
+                    usage: None,
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn test_default_text_embedder_returns_embedding_from_provider() {
+        let provider = Arc::new(FixedProvider {
+            values: vec![0.1, 0.2, 0.3],
+        });
+        let embedder = DefaultTextEmbedder::new(provider, "test-model", 3);
+        let result = embedder.embed("hello").await.unwrap();
+        assert_eq!(result.values(), &[0.1_f32, 0.2, 0.3]);
+    }
+
+    #[tokio::test]
+    async fn test_default_text_embedder_returns_empty_response_error_when_no_vectors() {
+        let provider = Arc::new(EmptyResponseProvider);
+        let embedder = DefaultTextEmbedder::new(provider, "test-model", 3);
+        let result = embedder.embed("hello").await;
+        assert!(matches!(result, Err(EmbeddingError::EmptyResponse)));
+    }
+
+    #[tokio::test]
+    async fn test_default_text_embedder_propagates_provider_error() {
+        let provider = Arc::new(ErrorProvider);
+        let embedder = DefaultTextEmbedder::new(provider, "test-model", 3);
+        let result = embedder.embed("hello").await;
+        assert!(matches!(result, Err(EmbeddingError::ModelProvider(_))));
+    }
+
+    #[test]
+    fn test_default_text_embedder_reports_configured_dimension() {
+        let provider = Arc::new(FixedProvider { values: vec![] });
+        let embedder = DefaultTextEmbedder::new(provider, "model", 768);
+        assert_eq!(embedder.embedding_dimension(), 768);
     }
 }

@@ -164,3 +164,122 @@ pub trait TextGenerationModelProvider: Send + Sync {
         Box::pin(futures::stream::once(self.generate(req)))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use futures::StreamExt as _;
+    use pretty_assertions::assert_eq;
+    use serde_json::json;
+
+    use crate::model_provider::common::ModelProviderResult;
+
+    use super::*;
+
+    // ── TextGenerationRequest ────────────────────────────────────────────────
+
+    #[test]
+    fn test_new_sets_model_prompt_and_defaults_options_to_none() {
+        let req = TextGenerationRequest::new("gpt-4o", "hello");
+        assert_eq!(req.model, "gpt-4o");
+        assert_eq!(req.prompt, "hello");
+        assert!(req.system.is_none());
+        assert!(req.temperature.is_none());
+        assert!(req.max_tokens.is_none());
+        assert!(req.top_p.is_none());
+        assert!(req.stop.is_none());
+        assert!(req.keep_alive.is_none());
+        assert!(req.extra_params.is_empty());
+    }
+
+    #[test]
+    fn test_with_system_sets_system_prompt() {
+        let req = TextGenerationRequest::new("m", "p").with_system("be helpful");
+        assert_eq!(req.system.as_deref(), Some("be helpful"));
+    }
+
+    #[test]
+    fn test_with_temperature_sets_temperature() {
+        let req = TextGenerationRequest::new("m", "p").with_temperature(0.7);
+        assert_eq!(req.temperature, Some(0.7));
+    }
+
+    #[test]
+    fn test_with_max_tokens_sets_max_tokens() {
+        let req = TextGenerationRequest::new("m", "p").with_max_tokens(256);
+        assert_eq!(req.max_tokens, Some(256));
+    }
+
+    #[test]
+    fn test_with_top_p_sets_top_p() {
+        let req = TextGenerationRequest::new("m", "p").with_top_p(0.9);
+        assert_eq!(req.top_p, Some(0.9));
+    }
+
+    #[test]
+    fn test_with_stop_sets_stop_sequences() {
+        let stops = vec!["END".to_string(), "STOP".to_string()];
+        let req = TextGenerationRequest::new("m", "p").with_stop(stops.clone());
+        assert_eq!(req.stop, Some(stops));
+    }
+
+    #[test]
+    fn test_with_keep_alive_sets_duration() {
+        let d = Duration::from_secs(300);
+        let req = TextGenerationRequest::new("m", "p").with_keep_alive(d);
+        assert_eq!(req.keep_alive, Some(d));
+    }
+
+    #[test]
+    fn test_with_extra_inserts_param() {
+        let req = TextGenerationRequest::new("m", "p").with_extra("seed", json!(42));
+        assert_eq!(req.extra_params["seed"], json!(42));
+    }
+
+    // ── TextGenerationResponse ───────────────────────────────────────────────
+
+    #[test]
+    fn test_done_constructor_sets_fields_and_marks_done() {
+        let usage = TokenUsage {
+            prompt_tokens: Some(10),
+            completion_tokens: Some(20),
+            total_tokens: Some(30),
+        };
+        let resp =
+            TextGenerationResponse::done("answer".to_string(), "gpt-4o".to_string(), Some(usage));
+        assert_eq!(resp.text, "answer");
+        assert_eq!(resp.model, "gpt-4o");
+        assert!(resp.done);
+        assert!(resp.usage.is_some());
+    }
+
+    // ── Default generate_stream implementation ───────────────────────────────
+
+    struct EchoProvider;
+
+    impl TextGenerationModelProvider for EchoProvider {
+        fn generate(
+            &self,
+            req: TextGenerationRequest,
+        ) -> Pin<Box<dyn Future<Output = ModelProviderResult<TextGenerationResponse>> + Send + '_>>
+        {
+            let model = req.model.clone();
+            let text = req.prompt.clone();
+            Box::pin(async move { Ok(TextGenerationResponse::done(text, model, None)) })
+        }
+    }
+
+    #[tokio::test]
+    async fn test_generate_stream_default_impl_yields_single_item() {
+        let provider = EchoProvider;
+        let req = TextGenerationRequest::new("model", "ping");
+        let items: Vec<ModelProviderResult<TextGenerationResponse>> =
+            provider.generate_stream(req).collect().await;
+
+        assert_eq!(items.len(), 1);
+        let resp = items.into_iter().next().unwrap().unwrap();
+        assert_eq!(resp.text, "ping");
+        assert!(resp.done);
+    }
+}

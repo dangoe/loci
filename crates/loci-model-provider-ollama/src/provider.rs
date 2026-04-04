@@ -120,7 +120,8 @@ impl TextGenerationModelProvider for OllamaModelProvider {
     fn generate(
         &self,
         req: TextGenerationRequest,
-    ) -> Pin<Box<dyn Future<Output = ModelProviderResult<TextGenerationResponse>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = ModelProviderResult<TextGenerationResponse>> + Send + '_>>
+    {
         Box::pin(async move {
             let body = OllamaTextGenerationRequest {
                 model: &req.model,
@@ -182,11 +183,8 @@ impl TextGenerationModelProvider for OllamaModelProvider {
     fn generate_stream(
         &self,
         req: TextGenerationRequest,
-    ) -> Pin<
-        Box<
-            dyn futures::Stream<Item = ModelProviderResult<TextGenerationResponse>> + Send + '_,
-        >,
-    > {
+    ) -> Pin<Box<dyn futures::Stream<Item = ModelProviderResult<TextGenerationResponse>> + Send + '_>>
+    {
         Box::pin(async_stream::try_stream! {
             let body = OllamaTextGenerationRequest {
                 model: &req.model,

@@ -91,3 +91,127 @@ impl std::error::Error for EmbeddingError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error as _;
+
+    use pretty_assertions::assert_eq;
+    use uuid::Uuid;
+
+    use crate::model_provider::error::ModelProviderError;
+
+    use super::*;
+
+    // ── EmbeddingError ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_embedding_error_model_provider_display() {
+        let err = EmbeddingError::ModelProvider(ModelProviderError::Timeout);
+        assert_eq!(err.to_string(), "model provider error: request timed out");
+    }
+
+    #[test]
+    fn test_embedding_error_empty_response_display() {
+        assert_eq!(
+            EmbeddingError::EmptyResponse.to_string(),
+            "embedding model provider returned no vectors",
+        );
+    }
+
+    #[test]
+    fn test_embedding_error_model_provider_has_source() {
+        let err = EmbeddingError::ModelProvider(ModelProviderError::Timeout);
+        assert!(err.source().is_some());
+    }
+
+    #[test]
+    fn test_embedding_error_empty_response_has_no_source() {
+        assert!(EmbeddingError::EmptyResponse.source().is_none());
+    }
+
+    // ── MemoryStoreError ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_memory_store_error_connection_display() {
+        let err = MemoryStoreError::Connection("timeout".to_string());
+        assert_eq!(err.to_string(), "connection error: timeout");
+    }
+
+    #[test]
+    fn test_memory_store_error_query_display() {
+        let err = MemoryStoreError::Query("bad syntax".to_string());
+        assert_eq!(err.to_string(), "query error: bad syntax");
+    }
+
+    #[test]
+    fn test_memory_store_error_embedding_display() {
+        let err = MemoryStoreError::Embedding(EmbeddingError::EmptyResponse);
+        assert_eq!(
+            err.to_string(),
+            "embedding error: embedding model provider returned no vectors",
+        );
+    }
+
+    #[test]
+    fn test_memory_store_error_not_found_display() {
+        let id = Uuid::nil();
+        let err = MemoryStoreError::NotFound(id);
+        assert_eq!(err.to_string(), format!("memory not found: {id}"));
+    }
+
+    #[test]
+    fn test_memory_store_error_embedding_has_source() {
+        let err = MemoryStoreError::Embedding(EmbeddingError::EmptyResponse);
+        assert!(err.source().is_some());
+    }
+
+    #[test]
+    fn test_memory_store_error_connection_has_no_source() {
+        assert!(
+            MemoryStoreError::Connection("x".to_string())
+                .source()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn test_memory_store_error_query_has_no_source() {
+        assert!(MemoryStoreError::Query("x".to_string()).source().is_none());
+    }
+
+    #[test]
+    fn test_memory_store_error_not_found_has_no_source() {
+        assert!(MemoryStoreError::NotFound(Uuid::nil()).source().is_none());
+    }
+
+    // ── ContextualizerError ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_contextualizer_error_memory_store_display() {
+        let err =
+            ContextualizerError::MemoryStore(MemoryStoreError::Connection("db down".to_string()));
+        assert_eq!(
+            err.to_string(),
+            "memory store error: connection error: db down"
+        );
+    }
+
+    #[test]
+    fn test_contextualizer_error_model_provider_display() {
+        let err = ContextualizerError::ModelProvider(ModelProviderError::Timeout);
+        assert_eq!(err.to_string(), "model provider error: request timed out");
+    }
+
+    #[test]
+    fn test_contextualizer_error_memory_store_has_source() {
+        let err = ContextualizerError::MemoryStore(MemoryStoreError::Connection("x".to_string()));
+        assert!(err.source().is_some());
+    }
+
+    #[test]
+    fn test_contextualizer_error_model_provider_has_source() {
+        let err = ContextualizerError::ModelProvider(ModelProviderError::Timeout);
+        assert!(err.source().is_some());
+    }
+}

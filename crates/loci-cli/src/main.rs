@@ -18,14 +18,16 @@ use futures::StreamExt as _;
 use log::{LevelFilter, debug, error, info};
 use uuid::Uuid;
 
-use loci_model_provider_ollama::provider::{OllamaModelProvider, OllamaConfig};
-use loci_config::{AppConfig, ConfigError, ModelProviderConfig, ModelProviderKind, StoreConfig, load_config};
+use loci_config::{
+    AppConfig, ConfigError, ModelProviderConfig, ModelProviderKind, StoreConfig, load_config,
+};
 use loci_core::contextualization::{Contextualizer, ContextualizerConfig};
 use loci_core::embedding::DefaultTextEmbedder;
 use loci_core::memory::{MemoryInput, MemoryQuery, Score};
 use loci_core::store::MemoryStore;
 use loci_memory_store_qdrant::config::QdrantConfig;
 use loci_memory_store_qdrant::store::QdrantMemoryStore;
+use loci_model_provider_ollama::provider::{OllamaConfig, OllamaModelProvider};
 
 /// Top-level CLI arguments and global options.
 #[derive(Parser)]
@@ -268,7 +270,9 @@ async fn build_store(
 }
 
 /// Builds an [`OllamaModelProvider`] for text generation using the default model's provider.
-fn build_llm_provider(config: &AppConfig) -> Result<OllamaModelProvider, Box<dyn std::error::Error>> {
+fn build_llm_provider(
+    config: &AppConfig,
+) -> Result<OllamaModelProvider, Box<dyn std::error::Error>> {
     let provider = resolve_llm_provider(config)?;
     build_ollama_provider(provider)
 }
@@ -294,7 +298,9 @@ fn resolve_embedding_provider(
 }
 
 /// Resolves the [`ModelProviderConfig`] for the default LLM model.
-fn resolve_llm_provider(config: &AppConfig) -> Result<&ModelProviderConfig, Box<dyn std::error::Error>> {
+fn resolve_llm_provider(
+    config: &AppConfig,
+) -> Result<&ModelProviderConfig, Box<dyn std::error::Error>> {
     let model_name = &config.routing.default_model;
     let model = config
         .models

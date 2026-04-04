@@ -136,7 +136,7 @@ embedding = "default"
         assert_eq!(config.providers.len(), 1);
         assert!(config.providers.contains_key("ollama"));
         assert_eq!(config.models["default"].provider, "ollama");
-        assert_eq!(config.models["default"].name, "llama3");
+        assert_eq!(config.models["default"].name, "qwen3:0.6b");
         assert_eq!(config.embeddings["default"].dimension, 768);
         assert_eq!(config.memory.store, "qdrant");
         assert_eq!(config.memory.collection, "memories");
@@ -303,5 +303,64 @@ embedding = "x"
         }
         // SAFETY: single-threaded test process; no other threads read this var.
         unsafe { std::env::remove_var("LOCI_QDRANT_KEY") };
+    }
+
+    #[test]
+    fn fallback_models_defaults_to_empty_vec() {
+        let f = write_temp_config(MINIMAL_CONFIG);
+        let config = load_config(f.path()).unwrap();
+        assert!(config.routing.fallback_models.is_empty());
+    }
+
+    #[test]
+    fn fallback_models_are_parsed_when_set() {
+        let cfg = r#"
+[providers.ollama]
+kind = "ollama"
+endpoint = "http://localhost:11434"
+
+[stores.qdrant]
+kind = "qdrant"
+url = "http://localhost:6333"
+
+[memory]
+store = "qdrant"
+collection = "mem"
+
+[routing]
+default_model = "primary"
+embedding = "default"
+fallback_models = ["secondary", "tertiary"]
+"#;
+        let f = write_temp_config(cfg);
+        let config = load_config(f.path()).unwrap();
+        assert_eq!(
+            config.routing.fallback_models,
+            vec!["secondary", "tertiary"]
+        );
+    }
+
+    #[test]
+    fn markdown_store_is_parsed_correctly() {
+        let cfg = r#"
+[stores.local]
+kind = "markdown"
+path = "./memory"
+
+[memory]
+store = "local"
+collection = "notes"
+
+[routing]
+default_model = "x"
+embedding = "x"
+"#;
+        let f = write_temp_config(cfg);
+        let config = load_config(f.path()).unwrap();
+        if let StoreConfig::Markdown { path } = &config.stores["local"] {
+            assert_eq!(path, "./memory");
+        } else {
+            panic!("expected Markdown store");
+        }
     }
 }

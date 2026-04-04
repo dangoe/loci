@@ -44,3 +44,18 @@ impl StoreConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use pretty_assertions::assert_eq;
+    use rstest::rstest;
+
+    use super::*;
+
+    #[rstest]
+    #[case(StoreConfig::Qdrant { url: "http://localhost:6333".to_string(), api_key: None }, "qdrant")]
+    #[case(StoreConfig::Markdown { path: "./memory".to_string() }, "markdown")]
+    fn test_kind_str(#[case] store: StoreConfig, #[case] expected: &str) {
+        assert_eq!(store.kind_str(), expected);
+    }
+}

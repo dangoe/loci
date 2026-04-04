@@ -8,9 +8,9 @@ use std::sync::Arc;
 
 use futures::Stream;
 
-use crate::model_provider::text_generation::{self, TextGenerationRequest, TextGenerationResponse};
 use crate::error::ContextualizerError;
 use crate::memory::{MemoryEntry, MemoryQuery, Score};
+use crate::model_provider::text_generation::{self, TextGenerationRequest, TextGenerationResponse};
 use crate::store::MemoryStore;
 
 /// Configuration for a [`Contextualizer`].
@@ -145,22 +145,27 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{future::Future, pin::Pin};
+    use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 
+    use futures::StreamExt as _;
+    use pretty_assertions::assert_eq;
     use uuid::Uuid;
 
     use crate::{
+        error::MemoryStoreError,
+        memory::{Memory, MemoryEntry, MemoryInput, MemoryQuery, Score},
         model_provider::{
             common::ModelProviderResult,
-            text_generation::{TextGenerationModelProvider, TextGenerationResponse},
+            error::ModelProviderError,
+            text_generation::{
+                TextGenerationModelProvider, TextGenerationRequest, TextGenerationResponse,
+            },
         },
-        error::MemoryStoreError,
-        memory::{Memory, MemoryInput, MemoryQuery, Score},
     };
 
     use super::*;
 
-    // ── Mock store ────────────────────────────────────────────────────────────
+    // ── Mock store — returns a fixed list of entries ──────────────────────────
 
     struct MockStore {
         entries: Vec<MemoryEntry>,
@@ -206,6 +211,47 @@ mod tests {
         }
     }
 
+    // ── Mock store — always fails on query ───────────────────────────────────
+
+    struct FailingStore;
+
+    impl MemoryStore for FailingStore {
+        fn save(
+            &self,
+            _input: MemoryInput,
+        ) -> impl Future<Output = Result<MemoryEntry, MemoryStoreError>> + Send + '_ {
+            async move { Err(MemoryStoreError::Connection("always fails".to_string())) }
+        }
+
+        fn query(
+            &self,
+            _query: MemoryQuery,
+        ) -> impl Future<Output = Result<Vec<MemoryEntry>, MemoryStoreError>> + Send + '_ {
+            async move { Err(MemoryStoreError::Connection("always fails".to_string())) }
+        }
+
+        fn update(
+            &self,
+            id: Uuid,
+            _input: MemoryInput,
+        ) -> impl Future<Output = Result<MemoryEntry, MemoryStoreError>> + Send + '_ {
+            async move { Err(MemoryStoreError::NotFound(id)) }
+        }
+
+        fn delete(
+            &self,
+            _id: Uuid,
+        ) -> impl Future<Output = Result<(), MemoryStoreError>> + Send + '_ {
+            async move { Ok(()) }
+        }
+
+        fn clear(&self) -> impl Future<Output = Result<(), MemoryStoreError>> + Send + '_ {
+            async move { Ok(()) }
+        }
+    }
+
+    // ── Mock text-generation provider — returns a fixed reply ─────────────────
+
     struct MockTextGenerationProvider {
         reply: String,
     }
@@ -219,5 +265,131 @@ mod tests {
             let reply = self.reply.clone();
             Box::pin(async move { Ok(TextGenerationResponse::done(reply, req.model, None)) })
         }
+    }
+
+    // ── Mock text-generation provider — always fails ──────────────────────────
+
+    struct FailingTextGenerationProvider;
+
+    impl TextGenerationModelProvider for FailingTextGenerationProvider {
+        fn generate(
+            &self,
+            _req: TextGenerationRequest,
+        ) -> Pin<Box<dyn Future<Output = ModelProviderResult<TextGenerationResponse>> + Send + '_>>
+        {
+            Box::pin(async move { Err(ModelProviderError::Timeout) })
+        }
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    fn default_config() -> ContextualizerConfig {
+        ContextualizerConfig {
+            text_generation_model: "test-model".to_string(),
+            max_memories: 5,
+            min_score: Score::ZERO,
+            filters: HashMap::new(),
+        }
+    }
+
+    fn make_contextualizer(
+        entries: Vec<MemoryEntry>,
+        reply: &str,
+    ) -> Contextualizer<MockStore, MockTextGenerationProvider> {
+        Contextualizer::new(
+            Arc::new(MockStore { entries }),
+            Arc::new(MockTextGenerationProvider {
+                reply: reply.to_string(),
+            }),
+            default_config(),
+        )
+    }
+
+    fn make_entry(content: &str) -> MemoryEntry {
+        MemoryEntry {
+            memory: Memory::new(content.to_string(), HashMap::new()),
+            score: Score::ZERO,
+        }
+    }
+
+    // ── Tests: build_system_prompt ────────────────────────────────────────────
+
+    #[test]
+    fn test_build_system_prompt_includes_each_memory_content() {
+        let ctx = make_contextualizer(vec![], "reply");
+        let entries = vec![make_entry("I like cats"), make_entry("I live in Berlin")];
+        let prompt = ctx.build_system_prompt(entries);
+        assert!(prompt.contains("I like cats"), "prompt: {prompt}");
+        assert!(prompt.contains("I live in Berlin"), "prompt: {prompt}");
+    }
+
+    #[test]
+    fn test_build_system_prompt_with_no_memories_contains_placeholder() {
+        let ctx = make_contextualizer(vec![], "reply");
+        let prompt = ctx.build_system_prompt(vec![]);
+        assert!(
+            prompt.contains("<no memory entries>"),
+            "expected placeholder, got: {prompt}",
+        );
+    }
+
+    // ── Tests: contextualize ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_contextualize_returns_model_response_text() {
+        let ctx = make_contextualizer(vec![], "the answer is 42");
+        let items: Vec<_> = ctx.contextualize("what is the answer?").collect().await;
+
+        assert_eq!(items.len(), 1);
+        let resp = items.into_iter().next().unwrap().unwrap();
+        assert_eq!(resp.text, "the answer is 42");
+    }
+
+    #[tokio::test]
+    async fn test_contextualize_injects_retrieved_memories_into_system_prompt() {
+        // The mock store returns this entry regardless of query topic.
+        let entries = vec![make_entry("user prefers dark mode")];
+        let ctx = make_contextualizer(entries, "noted");
+        let items: Vec<_> = ctx.contextualize("set my preference").collect().await;
+
+        // The stream should complete without errors.
+        assert_eq!(items.len(), 1);
+        assert!(items[0].is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_contextualize_propagates_store_error() {
+        let ctx = Contextualizer::new(
+            Arc::new(FailingStore),
+            Arc::new(MockTextGenerationProvider {
+                reply: "".to_string(),
+            }),
+            default_config(),
+        );
+        let items: Vec<_> = ctx.contextualize("any prompt").collect().await;
+
+        assert_eq!(items.len(), 1);
+        assert!(
+            matches!(&items[0], Err(ContextualizerError::MemoryStore(_))),
+            "expected MemoryStore error, got: {:?}",
+            items[0],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_contextualize_propagates_text_generation_error() {
+        let ctx = Contextualizer::new(
+            Arc::new(MockStore { entries: vec![] }),
+            Arc::new(FailingTextGenerationProvider),
+            default_config(),
+        );
+        let items: Vec<_> = ctx.contextualize("prompt").collect().await;
+
+        assert_eq!(items.len(), 1);
+        assert!(
+            matches!(&items[0], Err(ContextualizerError::ModelProvider(_))),
+            "expected ModelProvider error, got: {:?}",
+            items[0],
+        );
     }
 }

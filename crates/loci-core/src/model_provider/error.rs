@@ -48,3 +48,42 @@ impl fmt::Display for ModelProviderError {
 }
 
 impl Error for ModelProviderError {}
+
+#[cfg(test)]
+mod tests {
+    use pretty_assertions::assert_eq;
+    use rstest::rstest;
+
+    use super::*;
+
+    #[rstest]
+    #[case(ModelProviderError::Timeout, "request timed out")]
+    #[case(ModelProviderError::RateLimited, "rate limited by model provider")]
+    #[case(
+        ModelProviderError::Http { message: "not found".to_string(), status: Some(404) },
+        "HTTP error (404): not found"
+    )]
+    #[case(
+        ModelProviderError::Http { message: "unknown".to_string(), status: None },
+        "HTTP error: unknown"
+    )]
+    #[case(
+        ModelProviderError::Transport { message: "conn refused".to_string() },
+        "transport error: conn refused"
+    )]
+    #[case(
+        ModelProviderError::Parse { message: "invalid json".to_string() },
+        "parse error: invalid json"
+    )]
+    #[case(
+        ModelProviderError::InvalidRequest { message: "bad model".to_string() },
+        "invalid request: bad model"
+    )]
+    #[case(
+        ModelProviderError::Other { message: "something unexpected".to_string() },
+        "something unexpected"
+    )]
+    fn test_display(#[case] err: ModelProviderError, #[case] expected: &str) {
+        assert_eq!(err.to_string(), expected);
+    }
+}

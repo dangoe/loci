@@ -87,3 +87,48 @@ pub trait EmbeddingModelProvider: Send + Sync {
         req: EmbeddingRequest,
     ) -> Pin<Box<dyn Future<Output = ModelProviderResult<EmbeddingResponse>> + Send + '_>>;
 }
+
+#[cfg(test)]
+mod tests {
+    use pretty_assertions::assert_eq;
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn test_new_sets_model_and_single_input() {
+        let req = EmbeddingRequest::new("my-model", "hello world");
+        assert_eq!(req.model, "my-model");
+        assert_eq!(req.input, vec!["hello world".to_string()]);
+        assert!(req.embedding_dimension.is_none());
+        assert!(req.extra_params.is_empty());
+    }
+
+    #[test]
+    fn test_new_batch_sets_all_inputs() {
+        let inputs = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let req = EmbeddingRequest::new_batch("model", inputs.clone());
+        assert_eq!(req.input, inputs);
+    }
+
+    #[test]
+    fn test_with_embedding_dimension_sets_field() {
+        let req = EmbeddingRequest::new("model", "text").with_embedding_dimension(512);
+        assert_eq!(req.embedding_dimension, Some(512));
+    }
+
+    #[test]
+    fn test_with_extra_inserts_param() {
+        let req = EmbeddingRequest::new("model", "text").with_extra("truncate", json!(true));
+        assert_eq!(req.extra_params["truncate"], json!(true));
+    }
+
+    #[test]
+    fn test_builder_methods_are_chainable() {
+        let req = EmbeddingRequest::new("m", "t")
+            .with_embedding_dimension(768)
+            .with_extra("k", json!("v"));
+        assert_eq!(req.embedding_dimension, Some(768));
+        assert_eq!(req.extra_params["k"], json!("v"));
+    }
+}
