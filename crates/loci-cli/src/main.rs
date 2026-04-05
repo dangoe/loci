@@ -226,7 +226,8 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
                 stream_text_generation(stream).await?;
             } else {
-                stream_text_generation(contextualizer.contextualize(&prompt)).await?;
+                let stream = contextualizer.contextualize(&prompt).await?;
+                stream_text_generation(stream).await?;
             }
             Ok(())
         }

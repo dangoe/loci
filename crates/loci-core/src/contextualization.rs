@@ -24,6 +24,9 @@ Rules:
 - Never fabricate or embellish. If you are uncertain, say so. Only speculate if the user explicitly asks you to.
 - Be concise. Avoid unnecessary preamble.";
 
+pub type ResultStream<'a> =
+    Pin<Box<dyn Stream<Item = Result<TextGenerationResponse, ContextualizerError>> + Send + 'a>>;
+
 /// Configuration for a [`Contextualizer`].
 ///
 /// This configuration controls how many memory entries are retrieved and how the
@@ -118,25 +121,11 @@ where
     ///
     /// The `prompt` is the user-provided input; relevant memory entries are retrieved
     /// from the `MemoryStore` and attached to the request as a system prompt.
-    pub fn contextualize<'a>(
+    pub async fn contextualize<'a>(
         &'a self,
         prompt: &'a str,
-    ) -> Pin<Box<dyn Stream<Item = Result<TextGenerationResponse, ContextualizerError>> + Send + 'a>>
-    {
-        Box::pin(async_stream::try_stream! {
-            let memory_entries = self.query_memory(prompt).await?;
-
-            log::debug!("retrieved {} relevant memory_entries", memory_entries.len());
-
-            let req = self.build_request(prompt, &memory_entries);
-
-            use futures::StreamExt as _;
-            let mut stream = self.text_generation_provider.generate_stream(req);
-            while let Some(result) = stream.next().await {
-                let chunk = result.map_err(ContextualizerError::ModelProvider)?;
-                yield chunk;
-            }
-        })
+    ) -> Result<ResultStream<'a>, ContextualizerError> {
+        Ok(self.contextualize_internal(prompt).await?.1)
     }
 
     /// Contextualize a user prompt, returning debug information about the injected
@@ -154,43 +143,42 @@ where
     pub async fn contextualize_with_debug<'a>(
         &'a self,
         prompt: &'a str,
-    ) -> Result<
-        (
-            ContextualizationDebugInfo,
-            Pin<
-                Box<
-                    dyn Stream<Item = Result<TextGenerationResponse, ContextualizerError>>
-                        + Send
-                        + 'a,
-                >,
-            >,
-        ),
-        ContextualizerError,
-    > {
-        let memory_entries = self.query_memory(prompt).await?;
-
-        log::debug!(
-            "retrieved {} relevant memory_entries (debug mode)",
-            memory_entries.len()
-        );
+    ) -> Result<(ContextualizationDebugInfo, ResultStream<'a>), ContextualizerError> {
+        let (memory_entries, stream) = self.contextualize_internal(prompt).await?;
 
         let debug_info = ContextualizationDebugInfo {
             memory_entries: memory_entries.clone(),
         };
 
-        let req = self.build_request(prompt, &memory_entries);
+        Ok((debug_info, stream))
+    }
 
+    async fn contextualize_internal<'a>(
+        &'a self,
+        prompt: &'a str,
+    ) -> Result<(Vec<MemoryQueryResult>, ResultStream<'a>), ContextualizerError> {
+        let memory_entries = self.query_memory(prompt).await?;
+
+        let req = self.build_request(prompt, &memory_entries);
+        let stream = self.build_result_stream(req);
+
+        Ok((memory_entries, stream))
+    }
+
+    fn build_result_stream<'a>(
+        &'a self,
+        req: TextGenerationRequest,
+    ) -> Pin<Box<dyn Stream<Item = Result<TextGenerationResponse, ContextualizerError>> + Send + 'a>>
+    {
         let provider = self.text_generation_provider.clone();
-        let stream = Box::pin(async_stream::try_stream! {
+        Box::pin(async_stream::try_stream! {
             use futures::StreamExt as _;
-            let mut s = provider.generate_stream(req);
-            while let Some(result) = s.next().await {
+            let mut stream = provider.generate_stream(req);
+            while let Some(result) = stream.next().await {
                 let chunk = result.map_err(ContextualizerError::ModelProvider)?;
                 yield chunk;
             }
-        });
-
-        Ok((debug_info, stream))
+        })
     }
 
     fn build_request(
@@ -514,7 +502,12 @@ mod tests {
     #[tokio::test]
     async fn test_contextualize_returns_model_response_text() {
         let ctx = make_contextualizer(vec![], "the answer is 42");
-        let items: Vec<_> = ctx.contextualize("what is the answer?").collect().await;
+        let items: Vec<_> = ctx
+            .contextualize("what is the answer?")
+            .await
+            .unwrap()
+            .collect()
+            .await;
 
         assert_eq!(items.len(), 1);
         let resp = items.into_iter().next().unwrap().unwrap();
@@ -526,7 +519,12 @@ mod tests {
         // The mock store returns this entry regardless of query topic.
         let entries = vec![make_entry("user prefers dark mode")];
         let ctx = make_contextualizer(entries, "noted");
-        let items: Vec<_> = ctx.contextualize("set my preference").collect().await;
+        let items: Vec<_> = ctx
+            .contextualize("set my preference")
+            .await
+            .unwrap()
+            .collect()
+            .await;
 
         // The stream should complete without errors.
         assert_eq!(items.len(), 1);
@@ -542,7 +540,12 @@ mod tests {
             }),
             default_config(),
         );
-        let items: Vec<_> = ctx.contextualize("any prompt").collect().await;
+        let items: Vec<_> = ctx
+            .contextualize("any prompt")
+            .await
+            .unwrap()
+            .collect()
+            .await;
 
         assert_eq!(items.len(), 1);
         assert!(
@@ -559,7 +562,7 @@ mod tests {
             Arc::new(FailingTextGenerationProvider),
             default_config(),
         );
-        let items: Vec<_> = ctx.contextualize("prompt").collect().await;
+        let items: Vec<_> = ctx.contextualize("prompt").await.unwrap().collect().await;
 
         assert_eq!(items.len(), 1);
         assert!(
@@ -592,7 +595,7 @@ mod tests {
                 ..default_config()
             },
         );
-        let items: Vec<_> = ctx.contextualize("prompt").collect().await;
+        let items: Vec<_> = ctx.contextualize("prompt").await.unwrap().collect().await;
         assert_eq!(items.len(), 1);
         assert!(items[0].is_ok());
 
