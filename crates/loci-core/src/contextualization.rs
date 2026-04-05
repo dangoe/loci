@@ -73,6 +73,47 @@ pub struct ContextualizationDebugInfo {
     pub memory_entries: Vec<MemoryQueryResult>,
 }
 
+/// Mode for how the contextualizer should query the memory store for a given request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextualizationMemoryMode {
+    /// The contextualizer should query the memory store and inject relevant entries into the prompt as usual.
+    Auto,
+    /// The contextualizer should skip querying the memory store and proceed without injecting any memory entries.
+    Off,
+}
+
+/// Internal struct representing a contextualization request, including the user prompt and memory query mode.
+pub struct ContextualizationRequest {
+    /// The user prompt to contextualize and send to the model provider.
+    pub prompt: String,
+    /// The mode for how the contextualizer should query the memory store for this request.
+    pub memory_mode: ContextualizationMemoryMode,
+}
+
+impl ContextualizationRequest {
+    /// Creates a new `ContextualizationRequest` with the given prompt and memory mode.
+    pub fn new(prompt: impl Into<String>) -> Self {
+        ContextualizationRequest {
+            prompt: prompt.into(),
+            memory_mode: ContextualizationMemoryMode::Auto,
+        }
+    }
+
+    pub fn with_memory_mode(mut self, memory_mode: ContextualizationMemoryMode) -> Self {
+        self.memory_mode = memory_mode;
+        self
+    }
+}
+
+impl Default for ContextualizationRequest {
+    fn default() -> Self {
+        Self {
+            prompt: String::new(),
+            memory_mode: ContextualizationMemoryMode::Auto,
+        }
+    }
+}
+
 /// Enhances a user prompt with relevant memory entries before calling an LLM.
 ///
 /// On each call to [`Contextualizer::contextualize`] the contextualizer:
@@ -123,9 +164,9 @@ where
     /// from the `MemoryStore` and attached to the request as a system prompt.
     pub async fn contextualize<'a>(
         &'a self,
-        prompt: &'a str,
+        request: ContextualizationRequest,
     ) -> Result<ResultStream<'a>, ContextualizerError> {
-        Ok(self.contextualize_internal(prompt).await?.1)
+        Ok(self.contextualize_internal(request).await?.1)
     }
 
     /// Contextualize a user prompt, returning debug information about the injected
@@ -142,9 +183,9 @@ where
     /// returned stream.
     pub async fn contextualize_with_debug<'a>(
         &'a self,
-        prompt: &'a str,
+        request: ContextualizationRequest,
     ) -> Result<(ContextualizationDebugInfo, ResultStream<'a>), ContextualizerError> {
-        let (memory_entries, stream) = self.contextualize_internal(prompt).await?;
+        let (memory_entries, stream) = self.contextualize_internal(request).await?;
 
         let debug_info = ContextualizationDebugInfo {
             memory_entries: memory_entries.clone(),
@@ -155,11 +196,15 @@ where
 
     async fn contextualize_internal<'a>(
         &'a self,
-        prompt: &'a str,
+        request: ContextualizationRequest,
     ) -> Result<(Vec<MemoryQueryResult>, ResultStream<'a>), ContextualizerError> {
-        let memory_entries = self.query_memory(prompt).await?;
+        let memory_entries = if request.memory_mode == ContextualizationMemoryMode::Auto {
+            self.query_memory(request.prompt.clone()).await?
+        } else {
+            Vec::new()
+        };
 
-        let req = self.build_request(prompt, &memory_entries);
+        let req = self.build_request(&request.prompt.clone(), &memory_entries);
         let stream = self.build_result_stream(req);
 
         Ok((memory_entries, stream))
@@ -503,7 +548,7 @@ mod tests {
     async fn test_contextualize_returns_model_response_text() {
         let ctx = make_contextualizer(vec![], "the answer is 42");
         let items: Vec<_> = ctx
-            .contextualize("what is the answer?")
+            .contextualize(ContextualizationRequest::new("what is the answer?"))
             .await
             .unwrap()
             .collect()
@@ -520,7 +565,7 @@ mod tests {
         let entries = vec![make_entry("user prefers dark mode")];
         let ctx = make_contextualizer(entries, "noted");
         let items: Vec<_> = ctx
-            .contextualize("set my preference")
+            .contextualize(ContextualizationRequest::new("set my preference"))
             .await
             .unwrap()
             .collect()
@@ -540,7 +585,9 @@ mod tests {
             }),
             default_config(),
         );
-        let error = ctx.contextualize("any prompt").await;
+        let error = ctx
+            .contextualize(ContextualizationRequest::new("any prompt"))
+            .await;
 
         assert!(
             matches!(error, Err(ContextualizerError::MemoryStore(_))),
@@ -556,7 +603,12 @@ mod tests {
             Arc::new(FailingTextGenerationProvider),
             default_config(),
         );
-        let items: Vec<_> = ctx.contextualize("prompt").await.unwrap().collect().await;
+        let items: Vec<_> = ctx
+            .contextualize(ContextualizationRequest::new("prompt"))
+            .await
+            .unwrap()
+            .collect()
+            .await;
 
         assert_eq!(items.len(), 1);
         assert!(
@@ -589,7 +641,12 @@ mod tests {
                 ..default_config()
             },
         );
-        let items: Vec<_> = ctx.contextualize("prompt").await.unwrap().collect().await;
+        let items: Vec<_> = ctx
+            .contextualize(ContextualizationRequest::new("prompt"))
+            .await
+            .unwrap()
+            .collect()
+            .await;
         assert_eq!(items.len(), 1);
         assert!(items[0].is_ok());
 
@@ -623,7 +680,7 @@ mod tests {
         let ctx = make_contextualizer(entries.clone(), "noted");
 
         let (debug_info, stream) = ctx
-            .contextualize_with_debug("set my preference")
+            .contextualize_with_debug(ContextualizationRequest::new("set my preference"))
             .await
             .unwrap();
 
@@ -648,7 +705,9 @@ mod tests {
             default_config(),
         );
 
-        let result = ctx.contextualize_with_debug("any prompt").await;
+        let result = ctx
+            .contextualize_with_debug(ContextualizationRequest::new("any prompt"))
+            .await;
         assert!(
             matches!(result, Err(ContextualizerError::MemoryStore(_))),
             "expected MemoryStore error",
@@ -660,7 +719,7 @@ mod tests {
         let ctx = make_contextualizer(vec![], "the answer is 42");
 
         let (debug_info, stream) = ctx
-            .contextualize_with_debug("what is the answer?")
+            .contextualize_with_debug(ContextualizationRequest::new("what is the answer?"))
             .await
             .unwrap();
 
@@ -670,5 +729,33 @@ mod tests {
         assert_eq!(items.len(), 1);
         let resp = items.into_iter().next().unwrap().unwrap();
         assert_eq!(resp.text, "the answer is 42");
+    }
+
+    #[tokio::test]
+    async fn test_contextualize_skips_memory_when_memory_mode_off() {
+        // Use a failing store to ensure that if the contextualizer attempted to
+        // query memory, it would error. With memory mode set to Off it should not
+        // query the store and should successfully return the model response.
+        let ctx = Contextualizer::new(
+            Arc::new(FailingStore),
+            Arc::new(MockTextGenerationProvider {
+                reply: "ok".to_string(),
+            }),
+            default_config(),
+        );
+
+        let items: Vec<_> = ctx
+            .contextualize(
+                ContextualizationRequest::new("any prompt")
+                    .with_memory_mode(ContextualizationMemoryMode::Off),
+            )
+            .await
+            .unwrap()
+            .collect()
+            .await;
+
+        assert_eq!(items.len(), 1);
+        let resp = items.into_iter().next().unwrap().unwrap();
+        assert_eq!(resp.text, "ok");
     }
 }

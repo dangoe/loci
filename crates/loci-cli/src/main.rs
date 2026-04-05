@@ -25,7 +25,8 @@ use loci_config::{
     ModelThinkingEffortLevel, ModelTuningConfig, StoreConfig, load_config,
 };
 use loci_core::contextualization::{
-    Contextualizer, ContextualizerConfig, ContextualizerTuningConfig,
+    ContextualizationMemoryMode, ContextualizationRequest, Contextualizer, ContextualizerConfig,
+    ContextualizerTuningConfig,
 };
 
 use loci_core::embedding::DefaultTextEmbedder;
@@ -50,6 +51,24 @@ struct Cli {
 
     #[command(subcommand)]
     command: Command,
+}
+
+/// Memory mode for the `gen` command, controlling memory retrieval and injection behavior.
+#[derive(clap::ValueEnum, PartialEq, Eq, Clone, Debug)]
+enum GenMemoryMode {
+    /// Retrieves and injects memory entries into the prompt based on the configured contextualization settings.
+    Auto,
+    /// Skips memory retrieval and injection, generating a response based solely on the prompt.
+    Off,
+}
+
+impl Into<ContextualizationMemoryMode> for GenMemoryMode {
+    fn into(self) -> ContextualizationMemoryMode {
+        match self {
+            GenMemoryMode::Auto => ContextualizationMemoryMode::Auto,
+            GenMemoryMode::Off => ContextualizationMemoryMode::Off,
+        }
+    }
 }
 
 /// Debug flags for the `gen` command, which prints additional info about the contextualization process when set.
@@ -79,6 +98,10 @@ enum Command {
         /// Minimum similarity score for memory retrieval (0.0–1.0).
         #[arg(long, default_value_t = 0.5)]
         min_score: f64,
+
+        /// Memory mode for generation, which controls whether and how memory is retrieved and injected into the prompt.
+        #[arg(long, value_enum, default_value_t = GenMemoryMode::Auto)]
+        memory_mode: GenMemoryMode,
 
         /// Print debug info about the contextualization process, such as retrieved memory entries.
         #[arg(long)]
@@ -191,6 +214,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             prompt,
             max_memory_entries,
             min_score,
+            memory_mode,
             debug_flags,
         } => {
             let store = Arc::new(build_store(&config).await?);
@@ -219,13 +243,17 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let contextualizer = Contextualizer::new(store, llm_provider, ctx_config);
 
             if debug_flags.contains(&GenDebugFlags::Memory) {
-                let (debug_info, stream) = contextualizer.contextualize_with_debug(&prompt).await?;
+                let (debug_info, stream) = contextualizer
+                    .contextualize_with_debug(
+                        ContextualizationRequest::new(&prompt).with_memory_mode(memory_mode.into()),
+                    )
+                    .await?;
 
                 eprintln!("Debug info:\n");
                 eprintln!(
                     "{}",
                     serde_json::to_string_pretty(&serde_json::json!({
-                          "retrieved_memory": debug_info.memory_entries .iter().map(entry_to_json).collect::<Vec<_>>(),
+                          "retrieved_memory": debug_info.memory_entries.iter().map(entry_to_json).collect::<Vec<_>>(),
                     }))?
                 );
 
@@ -233,7 +261,11 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
                 stream_text_generation(stream).await?;
             } else {
-                let stream = contextualizer.contextualize(&prompt).await?;
+                let stream = contextualizer
+                    .contextualize(
+                        ContextualizationRequest::new(&prompt).with_memory_mode(memory_mode.into()),
+                    )
+                    .await?;
                 stream_text_generation(stream).await?;
             }
             Ok(())
@@ -241,10 +273,6 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::Config { .. } => unreachable!("handled above"),
     }
 }
-
-// ---------------------------------------------------------------------------
-// Store / model provider construction
-// ---------------------------------------------------------------------------
 
 /// Builds a `QdrantMemoryStore<DefaultTextEmbedder>` from the active config.
 ///
@@ -403,10 +431,6 @@ fn model_thinking_to_core(thinking: &ModelThinkingConfig) -> ThinkingMode {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Memory command dispatch
-// ---------------------------------------------------------------------------
-
 async fn run_memory_command(
     store: QdrantMemoryStore<DefaultTextEmbedder>,
     command: MemoryCommand,
@@ -503,10 +527,6 @@ async fn run_memory_command(
     }
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// Config init
-// ---------------------------------------------------------------------------
 
 fn cmd_config_init(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     if path.exists() {
