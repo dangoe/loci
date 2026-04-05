@@ -13,6 +13,9 @@ use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+#[cfg(feature = "systemd-journal-logger")]
+use systemd_journal_logger::JournalLog;
+
 use clap::{Parser, Subcommand};
 use futures::StreamExt as _;
 use log::{LevelFilter, debug, error, info};

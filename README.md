@@ -275,8 +275,8 @@ cargo test           # run all unit tests
 cargo clippy         # lint
 cargo fmt            # format
 
-# Integration tests (requires Docker)
-cargo test -p loci-memory-store-qdrant -- --ignored --test-threads=1
+# All tests including integration tests (requires Docker)
+cargo test-all # shorthand for 'cargo test --features integration -- --test-threads=1'
 ```
 
 ---

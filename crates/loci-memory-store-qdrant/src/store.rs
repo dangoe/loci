@@ -19,6 +19,7 @@ use qdrant_client::qdrant::{
     SearchPointsBuilder, UpsertPointsBuilder, VectorParamsBuilder, point_id::PointIdOptions,
     vectors_config::Config as VectorsConfigVariant,
 };
+#[cfg(feature = "background-delete")]
 use tokio::spawn;
 use uuid::Uuid;
 
@@ -296,6 +297,7 @@ impl<E: TextEmbedder> QdrantMemoryStore<E> {
         })
     }
 
+    #[cfg(feature = "background-delete")]
     async fn delete_expired(&self, id: Uuid) {
         // Fire-and-forget: clone what we need and spawn a background task.
         // Qdrant client is cheap-to-clone (it holds an Arc internally) so this is ok.
@@ -314,6 +316,22 @@ impl<E: TextEmbedder> QdrantMemoryStore<E> {
                 .await;
             // Intentionally ignore result: best-effort cleanup.
         });
+    }
+
+    #[cfg(not(feature = "background-delete"))]
+    async fn delete_expired(&self, id: Uuid) {
+        // Blocking (in-task) cleanup: await the deletion directly.
+        // Intentionally ignore result: best-effort cleanup.
+        let _ = self
+            .client
+            .delete_points(
+                DeletePointsBuilder::new(&self.config.collection_name)
+                    .points(PointsIdsList {
+                        ids: vec![PointId::from(id.to_string())],
+                    })
+                    .wait(true),
+            )
+            .await;
     }
 }
 
