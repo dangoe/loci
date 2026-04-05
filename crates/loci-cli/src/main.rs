@@ -214,24 +214,15 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             if debug_memory {
                 let (debug_info, stream) = contextualizer.contextualize_with_debug(&prompt).await?;
 
+                eprintln!("Debug info:\n");
                 eprintln!(
-                    "=== Injected Memory Entries ({}) ===",
-                    debug_info.memory_entries.len()
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                          "retrieved_memory": debug_info.memory_entries .iter().map(entry_to_json).collect::<Vec<_>>(),
+                    }))?
                 );
-                if debug_info.memory_entries.is_empty() {
-                    eprintln!("  (none)");
-                } else {
-                    for entry in &debug_info.memory_entries {
-                        eprintln!(
-                            "  [score: {:.3}] {} (id: {}, tier: {})",
-                            entry.score.value(),
-                            entry.memory_entry.content,
-                            entry.memory_entry.id,
-                            entry.memory_entry.tier.as_str(),
-                        );
-                    }
-                }
-                eprintln!("====================================");
+
+                println!("\nResponse:\n");
 
                 stream_text_generation(stream).await?;
             } else {

@@ -128,43 +128,7 @@ where
 
             log::debug!("retrieved {} relevant memory_entries", memory_entries.len());
 
-            let system_prompt = self.build_system_prompt(&memory_entries);
-
-            let mut req = TextGenerationRequest::new(
-                self.config.text_generation_model.to_string(),
-                prompt,
-            )
-            .with_system(system_prompt);
-
-            if let Some(tuning) = &self.config.tuning {
-                if let Some(v) = tuning.temperature {
-                    req = req.with_temperature(v);
-                }
-                if let Some(v) = tuning.max_tokens {
-                    req = req.with_max_tokens(v);
-                }
-                if let Some(v) = tuning.top_p {
-                    req = req.with_top_p(v);
-                }
-                if let Some(v) = tuning.repeat_penalty {
-                    req = req.with_repeat_penalty(v);
-                }
-                if let Some(v) = tuning.repeat_last_n {
-                    req = req.with_repeat_last_n(v);
-                }
-                if let Some(v) = &tuning.thinking {
-                    req = req.with_thinking(v.clone());
-                }
-                if let Some(v) = &tuning.stop {
-                    req = req.with_stop(v.clone());
-                }
-                if let Some(v) = tuning.keep_alive {
-                    req = req.with_keep_alive(v);
-                }
-                for (k, v) in &tuning.extra_params {
-                    req = req.with_extra(k.clone(), v.clone());
-                }
-            }
+            let req = self.build_request(prompt, &memory_entries);
 
             use futures::StreamExt as _;
             let mut stream = self.text_generation_provider.generate_stream(req);
@@ -210,13 +174,33 @@ where
             memory_entries.len()
         );
 
-        let system_prompt = self.build_system_prompt(&memory_entries);
+        let debug_info = ContextualizationDebugInfo {
+            memory_entries: memory_entries.clone(),
+        };
 
-        let debug_info = ContextualizationDebugInfo { memory_entries };
+        let req = self.build_request(prompt, &memory_entries);
 
+        let provider = self.text_generation_provider.clone();
+        let stream = Box::pin(async_stream::try_stream! {
+            use futures::StreamExt as _;
+            let mut s = provider.generate_stream(req);
+            while let Some(result) = s.next().await {
+                let chunk = result.map_err(ContextualizerError::ModelProvider)?;
+                yield chunk;
+            }
+        });
+
+        Ok((debug_info, stream))
+    }
+
+    fn build_request(
+        &self,
+        prompt: &str,
+        memory_entries: &Vec<MemoryQueryResult>,
+    ) -> TextGenerationRequest {
         let mut req =
             TextGenerationRequest::new(self.config.text_generation_model.to_string(), prompt)
-                .with_system(system_prompt);
+                .with_system(self.build_system_prompt(memory_entries));
 
         if let Some(tuning) = &self.config.tuning {
             if let Some(v) = tuning.temperature {
@@ -248,20 +232,10 @@ where
             }
         }
 
-        let provider = self.text_generation_provider.clone();
-        let stream = Box::pin(async_stream::try_stream! {
-            use futures::StreamExt as _;
-            let mut s = provider.generate_stream(req);
-            while let Some(result) = s.next().await {
-                let chunk = result.map_err(ContextualizerError::ModelProvider)?;
-                yield chunk;
-            }
-        });
-
-        Ok((debug_info, stream))
+        req
     }
 
-    fn build_system_prompt(&self, memory_entries: &[MemoryQueryResult]) -> String {
+    fn build_system_prompt(&self, memory_entries: &Vec<MemoryQueryResult>) -> String {
         let mut buf = String::new();
         buf.push_str(SYSTEM_PROMPT_BASE_TEMPLATE.replace('\n', "\n- ").as_str());
         buf.push('\n');
@@ -508,7 +482,7 @@ mod tests {
     #[test]
     fn test_build_system_prompt_with_no_memory_entries_contains_placeholder() {
         let ctx = make_contextualizer(vec![], "reply");
-        let prompt = ctx.build_system_prompt(&[]);
+        let prompt = ctx.build_system_prompt(&vec![]);
         assert!(
             prompt.contains("None. Answer from general knowledge."),
             "expected placeholder, got: {prompt}",
