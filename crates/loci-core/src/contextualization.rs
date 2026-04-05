@@ -540,18 +540,12 @@ mod tests {
             }),
             default_config(),
         );
-        let items: Vec<_> = ctx
-            .contextualize("any prompt")
-            .await
-            .unwrap()
-            .collect()
-            .await;
+        let error = ctx.contextualize("any prompt").await;
 
-        assert_eq!(items.len(), 1);
         assert!(
-            matches!(&items[0], Err(ContextualizerError::MemoryStore(_))),
+            matches!(error, Err(ContextualizerError::MemoryStore(_))),
             "expected MemoryStore error, got: {:?}",
-            items[0],
+            error.err().unwrap(),
         );
     }
 
