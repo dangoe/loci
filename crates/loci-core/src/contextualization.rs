@@ -128,7 +128,7 @@ where
 
             log::debug!("retrieved {} relevant memory_entries", memory_entries.len());
 
-            let system_prompt = self.build_system_prompt(memory_entries);
+            let system_prompt = self.build_system_prompt(&memory_entries);
 
             let mut req = TextGenerationRequest::new(
                 self.config.text_generation_model.to_string(),
@@ -210,11 +210,9 @@ where
             memory_entries.len()
         );
 
-        let debug_info = ContextualizationDebugInfo {
-            memory_entries: memory_entries.clone(),
-        };
+        let system_prompt = self.build_system_prompt(&memory_entries);
 
-        let system_prompt = self.build_system_prompt(memory_entries);
+        let debug_info = ContextualizationDebugInfo { memory_entries };
 
         let mut req =
             TextGenerationRequest::new(self.config.text_generation_model.to_string(), prompt)
@@ -263,7 +261,7 @@ where
         Ok((debug_info, stream))
     }
 
-    fn build_system_prompt(&self, memory_entries: Vec<MemoryQueryResult>) -> String {
+    fn build_system_prompt(&self, memory_entries: &[MemoryQueryResult]) -> String {
         let mut buf = String::new();
         buf.push_str(SYSTEM_PROMPT_BASE_TEMPLATE.replace('\n', "\n- ").as_str());
         buf.push('\n');
@@ -502,7 +500,7 @@ mod tests {
     fn test_build_system_prompt_includes_each_memory_content() {
         let ctx = make_contextualizer(vec![], "reply");
         let entries = vec![make_entry("I like cats"), make_entry("I live in Berlin")];
-        let prompt = ctx.build_system_prompt(entries);
+        let prompt = ctx.build_system_prompt(&entries);
         assert!(prompt.contains("I like cats"), "prompt: {prompt}");
         assert!(prompt.contains("I live in Berlin"), "prompt: {prompt}");
     }
@@ -510,7 +508,7 @@ mod tests {
     #[test]
     fn test_build_system_prompt_with_no_memory_entries_contains_placeholder() {
         let ctx = make_contextualizer(vec![], "reply");
-        let prompt = ctx.build_system_prompt(vec![]);
+        let prompt = ctx.build_system_prompt(&[]);
         assert!(
             prompt.contains("None. Answer from general knowledge."),
             "expected placeholder, got: {prompt}",

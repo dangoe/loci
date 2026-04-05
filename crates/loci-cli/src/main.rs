@@ -17,7 +17,6 @@ use std::sync::Arc;
 use systemd_journal_logger::JournalLog;
 
 use clap::{Parser, Subcommand};
-use futures::StreamExt as _;
 use log::{LevelFilter, debug, error, info};
 use uuid::Uuid;
 
@@ -213,8 +212,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let contextualizer = Contextualizer::new(store, llm_provider, ctx_config);
 
             if debug_memory {
-                let (debug_info, mut stream) =
-                    contextualizer.contextualize_with_debug(&prompt).await?;
+                let (debug_info, stream) = contextualizer.contextualize_with_debug(&prompt).await?;
 
                 eprintln!(
                     "=== Injected Memory Entries ({}) ===",
@@ -235,24 +233,9 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 }
                 eprintln!("====================================");
 
-                while let Some(result) = stream.next().await {
-                    let chunk = result.map_err(|e| e.to_string())?;
-                    print!("{}", chunk.text);
-                    std::io::stdout().flush()?;
-                    if chunk.done {
-                        println!();
-                    }
-                }
+                stream_text_generation(stream).await?;
             } else {
-                let mut stream = contextualizer.contextualize(&prompt);
-                while let Some(result) = stream.next().await {
-                    let chunk = result.map_err(|e| e.to_string())?;
-                    print!("{}", chunk.text);
-                    std::io::stdout().flush()?;
-                    if chunk.done {
-                        println!();
-                    }
-                }
+                stream_text_generation(contextualizer.contextualize(&prompt)).await?;
             }
             Ok(())
         }
@@ -637,6 +620,29 @@ embedding = "default"
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Consumes a text-generation stream, printing each chunk to stdout.
+///
+/// A newline is printed after the final chunk (when `chunk.done` is `true`).
+async fn stream_text_generation(
+    mut stream: impl futures::Stream<
+        Item = Result<
+            loci_core::model_provider::text_generation::TextGenerationResponse,
+            loci_core::error::ContextualizerError,
+        >,
+    > + Unpin,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use futures::StreamExt as _;
+    while let Some(result) = stream.next().await {
+        let chunk = result.map_err(|e| e.to_string())?;
+        print!("{}", chunk.text);
+        std::io::stdout().flush()?;
+        if chunk.done {
+            println!();
+        }
+    }
+    Ok(())
+}
 
 /// Resolves the config file path: uses the provided value when set,
 /// otherwise falls back to `~/.config/loci/config.toml`.
