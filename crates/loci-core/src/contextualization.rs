@@ -39,6 +39,8 @@ pub struct ContextualizerConfig {
     /// Note: the default value is an empty string. Callers should provide a
     /// fully initialized `ContextualizerConfig` when constructing a `Contextualizer`.
     pub text_generation_model: String,
+    /// Optional override for the system prompt template. If `None`, a default prompt will be used.
+    pub system: Option<ContextualizerSystemConfig>,
     /// Mode for how the contextualizer should query the memory store for a given request.
     pub memory_mode: ContextualizationMemoryMode,
     /// Maximum number of memory entries to retrieve and inject into the prompt.
@@ -49,6 +51,24 @@ pub struct ContextualizerConfig {
     pub filters: HashMap<String, String>,
     /// Optional text-generation tuning parameters.
     pub tuning: Option<ContextualizerTuningConfig>,
+}
+
+/// Configuration for how the contextualizer constructs system prompts and queries memory.
+#[derive(Debug, Clone)]
+pub struct ContextualizerSystemConfig {
+    /// System mode to be used.
+    pub mode: ContextualizerSystemMode,
+    /// The system prompt template text to use when constructing the system prompt.
+    pub system: String,
+}
+
+/// Mode for how the contextualizer should construct the system prompt for a given request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextualizerSystemMode {
+    /// The contextualizer should construct the system prompt by appending retrieved memory entries to a base template.
+    Append,
+    /// The contextualizer should use a caller-defined system prompt template that includes a placeholder for memory entries, and inject retrieved memory entries into that placeholder.
+    Replace,
 }
 
 /// Provider-agnostic generation tuning options for contextualized prompts.
@@ -239,8 +259,25 @@ where
     }
 
     fn build_system_prompt(&self, memory_entries: &Vec<MemoryQueryResult>) -> String {
+        fn normalize(s: impl Into<String>) -> String {
+            s.into().trim().replace('\n', "\n- ")
+        }
+
         let mut buf = String::new();
-        buf.push_str(SYSTEM_PROMPT_BASE_TEMPLATE.replace('\n', "\n- ").as_str());
+
+        match &self.config.system {
+            Some(system_config) => match system_config.mode {
+                ContextualizerSystemMode::Append => {
+                    buf.push_str(normalize(SYSTEM_PROMPT_BASE_TEMPLATE).as_str());
+                    buf.push_str(normalize(system_config.system.clone()).as_str());
+                }
+                ContextualizerSystemMode::Replace => {
+                    buf.push_str(normalize(system_config.system.clone()).as_str());
+                }
+            },
+            None => buf.push_str(normalize(SYSTEM_PROMPT_BASE_TEMPLATE).as_str()),
+        };
+
         buf.push('\n');
         buf.push_str("## Relevant memory entries\n");
 
@@ -446,6 +483,7 @@ mod tests {
     fn default_config() -> ContextualizerConfig {
         ContextualizerConfig {
             text_generation_model: "test-model".to_string(),
+            system: None,
             memory_mode: ContextualizationMemoryMode::Auto,
             max_memory_entries: 5,
             min_score: Score::ZERO,
@@ -490,6 +528,31 @@ mod tests {
         assert!(
             prompt.contains("None. Answer from general knowledge."),
             "expected placeholder, got: {prompt}",
+        );
+    }
+
+    #[test]
+    fn test_build_system_prompt_with_override_uses_override() {
+        let mut config = default_config();
+        config.system = Some(ContextualizerSystemConfig {
+            mode: ContextualizerSystemMode::Replace,
+            system: "Custom system prompt.\nMemory entries:\n{memory_entries}".to_string(),
+        });
+        let ctx = Contextualizer::new(
+            Arc::new(MockStore { entries: vec![] }),
+            Arc::new(MockTextGenerationProvider {
+                reply: "reply".to_string(),
+            }),
+            config,
+        );
+        let prompt = ctx.build_system_prompt(&vec![make_entry("entry")]);
+        assert!(
+            prompt.contains("Custom system prompt."),
+            "expected custom prompt, got: {prompt}",
+        );
+        assert!(
+            prompt.contains("{memory_entries}"),
+            "expected memory placeholder, got: {prompt}",
         );
     }
 

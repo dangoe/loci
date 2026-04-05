@@ -25,7 +25,8 @@ use loci_config::{
     ModelThinkingEffortLevel, ModelTuningConfig, StoreConfig, load_config,
 };
 use loci_core::contextualization::{
-    ContextualizationMemoryMode, Contextualizer, ContextualizerConfig, ContextualizerTuningConfig,
+    ContextualizationMemoryMode, Contextualizer, ContextualizerConfig, ContextualizerSystemConfig,
+    ContextualizerSystemMode, ContextualizerTuningConfig,
 };
 
 use loci_core::embedding::DefaultTextEmbedder;
@@ -77,6 +78,15 @@ enum GenDebugFlags {
     Memory,
 }
 
+/// Memory mode for generation, which controls whether and how memory is retrieved and injected into the prompt.
+#[derive(clap::ValueEnum, PartialEq, Eq, Clone, Debug)]
+enum GenSystemMode {
+    /// Append given system prompt to the default system prompt.
+    Append,
+    /// Replace default system prompt with the given system prompt.
+    Replace,
+}
+
 /// Available sub-commands.
 #[derive(Subcommand)]
 enum Command {
@@ -89,6 +99,14 @@ enum Command {
     Gen {
         /// The prompt to process.
         prompt: String,
+
+        /// Optional override for the system prompt used for generation. If not set, the default system prompt will be used.
+        #[arg(long)]
+        system: Option<String>,
+
+        /// System prompt mode, which controls how the provided system prompt interacts with the default system prompt.
+        #[arg(long, value_enum, default_value_t = GenSystemMode::Append)]
+        system_mode: GenSystemMode,
 
         /// Maximum number of memory entries to inject into the prompt.
         #[arg(long, default_value_t = 5)]
@@ -211,6 +229,8 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
         Command::Gen {
             prompt,
+            system,
+            system_mode,
             max_memory_entries,
             min_score,
             memory_mode,
@@ -232,6 +252,13 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let min_score = Score::new(min_score).map_err(|e| format!("invalid min_score: {e}"))?;
 
             let ctx_config = ContextualizerConfig {
+                system: system.map(|system| ContextualizerSystemConfig {
+                    mode: match system_mode {
+                        GenSystemMode::Append => ContextualizerSystemMode::Append,
+                        GenSystemMode::Replace => ContextualizerSystemMode::Replace,
+                    },
+                    system,
+                }),
                 max_memory_entries,
                 min_score,
                 memory_mode: memory_mode.into(),
