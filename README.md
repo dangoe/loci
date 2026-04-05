@@ -245,6 +245,7 @@ loci gen "Summarise our deployment setup" --max-memory-entries 8 --min-score 0.5
 | `<prompt>`                 | _(required)_ | Prompt text (positional)                          |
 | `--max-memory-entries <n>` | `5`          | Max memory entries to inject as context           |
 | `--min-score <f64>`        | `0.5`        | Minimum weighted score for context memory entries |
+| `--memory-mode             | 'auto'       | Memory query mode (`auto` and `off`)              |
 | `--debug-flags <FLAGS>`    | _(none)_     | Comma-separated debug flags (e.g. `memory`)       |
 
 ### `loci config init`

@@ -25,8 +25,7 @@ use loci_config::{
     ModelThinkingEffortLevel, ModelTuningConfig, StoreConfig, load_config,
 };
 use loci_core::contextualization::{
-    ContextualizationMemoryMode, ContextualizationRequest, Contextualizer, ContextualizerConfig,
-    ContextualizerTuningConfig,
+    ContextualizationMemoryMode, Contextualizer, ContextualizerConfig, ContextualizerTuningConfig,
 };
 
 use loci_core::embedding::DefaultTextEmbedder;
@@ -235,6 +234,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let ctx_config = ContextualizerConfig {
                 max_memory_entries,
                 min_score,
+                memory_mode: memory_mode.into(),
                 filters: HashMap::new(),
                 text_generation_model: model.name,
                 tuning: model.tuning.as_ref().map(model_tuning_to_contextualizer),
@@ -243,11 +243,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let contextualizer = Contextualizer::new(store, llm_provider, ctx_config);
 
             if debug_flags.contains(&GenDebugFlags::Memory) {
-                let (debug_info, stream) = contextualizer
-                    .contextualize_with_debug(
-                        ContextualizationRequest::new(&prompt).with_memory_mode(memory_mode.into()),
-                    )
-                    .await?;
+                let (debug_info, stream) = contextualizer.contextualize_with_debug(&prompt).await?;
 
                 eprintln!("Debug info:\n");
                 eprintln!(
@@ -261,11 +257,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
                 stream_text_generation(stream).await?;
             } else {
-                let stream = contextualizer
-                    .contextualize(
-                        ContextualizationRequest::new(&prompt).with_memory_mode(memory_mode.into()),
-                    )
-                    .await?;
+                let stream = contextualizer.contextualize(&prompt).await?;
                 stream_text_generation(stream).await?;
             }
             Ok(())

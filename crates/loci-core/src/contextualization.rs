@@ -39,6 +39,8 @@ pub struct ContextualizerConfig {
     /// Note: the default value is an empty string. Callers should provide a
     /// fully initialized `ContextualizerConfig` when constructing a `Contextualizer`.
     pub text_generation_model: String,
+    /// Mode for how the contextualizer should query the memory store for a given request.
+    pub memory_mode: ContextualizationMemoryMode,
     /// Maximum number of memory entries to retrieve and inject into the prompt.
     pub max_memory_entries: usize,
     /// Minimum similarity score a memory must have to be included.
@@ -80,38 +82,6 @@ pub enum ContextualizationMemoryMode {
     Auto,
     /// The contextualizer should skip querying the memory store and proceed without injecting any memory entries.
     Off,
-}
-
-/// Internal struct representing a contextualization request, including the user prompt and memory query mode.
-pub struct ContextualizationRequest {
-    /// The user prompt to contextualize and send to the model provider.
-    pub prompt: String,
-    /// The mode for how the contextualizer should query the memory store for this request.
-    pub memory_mode: ContextualizationMemoryMode,
-}
-
-impl ContextualizationRequest {
-    /// Creates a new `ContextualizationRequest` with the given prompt and memory mode.
-    pub fn new(prompt: impl Into<String>) -> Self {
-        ContextualizationRequest {
-            prompt: prompt.into(),
-            memory_mode: ContextualizationMemoryMode::Auto,
-        }
-    }
-
-    pub fn with_memory_mode(mut self, memory_mode: ContextualizationMemoryMode) -> Self {
-        self.memory_mode = memory_mode;
-        self
-    }
-}
-
-impl Default for ContextualizationRequest {
-    fn default() -> Self {
-        Self {
-            prompt: String::new(),
-            memory_mode: ContextualizationMemoryMode::Auto,
-        }
-    }
 }
 
 /// Enhances a user prompt with relevant memory entries before calling an LLM.
@@ -164,9 +134,9 @@ where
     /// from the `MemoryStore` and attached to the request as a system prompt.
     pub async fn contextualize<'a>(
         &'a self,
-        request: ContextualizationRequest,
+        prompt: impl Into<String>,
     ) -> Result<ResultStream<'a>, ContextualizerError> {
-        Ok(self.contextualize_internal(request).await?.1)
+        Ok(self.contextualize_internal(prompt.into().as_str()).await?.1)
     }
 
     /// Contextualize a user prompt, returning debug information about the injected
@@ -183,9 +153,9 @@ where
     /// returned stream.
     pub async fn contextualize_with_debug<'a>(
         &'a self,
-        request: ContextualizationRequest,
+        prompt: impl Into<String>,
     ) -> Result<(ContextualizationDebugInfo, ResultStream<'a>), ContextualizerError> {
-        let (memory_entries, stream) = self.contextualize_internal(request).await?;
+        let (memory_entries, stream) = self.contextualize_internal(prompt.into().as_str()).await?;
 
         let debug_info = ContextualizationDebugInfo {
             memory_entries: memory_entries.clone(),
@@ -196,15 +166,15 @@ where
 
     async fn contextualize_internal<'a>(
         &'a self,
-        request: ContextualizationRequest,
+        prompt: &str,
     ) -> Result<(Vec<MemoryQueryResult>, ResultStream<'a>), ContextualizerError> {
-        let memory_entries = if request.memory_mode == ContextualizationMemoryMode::Auto {
-            self.query_memory(request.prompt.clone()).await?
+        let memory_entries = if self.config.memory_mode == ContextualizationMemoryMode::Auto {
+            self.query_memory(prompt).await?
         } else {
             Vec::new()
         };
 
-        let req = self.build_request(&request.prompt.clone(), &memory_entries);
+        let req = self.build_request(prompt, &memory_entries);
         let stream = self.build_result_stream(req);
 
         Ok((memory_entries, stream))
@@ -287,7 +257,7 @@ where
 
     async fn query_memory(
         &self,
-        prompt: impl Into<String>,
+        prompt: &str,
     ) -> Result<Vec<MemoryQueryResult>, ContextualizerError> {
         let query = MemoryQuery {
             topic: prompt.into(),
@@ -476,6 +446,7 @@ mod tests {
     fn default_config() -> ContextualizerConfig {
         ContextualizerConfig {
             text_generation_model: "test-model".to_string(),
+            memory_mode: ContextualizationMemoryMode::Auto,
             max_memory_entries: 5,
             min_score: Score::ZERO,
             filters: HashMap::new(),
@@ -548,7 +519,7 @@ mod tests {
     async fn test_contextualize_returns_model_response_text() {
         let ctx = make_contextualizer(vec![], "the answer is 42");
         let items: Vec<_> = ctx
-            .contextualize(ContextualizationRequest::new("what is the answer?"))
+            .contextualize("what is the answer?")
             .await
             .unwrap()
             .collect()
@@ -565,7 +536,7 @@ mod tests {
         let entries = vec![make_entry("user prefers dark mode")];
         let ctx = make_contextualizer(entries, "noted");
         let items: Vec<_> = ctx
-            .contextualize(ContextualizationRequest::new("set my preference"))
+            .contextualize("set my preference")
             .await
             .unwrap()
             .collect()
@@ -585,9 +556,7 @@ mod tests {
             }),
             default_config(),
         );
-        let error = ctx
-            .contextualize(ContextualizationRequest::new("any prompt"))
-            .await;
+        let error = ctx.contextualize("any prompt").await;
 
         assert!(
             matches!(error, Err(ContextualizerError::MemoryStore(_))),
@@ -603,12 +572,7 @@ mod tests {
             Arc::new(FailingTextGenerationProvider),
             default_config(),
         );
-        let items: Vec<_> = ctx
-            .contextualize(ContextualizationRequest::new("prompt"))
-            .await
-            .unwrap()
-            .collect()
-            .await;
+        let items: Vec<_> = ctx.contextualize("prompt").await.unwrap().collect().await;
 
         assert_eq!(items.len(), 1);
         assert!(
@@ -641,12 +605,7 @@ mod tests {
                 ..default_config()
             },
         );
-        let items: Vec<_> = ctx
-            .contextualize(ContextualizationRequest::new("prompt"))
-            .await
-            .unwrap()
-            .collect()
-            .await;
+        let items: Vec<_> = ctx.contextualize("prompt").await.unwrap().collect().await;
         assert_eq!(items.len(), 1);
         assert!(items[0].is_ok());
 
@@ -680,7 +639,7 @@ mod tests {
         let ctx = make_contextualizer(entries.clone(), "noted");
 
         let (debug_info, stream) = ctx
-            .contextualize_with_debug(ContextualizationRequest::new("set my preference"))
+            .contextualize_with_debug("set my preference")
             .await
             .unwrap();
 
@@ -705,9 +664,7 @@ mod tests {
             default_config(),
         );
 
-        let result = ctx
-            .contextualize_with_debug(ContextualizationRequest::new("any prompt"))
-            .await;
+        let result = ctx.contextualize_with_debug("any prompt").await;
         assert!(
             matches!(result, Err(ContextualizerError::MemoryStore(_))),
             "expected MemoryStore error",
@@ -719,7 +676,7 @@ mod tests {
         let ctx = make_contextualizer(vec![], "the answer is 42");
 
         let (debug_info, stream) = ctx
-            .contextualize_with_debug(ContextualizationRequest::new("what is the answer?"))
+            .contextualize_with_debug("what is the answer?")
             .await
             .unwrap();
 
@@ -741,14 +698,14 @@ mod tests {
             Arc::new(MockTextGenerationProvider {
                 reply: "ok".to_string(),
             }),
-            default_config(),
+            ContextualizerConfig {
+                memory_mode: ContextualizationMemoryMode::Off,
+                ..default_config()
+            },
         );
 
         let items: Vec<_> = ctx
-            .contextualize(
-                ContextualizationRequest::new("any prompt")
-                    .with_memory_mode(ContextualizationMemoryMode::Off),
-            )
+            .contextualize("any prompt")
             .await
             .unwrap()
             .collect()
