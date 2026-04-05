@@ -52,6 +52,7 @@ struct Cli {
     command: Command,
 }
 
+/// Debug flags for the `gen` command, which prints additional info about the contextualization process when set.
 #[derive(clap::ValueEnum, PartialEq, Eq, Clone, Debug)]
 enum GenDebugFlags {
     /// Print the memory entries that were injected into the model provider prompt.
