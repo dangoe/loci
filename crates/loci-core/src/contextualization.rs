@@ -60,6 +60,16 @@ pub struct ContextualizerTuningConfig {
     pub extra_params: ModelProviderParams,
 }
 
+/// Debug information produced by a contextualized prompt call.
+///
+/// Contains the memory entries that were retrieved from the store and injected
+/// into the system prompt for this request.
+#[derive(Debug, Clone)]
+pub struct ContextualizationDebugInfo {
+    /// The memory entries that were retrieved and injected into the prompt.
+    pub memory_entries: Vec<MemoryQueryResult>,
+}
+
 /// Enhances a user prompt with relevant memory entries before calling an LLM.
 ///
 /// On each call to [`Contextualizer::contextualize`] the contextualizer:
@@ -163,6 +173,94 @@ where
                 yield chunk;
             }
         })
+    }
+
+    /// Contextualize a user prompt, returning debug information about the injected
+    /// memory entries alongside the text-generation stream.
+    ///
+    /// This is identical to [`Contextualizer::contextualize`] but also returns a
+    /// [`ContextualizationDebugInfo`] that describes which memory entries were
+    /// retrieved and injected into the system prompt.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ContextualizerError`] if the memory store query fails before the
+    /// stream is produced. Errors that occur during streaming are yielded by the
+    /// returned stream.
+    pub async fn contextualize_with_debug<'a>(
+        &'a self,
+        prompt: &'a str,
+    ) -> Result<
+        (
+            ContextualizationDebugInfo,
+            Pin<
+                Box<
+                    dyn Stream<Item = Result<TextGenerationResponse, ContextualizerError>>
+                        + Send
+                        + 'a,
+                >,
+            >,
+        ),
+        ContextualizerError,
+    > {
+        let memory_entries = self.query_memory(prompt).await?;
+
+        log::debug!(
+            "retrieved {} relevant memory_entries (debug mode)",
+            memory_entries.len()
+        );
+
+        let debug_info = ContextualizationDebugInfo {
+            memory_entries: memory_entries.clone(),
+        };
+
+        let system_prompt = self.build_system_prompt(memory_entries);
+
+        let mut req =
+            TextGenerationRequest::new(self.config.text_generation_model.to_string(), prompt)
+                .with_system(system_prompt);
+
+        if let Some(tuning) = &self.config.tuning {
+            if let Some(v) = tuning.temperature {
+                req = req.with_temperature(v);
+            }
+            if let Some(v) = tuning.max_tokens {
+                req = req.with_max_tokens(v);
+            }
+            if let Some(v) = tuning.top_p {
+                req = req.with_top_p(v);
+            }
+            if let Some(v) = tuning.repeat_penalty {
+                req = req.with_repeat_penalty(v);
+            }
+            if let Some(v) = tuning.repeat_last_n {
+                req = req.with_repeat_last_n(v);
+            }
+            if let Some(v) = &tuning.thinking {
+                req = req.with_thinking(v.clone());
+            }
+            if let Some(v) = &tuning.stop {
+                req = req.with_stop(v.clone());
+            }
+            if let Some(v) = tuning.keep_alive {
+                req = req.with_keep_alive(v);
+            }
+            for (k, v) in &tuning.extra_params {
+                req = req.with_extra(k.clone(), v.clone());
+            }
+        }
+
+        let provider = self.text_generation_provider.clone();
+        let stream = Box::pin(async_stream::try_stream! {
+            use futures::StreamExt as _;
+            let mut s = provider.generate_stream(req);
+            while let Some(result) = s.next().await {
+                let chunk = result.map_err(ContextualizerError::ModelProvider)?;
+                yield chunk;
+            }
+        });
+
+        Ok((debug_info, stream))
     }
 
     fn build_system_prompt(&self, memory_entries: Vec<MemoryQueryResult>) -> String {
@@ -548,5 +646,60 @@ mod tests {
             mode: MemoryQueryMode::Use,
         };
         assert_eq!(query.mode, MemoryQueryMode::Use);
+    }
+
+    #[tokio::test]
+    async fn test_contextualize_with_debug_returns_debug_info_and_stream() {
+        let entries = vec![make_entry("user prefers dark mode")];
+        let ctx = make_contextualizer(entries.clone(), "noted");
+
+        let (debug_info, stream) = ctx
+            .contextualize_with_debug("set my preference")
+            .await
+            .unwrap();
+
+        assert_eq!(debug_info.memory_entries.len(), 1);
+        assert_eq!(
+            debug_info.memory_entries[0].memory_entry.content,
+            "user prefers dark mode"
+        );
+
+        let items: Vec<_> = stream.collect().await;
+        assert_eq!(items.len(), 1);
+        assert!(items[0].is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_contextualize_with_debug_propagates_store_error() {
+        let ctx = Contextualizer::new(
+            Arc::new(FailingStore),
+            Arc::new(MockTextGenerationProvider {
+                reply: "".to_string(),
+            }),
+            default_config(),
+        );
+
+        let result = ctx.contextualize_with_debug("any prompt").await;
+        assert!(
+            matches!(result, Err(ContextualizerError::MemoryStore(_))),
+            "expected MemoryStore error",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_contextualize_with_debug_returns_empty_debug_info_when_no_entries() {
+        let ctx = make_contextualizer(vec![], "the answer is 42");
+
+        let (debug_info, stream) = ctx
+            .contextualize_with_debug("what is the answer?")
+            .await
+            .unwrap();
+
+        assert!(debug_info.memory_entries.is_empty());
+
+        let items: Vec<_> = stream.collect().await;
+        assert_eq!(items.len(), 1);
+        let resp = items.into_iter().next().unwrap().unwrap();
+        assert_eq!(resp.text, "the answer is 42");
     }
 }

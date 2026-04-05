@@ -28,6 +28,7 @@ use loci_config::{
 use loci_core::contextualization::{
     Contextualizer, ContextualizerConfig, ContextualizerTuningConfig,
 };
+
 use loci_core::embedding::DefaultTextEmbedder;
 use loci_core::memory::{MemoryInput, MemoryQuery, MemoryQueryMode, MemoryTier, Score};
 use loci_core::model_provider::text_generation::{ThinkingEffortLevel, ThinkingMode};
@@ -72,6 +73,10 @@ enum Command {
         /// Minimum similarity score for memory retrieval (0.0–1.0).
         #[arg(long, default_value_t = 0.5)]
         min_score: f64,
+
+        /// Print the memory entries that were injected into the prompt.
+        #[arg(long)]
+        debug_memory: bool,
     },
     /// Configuration management.
     Config {
@@ -180,6 +185,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             prompt,
             max_memory_entries,
             min_score,
+            debug_memory,
         } => {
             let store = Arc::new(build_store(&config).await?);
             let llm_provider = Arc::new(build_llm_provider(&config)?);
@@ -205,13 +211,47 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             };
 
             let contextualizer = Contextualizer::new(store, llm_provider, ctx_config);
-            let mut stream = contextualizer.contextualize(&prompt);
-            while let Some(result) = stream.next().await {
-                let chunk = result.map_err(|e| e.to_string())?;
-                print!("{}", chunk.text);
-                std::io::stdout().flush()?;
-                if chunk.done {
-                    println!();
+
+            if debug_memory {
+                let (debug_info, mut stream) =
+                    contextualizer.contextualize_with_debug(&prompt).await?;
+
+                eprintln!(
+                    "=== Injected Memory Entries ({}) ===",
+                    debug_info.memory_entries.len()
+                );
+                if debug_info.memory_entries.is_empty() {
+                    eprintln!("  (none)");
+                } else {
+                    for entry in &debug_info.memory_entries {
+                        eprintln!(
+                            "  [score: {:.3}] {} (id: {}, tier: {})",
+                            entry.score.value(),
+                            entry.memory_entry.content,
+                            entry.memory_entry.id,
+                            entry.memory_entry.tier.as_str(),
+                        );
+                    }
+                }
+                eprintln!("====================================");
+
+                while let Some(result) = stream.next().await {
+                    let chunk = result.map_err(|e| e.to_string())?;
+                    print!("{}", chunk.text);
+                    std::io::stdout().flush()?;
+                    if chunk.done {
+                        println!();
+                    }
+                }
+            } else {
+                let mut stream = contextualizer.contextualize(&prompt);
+                while let Some(result) = stream.next().await {
+                    let chunk = result.map_err(|e| e.to_string())?;
+                    print!("{}", chunk.text);
+                    std::io::stdout().flush()?;
+                    if chunk.done {
+                        println!();
+                    }
                 }
             }
             Ok(())
