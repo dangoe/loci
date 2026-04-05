@@ -17,7 +17,6 @@ use std::sync::Arc;
 use systemd_journal_logger::JournalLog;
 
 use clap::{Parser, Subcommand};
-use futures::StreamExt as _;
 use log::{LevelFilter, debug, error, info};
 use uuid::Uuid;
 
@@ -28,6 +27,7 @@ use loci_config::{
 use loci_core::contextualization::{
     Contextualizer, ContextualizerConfig, ContextualizerTuningConfig,
 };
+
 use loci_core::embedding::DefaultTextEmbedder;
 use loci_core::memory::{MemoryInput, MemoryQuery, MemoryQueryMode, MemoryTier, Score};
 use loci_core::model_provider::text_generation::{ThinkingEffortLevel, ThinkingMode};
@@ -52,6 +52,13 @@ struct Cli {
     command: Command,
 }
 
+/// Debug flags for the `gen` command, which prints additional info about the contextualization process when set.
+#[derive(clap::ValueEnum, PartialEq, Eq, Clone, Debug)]
+enum GenDebugFlags {
+    /// Print the memory entries that were injected into the model provider prompt.
+    Memory,
+}
+
 /// Available sub-commands.
 #[derive(Subcommand)]
 enum Command {
@@ -60,8 +67,8 @@ enum Command {
         #[command(subcommand)]
         command: MemoryCommand,
     },
-    /// Enhance a prompt with memory context and call an LLM.
-    Prompt {
+    /// Generate a response for a prompt, with optional memory retrieval and contextualization.
+    Gen {
         /// The prompt to process.
         prompt: String,
 
@@ -72,6 +79,10 @@ enum Command {
         /// Minimum similarity score for memory retrieval (0.0–1.0).
         #[arg(long, default_value_t = 0.5)]
         min_score: f64,
+
+        /// Print debug info about the contextualization process, such as retrieved memory entries.
+        #[arg(long)]
+        debug_flags: Vec<GenDebugFlags>,
     },
     /// Configuration management.
     Config {
@@ -176,10 +187,11 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let store = build_store(&config).await?;
             run_memory_command(store, command).await
         }
-        Command::Prompt {
+        Command::Gen {
             prompt,
             max_memory_entries,
             min_score,
+            debug_flags,
         } => {
             let store = Arc::new(build_store(&config).await?);
             let llm_provider = Arc::new(build_llm_provider(&config)?);
@@ -205,14 +217,24 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             };
 
             let contextualizer = Contextualizer::new(store, llm_provider, ctx_config);
-            let mut stream = contextualizer.contextualize(&prompt);
-            while let Some(result) = stream.next().await {
-                let chunk = result.map_err(|e| e.to_string())?;
-                print!("{}", chunk.text);
-                std::io::stdout().flush()?;
-                if chunk.done {
-                    println!();
-                }
+
+            if debug_flags.contains(&GenDebugFlags::Memory) {
+                let (debug_info, stream) = contextualizer.contextualize_with_debug(&prompt).await?;
+
+                eprintln!("Debug info:\n");
+                eprintln!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                          "retrieved_memory": debug_info.memory_entries .iter().map(entry_to_json).collect::<Vec<_>>(),
+                    }))?
+                );
+
+                println!("\nResponse:\n");
+
+                stream_text_generation(stream).await?;
+            } else {
+                let stream = contextualizer.contextualize(&prompt).await?;
+                stream_text_generation(stream).await?;
             }
             Ok(())
         }
@@ -597,6 +619,29 @@ embedding = "default"
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Consumes a text-generation stream, printing each chunk to stdout.
+///
+/// A newline is printed after the final chunk (when `chunk.done` is `true`).
+async fn stream_text_generation(
+    mut stream: impl futures::Stream<
+        Item = Result<
+            loci_core::model_provider::text_generation::TextGenerationResponse,
+            loci_core::error::ContextualizerError,
+        >,
+    > + Unpin,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use futures::StreamExt as _;
+    while let Some(result) = stream.next().await {
+        let chunk = result.map_err(|e| e.to_string())?;
+        print!("{}", chunk.text);
+        std::io::stdout().flush()?;
+        if chunk.done {
+            println!();
+        }
+    }
+    Ok(())
+}
 
 /// Resolves the config file path: uses the provided value when set,
 /// otherwise falls back to `~/.config/loci/config.toml`.
