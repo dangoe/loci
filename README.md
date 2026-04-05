@@ -231,13 +231,13 @@ Remove **all** expired memory entries from the collection.
 loci memory clear
 ```
 
-### `loci prompt`
+### `loci gen`
 
-Enhance a prompt with relevant memory entries and send it to the LLM.
+Generate a response for a prompt, with optional memory retrieval and contextualization.
 
 ```bash
-loci prompt "What storage backend do we use?"
-loci prompt "Summarise our deployment setup" --max-memory-entries 8 --min-score 0.5
+loci gen "What storage backend do we use?"
+loci gen "Summarise our deployment setup" --max-memory-entries 8 --min-score 0.5
 ```
 
 | Flag                       | Default      | Description                                       |
@@ -245,6 +245,7 @@ loci prompt "Summarise our deployment setup" --max-memory-entries 8 --min-score 
 | `<prompt>`                 | _(required)_ | Prompt text (positional)                          |
 | `--max-memory-entries <n>` | `5`          | Max memory entries to inject as context           |
 | `--min-score <f64>`        | `0.5`        | Minimum weighted score for context memory entries |
+| `--debug-flags <FLAGS>`    | _(none)_     | Comma-separated debug flags (e.g. `memory`)       |
 
 ### `loci config init`
 

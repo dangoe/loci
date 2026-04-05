@@ -52,6 +52,12 @@ struct Cli {
     command: Command,
 }
 
+#[derive(clap::ValueEnum, PartialEq, Eq, Clone, Debug)]
+enum GenDebugFlags {
+    /// Print the memory entries that were injected into the model provider prompt.
+    Memory,
+}
+
 /// Available sub-commands.
 #[derive(Subcommand)]
 enum Command {
@@ -60,8 +66,8 @@ enum Command {
         #[command(subcommand)]
         command: MemoryCommand,
     },
-    /// Enhance a prompt with memory context and call an LLM.
-    Prompt {
+    /// Generate a response for a prompt, with optional memory retrieval and contextualization.
+    Gen {
         /// The prompt to process.
         prompt: String,
 
@@ -73,9 +79,9 @@ enum Command {
         #[arg(long, default_value_t = 0.5)]
         min_score: f64,
 
-        /// Print the memory entries that were injected into the prompt.
+        /// Print debug info about the contextualization process, such as retrieved memory entries.
         #[arg(long)]
-        debug_memory: bool,
+        debug_flags: Vec<GenDebugFlags>,
     },
     /// Configuration management.
     Config {
@@ -180,11 +186,11 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let store = build_store(&config).await?;
             run_memory_command(store, command).await
         }
-        Command::Prompt {
+        Command::Gen {
             prompt,
             max_memory_entries,
             min_score,
-            debug_memory,
+            debug_flags,
         } => {
             let store = Arc::new(build_store(&config).await?);
             let llm_provider = Arc::new(build_llm_provider(&config)?);
@@ -211,7 +217,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
             let contextualizer = Contextualizer::new(store, llm_provider, ctx_config);
 
-            if debug_memory {
+            if debug_flags.contains(&GenDebugFlags::Memory) {
                 let (debug_info, stream) = contextualizer.contextualize_with_debug(&prompt).await?;
 
                 eprintln!("Debug info:\n");
