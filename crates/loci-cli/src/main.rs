@@ -8,6 +8,13 @@
 //! read from a TOML config file (default: `~/.config/loci/config.toml`).
 //! The CLI itself only exposes operational flags and sub-commands.
 
+mod commands;
+#[cfg(test)]
+mod fixture;
+mod handlers;
+#[cfg(test)]
+mod mock;
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -16,8 +23,7 @@ use std::sync::Arc;
 use systemd_journal_logger::JournalLog;
 
 use clap::{Parser, Subcommand};
-use log::{LevelFilter, debug, error, info};
-use uuid::Uuid;
+use log::{LevelFilter, error, info};
 
 use loci_config::{
     AppConfig, ConfigError, ModelProviderConfig, ModelProviderKind, ModelThinkingConfig,
@@ -29,12 +35,15 @@ use loci_core::contextualization::{
 };
 
 use loci_core::embedding::DefaultTextEmbedder;
-use loci_core::memory::{MemoryInput, MemoryQuery, MemoryQueryMode, MemoryTier, Score};
+use loci_core::memory::Score;
 use loci_core::model_provider::text_generation::{ThinkingEffortLevel, ThinkingMode};
-use loci_core::store::MemoryStore;
 use loci_memory_store_qdrant::config::QdrantConfig;
 use loci_memory_store_qdrant::store::QdrantMemoryStore;
 use loci_model_provider_ollama::provider::{OllamaConfig, OllamaModelProvider};
+
+use crate::commands::memory::MemoryCommand;
+use crate::handlers::CommandHandler;
+use crate::handlers::memory::MemoryCommandHandler;
 
 /// Top-level CLI arguments and global options.
 #[derive(Parser)]
@@ -130,61 +139,6 @@ enum Command {
     },
 }
 
-/// Memory sub-commands.
-#[derive(Subcommand)]
-enum MemoryCommand {
-    /// Save a new memory entry.
-    Save {
-        /// Memory content.
-        content: String,
-        /// Metadata as key=value pairs (repeatable).
-        #[arg(long = "meta", value_parser = parse_key_value)]
-        metadata: Vec<(String, String)>,
-        /// Optional tier (candidate|stable|core).
-        #[arg(long, value_parser = parse_memory_tier)]
-        tier: Option<MemoryTier>,
-    },
-    /// Query memory entries by semantic similarity.
-    Query {
-        /// Topic to search for.
-        topic: String,
-        /// Maximum number of results.
-        #[arg(long, default_value_t = 10)]
-        max_results: usize,
-        /// Minimum similarity score (0.0–1.0).
-        #[arg(long, default_value_t = 0.0)]
-        min_score: f64,
-        /// Filter by metadata key=value pairs (repeatable).
-        #[arg(long = "filter", value_parser = parse_key_value)]
-        filters: Vec<(String, String)>,
-    },
-    /// Get a memory entry by ID.
-    Get {
-        /// Memory entry ID.
-        id: Uuid,
-    },
-    /// Update an existing memory entry by ID.
-    Update {
-        /// Memory entry ID.
-        id: Uuid,
-        /// New content (optional).
-        content: Option<String>,
-        /// New metadata as key=value pairs (repeatable).
-        #[arg(long = "meta", value_parser = parse_key_value)]
-        metadata: Vec<(String, String)>,
-        /// Optional tier override (candidate|stable|core).
-        #[arg(long, value_parser = parse_memory_tier)]
-        tier: Option<MemoryTier>,
-    },
-    /// Delete a memory entry by ID.
-    Delete {
-        /// Memory entry ID.
-        id: Uuid,
-    },
-    /// Prunes all expired memory entries from the collection.
-    PruneExpired,
-}
-
 /// Config sub-commands.
 #[derive(Subcommand)]
 enum ConfigCommand {
@@ -224,7 +178,8 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Command::Memory { command } => {
             let store = build_store(&config).await?;
-            run_memory_command(store, command, &mut std::io::stdout()).await
+            let handler = MemoryCommandHandler::new(&store);
+            handler.handle(command, &mut std::io::stdout()).await
         }
         Command::Gen {
             prompt,
@@ -449,106 +404,6 @@ fn model_thinking_to_core(thinking: &ModelThinkingConfig) -> ThinkingMode {
     }
 }
 
-async fn run_memory_command<S: MemoryStore, W: std::io::Write>(
-    store: S,
-    command: MemoryCommand,
-    out: &mut W,
-) -> Result<(), Box<dyn std::error::Error>> {
-    match command {
-        MemoryCommand::Save {
-            content,
-            metadata,
-            tier,
-        } => {
-            debug!(
-                "save memory entry: content={content}, metadata={:?}, tier={:?}",
-                metadata, tier
-            );
-            let input = match tier {
-                Some(tier) => MemoryInput::new_with_tier(content, pairs_to_map(metadata), tier),
-                None => MemoryInput::new(content, pairs_to_map(metadata)),
-            };
-            let entry = store.save(input).await?;
-            writeln!(out, "{}", serde_json::to_string_pretty(&entry_to_json(&entry))?)?;
-        }
-        MemoryCommand::Query {
-            topic,
-            max_results,
-            min_score,
-            filters,
-        } => {
-            debug!(
-                "query memory: topic={topic}, max_results={max_results}, min_score={min_score}, filters={:?}",
-                filters
-            );
-            let query = MemoryQuery {
-                topic,
-                max_results,
-                min_score: Score::new(min_score).map_err(|e| format!("invalid min_score: {e}"))?,
-                filters: pairs_to_map(filters),
-                mode: MemoryQueryMode::Lookup,
-            };
-            let entries = store.query(query).await?;
-            let json: Vec<_> = entries.iter().map(entry_to_json).collect();
-            writeln!(out, "{}", serde_json::to_string_pretty(&json)?)?;
-        }
-        MemoryCommand::Get { id } => {
-            debug!("get memory entry: id={id}");
-            let entry = store.get(id).await?;
-            writeln!(out, "{}", serde_json::to_string_pretty(&entry_to_json(&entry))?)?;
-        }
-        MemoryCommand::Update {
-            id,
-            content,
-            metadata,
-            tier,
-        } => {
-            debug!(
-                "update memory entry: id={id}, content={:?}, metadata={:?}, tier={:?}",
-                content, metadata, tier
-            );
-            if content.is_none() && metadata.is_empty() && tier.is_none() {
-                return Err(
-                    "nothing to update; provide content, --meta, and/or --tier to change a memory"
-                        .into(),
-                );
-            }
-
-            let existing = store.get(id).await?;
-            let content = content.unwrap_or(existing.memory_entry.content);
-            let metadata = if metadata.is_empty() {
-                existing.memory_entry.metadata
-            } else {
-                pairs_to_map(metadata)
-            };
-            let tier = tier.unwrap_or(existing.memory_entry.tier);
-
-            let input = MemoryInput::new_with_tier(content, metadata, tier);
-            let entry = store.update(id, input).await?;
-            writeln!(out, "{}", serde_json::to_string_pretty(&entry_to_json(&entry))?)?;
-        }
-        MemoryCommand::Delete { id } => {
-            debug!("delete memory entry: id={id}");
-            store.delete(id).await?;
-            writeln!(
-                out,
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!({ "deleted": id.to_string() }))?
-            )?;
-        }
-        MemoryCommand::PruneExpired => {
-            debug!("clear memory");
-            store.prune_expired().await?;
-            writeln!(
-                out,
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!({ "expired pruned": true }))?
-            )?;
-        }
-    }
-    Ok(())
-}
-
 fn cmd_config_init<W: std::io::Write>(
     path: &PathBuf,
     out: &mut W,
@@ -700,30 +555,6 @@ fn resolve_config_path(cli_value: Option<PathBuf>) -> PathBuf {
         .join("config.toml")
 }
 
-/// Parses a `key=value` string into a `(String, String)` pair.
-fn parse_key_value(s: &str) -> Result<(String, String), String> {
-    let (k, v) = s
-        .split_once('=')
-        .ok_or_else(|| format!("expected KEY=VALUE, got: {s:?}"))?;
-    Ok((k.to_string(), v.to_string()))
-}
-
-fn parse_memory_tier(s: &str) -> Result<MemoryTier, String> {
-    let tier = MemoryTier::parse(s)
-        .ok_or_else(|| format!("invalid tier {s:?}; expected one of: candidate, stable, core"))?;
-
-    if tier == MemoryTier::Ephemeral {
-        return Err("ephemeral tier is request-scoped and cannot be persisted".to_string());
-    }
-
-    Ok(tier)
-}
-
-/// Converts a list of `(key, value)` pairs into a [`HashMap`].
-fn pairs_to_map(pairs: Vec<(String, String)>) -> HashMap<String, String> {
-    pairs.into_iter().collect()
-}
-
 /// Serialises a [`loci_core::memory::MemoryEntry`] to a [`serde_json::Value`].
 fn entry_to_json(e: &loci_core::memory::MemoryQueryResult) -> serde_json::Value {
     serde_json::json!({
@@ -763,213 +594,17 @@ fn setup_logging(verbose: bool) {
 
 #[cfg(test)]
 mod tests {
+    use crate::fixture::minimal_ollama_config;
+
     use super::*;
     use std::collections::HashMap as StdHashMap;
-    use std::future::Future;
-    use std::sync::{Arc, Mutex};
 
     use pretty_assertions::assert_eq;
     use rstest::rstest;
     use serde_json::Value as JsonValue;
-    use uuid::Uuid;
 
-    use loci_config::{
-        AppConfig, EmbeddingProfileConfig, MemoryConfig, ModelConfig, ModelProviderConfig,
-        ModelProviderKind, RoutingConfig, StoreConfig,
-    };
-    use loci_core::error::MemoryStoreError;
-    use loci_core::memory::{
-        MemoryEntry, MemoryInput, MemoryQuery, MemoryQueryResult, MemoryTier, Score,
-    };
-
-    // ── Mock store ────────────────────────────────────────────────────────────
-
-    /// A configurable in-memory store for unit tests.
-    ///
-    /// Each operation returns a preset response. Operations not configured
-    /// fall back to a sensible error (`NotFound` for reads, `Connection` for writes).
-    struct MockStore {
-        save_entry: Option<MemoryQueryResult>,
-        get_entry: Option<MemoryQueryResult>,
-        query_entries: Vec<MemoryQueryResult>,
-        update_entry: Option<MemoryQueryResult>,
-        /// Captures the last `MemoryInput` passed to `update()` for assertion.
-        captured_update_input: Arc<Mutex<Option<MemoryInput>>>,
-    }
-
-    impl MockStore {
-        fn new() -> Self {
-            Self {
-                save_entry: None,
-                get_entry: None,
-                query_entries: vec![],
-                update_entry: None,
-                captured_update_input: Arc::new(Mutex::new(None)),
-            }
-        }
-
-        fn with_save(mut self, entry: MemoryQueryResult) -> Self {
-            self.save_entry = Some(entry);
-            self
-        }
-
-        fn with_get(mut self, entry: MemoryQueryResult) -> Self {
-            self.get_entry = Some(entry);
-            self
-        }
-
-        fn with_query(mut self, entries: Vec<MemoryQueryResult>) -> Self {
-            self.query_entries = entries;
-            self
-        }
-
-        fn with_update(mut self, entry: MemoryQueryResult) -> Self {
-            self.update_entry = Some(entry);
-            self
-        }
-    }
-
-    impl loci_core::store::MemoryStore for MockStore {
-        fn save(
-            &self,
-            _input: MemoryInput,
-        ) -> impl Future<Output = Result<MemoryQueryResult, MemoryStoreError>> + Send + '_ {
-            let result = self
-                .save_entry
-                .clone()
-                .ok_or_else(|| MemoryStoreError::Connection("mock: save not configured".into()));
-            async move { result }
-        }
-
-        fn get(
-            &self,
-            id: Uuid,
-        ) -> impl Future<Output = Result<MemoryQueryResult, MemoryStoreError>> + Send + '_ {
-            let result = self
-                .get_entry
-                .clone()
-                .ok_or_else(move || MemoryStoreError::NotFound(id));
-            async move { result }
-        }
-
-        fn query(
-            &self,
-            _query: MemoryQuery,
-        ) -> impl Future<Output = Result<Vec<MemoryQueryResult>, MemoryStoreError>> + Send + '_
-        {
-            let entries = self.query_entries.clone();
-            async move { Ok(entries) }
-        }
-
-        fn update(
-            &self,
-            id: Uuid,
-            input: MemoryInput,
-        ) -> impl Future<Output = Result<MemoryQueryResult, MemoryStoreError>> + Send + '_ {
-            *self.captured_update_input.lock().unwrap() = Some(input);
-            let result = self
-                .update_entry
-                .clone()
-                .ok_or_else(move || MemoryStoreError::NotFound(id));
-            async move { result }
-        }
-
-        fn set_tier(
-            &self,
-            id: Uuid,
-            _tier: MemoryTier,
-        ) -> impl Future<Output = Result<MemoryQueryResult, MemoryStoreError>> + Send + '_ {
-            async move { Err(MemoryStoreError::NotFound(id)) }
-        }
-
-        fn delete(
-            &self,
-            _id: Uuid,
-        ) -> impl Future<Output = Result<(), MemoryStoreError>> + Send + '_ {
-            async move { Ok(()) }
-        }
-
-        fn prune_expired(
-            &self,
-        ) -> impl Future<Output = Result<(), MemoryStoreError>> + Send + '_ {
-            async move { Ok(()) }
-        }
-    }
-
-    // ── Test fixtures ─────────────────────────────────────────────────────────
-
-    fn make_result(content: &str, tier: MemoryTier) -> MemoryQueryResult {
-        MemoryQueryResult {
-            memory_entry: MemoryEntry::new_with_tier(
-                content.to_string(),
-                StdHashMap::new(),
-                tier,
-            ),
-            score: Score::ZERO,
-        }
-    }
-
-    fn make_result_with_metadata(
-        content: &str,
-        metadata: StdHashMap<String, String>,
-    ) -> MemoryQueryResult {
-        MemoryQueryResult {
-            memory_entry: MemoryEntry::new(content.to_string(), metadata),
-            score: Score::new(0.9).unwrap(),
-        }
-    }
-
-    /// Builds a minimal `AppConfig` wired to a single Ollama provider.
-    fn minimal_ollama_config() -> AppConfig {
-        AppConfig {
-            providers: StdHashMap::from([(
-                "ollama".to_string(),
-                ModelProviderConfig {
-                    kind: ModelProviderKind::Ollama,
-                    endpoint: "http://localhost:11434".to_string(),
-                    api_key: None,
-                },
-            )]),
-            models: StdHashMap::from([(
-                "default".to_string(),
-                ModelConfig {
-                    provider: "ollama".to_string(),
-                    name: "qwen3:0.6b".to_string(),
-                    tuning: None,
-                },
-            )]),
-            embeddings: StdHashMap::from([(
-                "default".to_string(),
-                EmbeddingProfileConfig {
-                    provider: "ollama".to_string(),
-                    model: "qwen3-embedding:0.6b".to_string(),
-                    dimension: 768,
-                },
-            )]),
-            stores: StdHashMap::from([(
-                "qdrant".to_string(),
-                StoreConfig::Qdrant {
-                    url: "http://localhost:6333".to_string(),
-                    api_key: None,
-                },
-            )]),
-            memory: MemoryConfig {
-                store: "qdrant".to_string(),
-                collection: "memory_entries".to_string(),
-                similarity_threshold: None,
-                promotion_source_threshold: 2,
-            },
-            routing: RoutingConfig {
-                default_model: "default".to_string(),
-                fallback_models: vec![],
-                embedding: "default".to_string(),
-            },
-        }
-    }
-
-    fn parse_json_output(buf: &[u8]) -> JsonValue {
-        serde_json::from_str(std::str::from_utf8(buf).unwrap().trim()).unwrap()
-    }
+    use loci_config::{ModelProviderConfig, ModelProviderKind};
+    use loci_core::memory::{MemoryEntry, MemoryQueryResult, MemoryTier, Score};
 
     // ── Group A: cmd_config_init ──────────────────────────────────────────────
 
@@ -982,8 +617,14 @@ mod tests {
         cmd_config_init(&path, &mut out).unwrap();
 
         let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("[providers.ollama]"), "expected provider section");
-        assert!(content.contains("[stores.qdrant]"), "expected store section");
+        assert!(
+            content.contains("[providers.ollama]"),
+            "expected provider section"
+        );
+        assert!(
+            content.contains("[stores.qdrant]"),
+            "expected store section"
+        );
         assert!(content.contains("[routing]"), "expected routing section");
     }
 
@@ -1029,280 +670,7 @@ mod tests {
         );
     }
 
-    // ── Group B: run_memory_command ───────────────────────────────────────────
-
-    #[tokio::test]
-    async fn test_memory_save_outputs_json() {
-        let entry = make_result("hello world", MemoryTier::Candidate);
-        let id = entry.memory_entry.id;
-        let store = MockStore::new().with_save(entry);
-        let mut out = Vec::new();
-
-        run_memory_command(
-            store,
-            MemoryCommand::Save {
-                content: "hello world".to_string(),
-                metadata: vec![],
-                tier: None,
-            },
-            &mut out,
-        )
-        .await
-        .unwrap();
-
-        let v = parse_json_output(&out);
-        assert_eq!(v["id"].as_str().unwrap(), id.to_string().as_str());
-        assert_eq!(v["content"].as_str().unwrap(), "hello world");
-        assert_eq!(v["tier"].as_str().unwrap(), "candidate");
-    }
-
-    #[tokio::test]
-    async fn test_memory_save_with_tier_outputs_tier_field() {
-        let entry = make_result("core fact", MemoryTier::Core);
-        let store = MockStore::new().with_save(entry);
-        let mut out = Vec::new();
-
-        run_memory_command(
-            store,
-            MemoryCommand::Save {
-                content: "core fact".to_string(),
-                metadata: vec![],
-                tier: Some(MemoryTier::Core),
-            },
-            &mut out,
-        )
-        .await
-        .unwrap();
-
-        let v = parse_json_output(&out);
-        assert_eq!(v["tier"].as_str().unwrap(), "core");
-    }
-
-    #[tokio::test]
-    async fn test_memory_save_propagates_store_error() {
-        let store = MockStore::new(); // save_entry = None → Connection error
-        let mut out = Vec::new();
-
-        let result = run_memory_command(
-            store,
-            MemoryCommand::Save {
-                content: "x".to_string(),
-                metadata: vec![],
-                tier: None,
-            },
-            &mut out,
-        )
-        .await;
-
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_memory_query_outputs_json_array() {
-        let entries = vec![
-            make_result("first", MemoryTier::Stable),
-            make_result("second", MemoryTier::Core),
-        ];
-        let store = MockStore::new().with_query(entries);
-        let mut out = Vec::new();
-
-        run_memory_command(
-            store,
-            MemoryCommand::Query {
-                topic: "something".to_string(),
-                max_results: 10,
-                min_score: 0.0,
-                filters: vec![],
-            },
-            &mut out,
-        )
-        .await
-        .unwrap();
-
-        let v = parse_json_output(&out);
-        let arr = v.as_array().unwrap();
-        assert_eq!(arr.len(), 2);
-        assert_eq!(arr[0]["content"].as_str().unwrap(), "first");
-        assert_eq!(arr[1]["content"].as_str().unwrap(), "second");
-    }
-
-    #[tokio::test]
-    async fn test_memory_query_invalid_min_score_returns_err() {
-        let store = MockStore::new();
-        let mut out = Vec::new();
-
-        let result = run_memory_command(
-            store,
-            MemoryCommand::Query {
-                topic: "t".to_string(),
-                max_results: 5,
-                min_score: 1.5, // invalid — outside [0.0, 1.0]
-                filters: vec![],
-            },
-            &mut out,
-        )
-        .await;
-
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("invalid min_score"));
-    }
-
-    #[tokio::test]
-    async fn test_memory_get_outputs_json() {
-        let entry = make_result("specific entry", MemoryTier::Stable);
-        let id = entry.memory_entry.id;
-        let store = MockStore::new().with_get(entry);
-        let mut out = Vec::new();
-
-        run_memory_command(store, MemoryCommand::Get { id }, &mut out)
-            .await
-            .unwrap();
-
-        let v = parse_json_output(&out);
-        assert_eq!(v["id"].as_str().unwrap(), id.to_string().as_str());
-        assert_eq!(v["content"].as_str().unwrap(), "specific entry");
-        assert_eq!(v["tier"].as_str().unwrap(), "stable");
-    }
-
-    #[tokio::test]
-    async fn test_memory_get_not_found_returns_err() {
-        let store = MockStore::new(); // get_entry = None → NotFound
-        let mut out = Vec::new();
-
-        let result = run_memory_command(
-            store,
-            MemoryCommand::Get { id: Uuid::new_v4() },
-            &mut out,
-        )
-        .await;
-
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_memory_update_happy_path() {
-        let id = Uuid::new_v4();
-        let existing = MemoryQueryResult {
-            memory_entry: MemoryEntry::new_with_tier(
-                "old".to_string(),
-                StdHashMap::new(),
-                MemoryTier::Candidate,
-            ),
-            score: Score::ZERO,
-        };
-        let updated = make_result("new content", MemoryTier::Stable);
-        let updated_id = updated.memory_entry.id;
-        let store = MockStore::new().with_get(existing).with_update(updated);
-        let mut out = Vec::new();
-
-        run_memory_command(
-            store,
-            MemoryCommand::Update {
-                id,
-                content: Some("new content".to_string()),
-                metadata: vec![],
-                tier: Some(MemoryTier::Stable),
-            },
-            &mut out,
-        )
-        .await
-        .unwrap();
-
-        let v = parse_json_output(&out);
-        assert_eq!(v["id"].as_str().unwrap(), updated_id.to_string().as_str());
-        assert_eq!(v["content"].as_str().unwrap(), "new content");
-    }
-
-    #[tokio::test]
-    async fn test_memory_update_nothing_to_update_returns_err() {
-        let store = MockStore::new();
-        let mut out = Vec::new();
-
-        let result = run_memory_command(
-            store,
-            MemoryCommand::Update {
-                id: Uuid::new_v4(),
-                content: None,
-                metadata: vec![],
-                tier: None,
-            },
-            &mut out,
-        )
-        .await;
-
-        assert!(result.is_err());
-        assert!(
-            result.unwrap_err().to_string().contains("nothing to update"),
-            "expected 'nothing to update' error message"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_memory_update_preserves_existing_metadata_when_not_provided() {
-        let id = Uuid::new_v4();
-        let original_meta =
-            StdHashMap::from([("source".to_string(), "original-source".to_string())]);
-        let existing = make_result_with_metadata("original", original_meta.clone());
-        let updated = make_result_with_metadata("updated", original_meta.clone());
-        let captured = Arc::new(Mutex::new(None::<MemoryInput>));
-        let store = MockStore {
-            save_entry: None,
-            get_entry: Some(existing),
-            query_entries: vec![],
-            update_entry: Some(updated),
-            captured_update_input: captured.clone(),
-        };
-        let mut out = Vec::new();
-
-        run_memory_command(
-            store,
-            MemoryCommand::Update {
-                id,
-                content: Some("updated".to_string()),
-                metadata: vec![], // no --meta flag → should preserve existing
-                tier: None,
-            },
-            &mut out,
-        )
-        .await
-        .unwrap();
-
-        let input = captured.lock().unwrap().take().unwrap();
-        assert_eq!(
-            input.metadata.get("source").unwrap(),
-            "original-source",
-            "existing metadata should be preserved when no --meta flags are given"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_memory_delete_outputs_deleted_id() {
-        let id = Uuid::new_v4();
-        let store = MockStore::new();
-        let mut out = Vec::new();
-
-        run_memory_command(store, MemoryCommand::Delete { id }, &mut out)
-            .await
-            .unwrap();
-
-        let v = parse_json_output(&out);
-        assert_eq!(v["deleted"].as_str().unwrap(), id.to_string().as_str());
-    }
-
-    #[tokio::test]
-    async fn test_memory_prune_expired_outputs_success() {
-        let store = MockStore::new();
-        let mut out = Vec::new();
-
-        run_memory_command(store, MemoryCommand::PruneExpired, &mut out)
-            .await
-            .unwrap();
-
-        let v = parse_json_output(&out);
-        assert_eq!(v["expired pruned"].as_bool().unwrap(), true);
-    }
-
-    // ── Group C: Conversion helpers ───────────────────────────────────────────
+    // ── Group B: Conversion helpers ───────────────────────────────────────────
 
     #[test]
     fn test_gen_memory_mode_auto_converts_to_contextualizer_auto() {
@@ -1366,14 +734,8 @@ mod tests {
     }
 
     #[rstest]
-    #[case(
-        loci_config::ModelThinkingConfig::Enabled,
-        "enabled"
-    )]
-    #[case(
-        loci_config::ModelThinkingConfig::Disabled,
-        "disabled"
-    )]
+    #[case(loci_config::ModelThinkingConfig::Enabled, "enabled")]
+    #[case(loci_config::ModelThinkingConfig::Disabled, "disabled")]
     #[case(
         loci_config::ModelThinkingConfig::Effort { level: loci_config::ModelThinkingEffortLevel::Low },
         "effort_low"
@@ -1400,9 +762,24 @@ mod tests {
         match (label, &result) {
             ("enabled", ThinkingMode::Enabled) => {}
             ("disabled", ThinkingMode::Disabled) => {}
-            ("effort_low", ThinkingMode::Effort { level: ThinkingEffortLevel::Low }) => {}
-            ("effort_medium", ThinkingMode::Effort { level: ThinkingEffortLevel::Medium }) => {}
-            ("effort_high", ThinkingMode::Effort { level: ThinkingEffortLevel::High }) => {}
+            (
+                "effort_low",
+                ThinkingMode::Effort {
+                    level: ThinkingEffortLevel::Low,
+                },
+            ) => {}
+            (
+                "effort_medium",
+                ThinkingMode::Effort {
+                    level: ThinkingEffortLevel::Medium,
+                },
+            ) => {}
+            (
+                "effort_high",
+                ThinkingMode::Effort {
+                    level: ThinkingEffortLevel::High,
+                },
+            ) => {}
             ("budgeted", ThinkingMode::Budgeted { max_tokens: 256 }) => {}
             _ => panic!("unexpected mapping for label '{label}': {result:?}"),
         }
@@ -1434,11 +811,7 @@ mod tests {
     fn test_resolve_embedding_provider_missing_provider_key_returns_err() {
         let mut config = minimal_ollama_config();
         // Point the embedding profile at a provider that doesn't exist.
-        config
-            .embeddings
-            .get_mut("default")
-            .unwrap()
-            .provider = "ghost".to_string();
+        config.embeddings.get_mut("default").unwrap().provider = "ghost".to_string();
 
         let err = resolve_embedding_provider(&config).unwrap_err();
         assert!(
@@ -1547,7 +920,10 @@ mod tests {
         let output = String::from_utf8(out).unwrap();
         // Text chunks are concatenated; a newline is appended after the done chunk.
         assert!(output.starts_with("hello world"), "got: {output:?}");
-        assert!(output.ends_with('\n'), "final newline missing, got: {output:?}");
+        assert!(
+            output.ends_with('\n'),
+            "final newline missing, got: {output:?}"
+        );
     }
 
     #[tokio::test]
@@ -1578,34 +954,6 @@ mod tests {
         );
     }
 
-    // ── (existing helper tests) ───────────────────────────────────────────────
-
-    #[test]
-    fn parse_key_value_valid() {
-        let (k, v) = parse_key_value("project=ai-memory").unwrap();
-        assert_eq!(k, "project");
-        assert_eq!(v, "ai-memory");
-    }
-
-    #[test]
-    fn parse_key_value_when_value_contains_equals() {
-        let (k, v) = parse_key_value("url=http://host:1234").unwrap();
-        assert_eq!(k, "url");
-        assert_eq!(v, "http://host:1234");
-    }
-
-    #[test]
-    fn parse_key_value_missing_equals_returns_err() {
-        assert!(parse_key_value("noequalssign").is_err());
-    }
-
-    #[test]
-    fn parse_key_value_empty_value_is_allowed() {
-        let (k, v) = parse_key_value("key=").unwrap();
-        assert_eq!(k, "key");
-        assert_eq!(v, "");
-    }
-
     #[test]
     fn resolve_config_path_uses_cli_value_when_set() {
         let p = resolve_config_path(Some(PathBuf::from("/tmp/my-config.toml")));
@@ -1616,34 +964,6 @@ mod tests {
     fn resolve_config_path_falls_back_to_xdg_when_empty() {
         let p = resolve_config_path(None);
         assert!(p.ends_with("loci/config.toml"));
-    }
-
-    #[test]
-    fn parse_memory_tier_rejects_ephemeral() {
-        assert!(parse_memory_tier("ephemeral").is_err());
-    }
-
-    #[test]
-    fn parse_memory_tier_accepts_known_tiers() {
-        assert_eq!(
-            parse_memory_tier("candidate").unwrap(),
-            MemoryTier::Candidate
-        );
-        assert_eq!(parse_memory_tier("stable").unwrap(), MemoryTier::Stable);
-        assert_eq!(parse_memory_tier("core").unwrap(), MemoryTier::Core);
-        assert!(parse_memory_tier("unknown").is_err());
-    }
-
-    #[test]
-    fn pairs_to_map_converts_pairs() {
-        let pairs = vec![
-            ("a".to_string(), "1".to_string()),
-            ("b".to_string(), "two".to_string()),
-        ];
-        let map = pairs_to_map(pairs);
-        assert_eq!(map.get("a").unwrap(), "1");
-        assert_eq!(map.get("b").unwrap(), "two");
-        assert_eq!(map.len(), 2);
     }
 
     #[test]
