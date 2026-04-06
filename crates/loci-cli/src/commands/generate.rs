@@ -1,5 +1,17 @@
 use clap::{Args, arg};
 
+/// Domain-level dispatch type for the `generate` command.
+///
+/// This is not a clap type — the CLI still parses directly into [`GenerateArgs`].
+/// The enum exists for structural parity with [`super::MemoryCommand`] and
+/// [`super::ConfigCommand`], allowing [`GenerateCommandHandler`] to implement
+/// [`crate::handlers::CommandHandler<GenerateCommand, _>`].
+///
+/// [`GenerateCommandHandler`]: crate::handlers::generate::GenerateCommandHandler
+pub enum GenerateCommand {
+    Execute(GenerateArgs),
+}
+
 /// Arguments for the `generate` command, controlling prompt generation and memory injection behavior.
 #[derive(Args)]
 pub struct GenerateArgs {

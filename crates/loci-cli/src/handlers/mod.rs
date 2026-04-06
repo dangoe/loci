@@ -1,5 +1,6 @@
 use std::{error::Error as StdError, io::Write};
 
+pub mod config;
 pub mod generate;
 mod json;
 pub mod memory;

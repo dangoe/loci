@@ -5,7 +5,7 @@ pub mod memory;
 use clap::Subcommand;
 
 pub use config::ConfigCommand;
-pub use generate::GenerateArgs;
+pub use generate::{GenerateArgs, GenerateCommand};
 pub use memory::MemoryCommand;
 
 /// Available sub-commands.

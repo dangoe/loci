@@ -14,6 +14,7 @@ use std::path::Path;
 
 pub use embedding::EmbeddingProfileConfig;
 pub use error::ConfigError;
+pub use init::{ConfigInitError, DEFAULT_CONFIG_TEMPLATE, init_config};
 pub use memory::MemoryConfig;
 pub use model::{ModelConfig, ModelThinkingConfig, ModelThinkingEffortLevel, ModelTuningConfig};
 pub use provider::{ModelProviderConfig, ModelProviderKind};
@@ -22,6 +23,7 @@ pub use store::StoreConfig;
 
 mod embedding;
 mod error;
+mod init;
 mod memory;
 mod model;
 mod provider;

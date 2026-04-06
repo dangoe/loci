@@ -23,7 +23,7 @@ use loci_core::{
 
 use crate::{
     commands::{
-        GenerateArgs,
+        GenerateCommand,
         generate::{GenerateDebugFlags, GenerateMemoryMode, GenerateSystemMode},
     },
     handlers::{CommandHandler, json::entry_to_json},
@@ -59,9 +59,10 @@ impl<'a, S: CoreMemoryStore, T: CoreTextGenerationModelProvider> GenerateCommand
 }
 
 impl<'a, S: CoreMemoryStore, T: CoreTextGenerationModelProvider, W: Write + Send>
-    CommandHandler<'a, GenerateArgs, W> for GenerateCommandHandler<'a, S, T>
+    CommandHandler<'a, GenerateCommand, W> for GenerateCommandHandler<'a, S, T>
 {
-    async fn handle(&self, command: GenerateArgs, out: &mut W) -> Result<(), Box<dyn StdError>> {
+    async fn handle(&self, command: GenerateCommand, out: &mut W) -> Result<(), Box<dyn StdError>> {
+        let GenerateCommand::Execute(command) = command;
         let model = {
             let model_key = &self.config.routing.default_model;
             self.config
@@ -111,12 +112,12 @@ impl<'a, S: CoreMemoryStore, T: CoreTextGenerationModelProvider, W: Write + Send
                 }))?
             );
 
-            println!("\nResponse:\n");
+            writeln!(out, "\nResponse:\n")?;
 
-            stream_text_generation(stream, &mut std::io::stdout()).await?;
+            stream_text_generation(stream, out).await?;
         } else {
             let stream = contextualizer.contextualize(&command.prompt).await?;
-            stream_text_generation(stream, &mut std::io::stdout()).await?;
+            stream_text_generation(stream, out).await?;
         }
         Ok(())
     }
