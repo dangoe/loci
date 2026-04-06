@@ -17,7 +17,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use std::{future::Future, pin::Pin, time::Duration};
+use std::{future::Future, time::Duration};
 
 /// Configuration for the Ollama model provider.
 #[derive(Debug, Clone)]
@@ -204,9 +204,9 @@ impl TextGenerationModelProvider for OllamaModelProvider {
     fn generate(
         &self,
         req: TextGenerationRequest,
-    ) -> Pin<Box<dyn Future<Output = ModelProviderResult<TextGenerationResponse>> + Send + '_>>
+    ) -> impl Future<Output = ModelProviderResult<TextGenerationResponse>> + Send + '_
     {
-        Box::pin(async move {
+        async move {
             let body = self.build_text_request(&req, false);
 
             debug!("Sending request to Ollama: {:?}", body);
@@ -254,15 +254,15 @@ impl TextGenerationModelProvider for OllamaModelProvider {
                 }),
                 done: true,
             })
-        })
+        }
     }
 
     fn generate_stream(
         &self,
         req: TextGenerationRequest,
-    ) -> Pin<Box<dyn futures::Stream<Item = ModelProviderResult<TextGenerationResponse>> + Send + '_>>
+    ) -> impl futures::Stream<Item = ModelProviderResult<TextGenerationResponse>> + Send + '_
     {
-        Box::pin(async_stream::try_stream! {
+        async_stream::try_stream! {
             let body = self.build_text_request(&req, true);
 
             debug!("Sending streaming request to Ollama: {:?}", body);
@@ -322,7 +322,7 @@ impl TextGenerationModelProvider for OllamaModelProvider {
                     }
                 }
             }
-        })
+        }
     }
 }
 
@@ -330,8 +330,8 @@ impl EmbeddingModelProvider for OllamaModelProvider {
     fn embed(
         &self,
         req: EmbeddingRequest,
-    ) -> Pin<Box<dyn Future<Output = ModelProviderResult<EmbeddingResponse>> + Send + '_>> {
-        Box::pin(async move {
+    ) -> impl Future<Output = ModelProviderResult<EmbeddingResponse>> + Send + '_ {
+        async move {
             let body = OllamaEmbeddingRequest {
                 model: &req.model,
                 input: &req.input,
@@ -363,6 +363,6 @@ impl EmbeddingModelProvider for OllamaModelProvider {
                 model: parsed_response.model,
                 usage: None,
             })
-        })
+        }
     }
 }

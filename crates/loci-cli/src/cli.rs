@@ -10,12 +10,12 @@ use crate::commands::Command;
 pub struct Cli {
     /// Path to the TOML configuration file.
     #[arg(long, short, env = "LOCI_CONFIG", hide_env_values = true)]
-    config: Option<PathBuf>,
+    pub config: Option<PathBuf>,
 
     /// Verbose output.
     #[arg(long, short)]
-    verbose: bool,
+    pub verbose: bool,
 
     #[command(subcommand)]
-    command: Command,
+    pub command: Command,
 }

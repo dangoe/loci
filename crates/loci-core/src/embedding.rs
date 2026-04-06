@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // This file is part of loci-core.
 
-use std::{pin::Pin, sync::Arc};
+use std::sync::Arc;
 
 use crate::{
     error::EmbeddingError,
@@ -44,23 +44,23 @@ pub trait TextEmbedder: Send + Sync {
     fn embed(
         &self,
         text: &str,
-    ) -> Pin<Box<dyn Future<Output = Result<Embedding, EmbeddingError>> + Send + '_>>;
+    ) -> impl Future<Output = Result<Embedding, EmbeddingError>> + Send + '_;
 }
 
 /// Default [`TextEmbedder`] implementation backed by any [`EmbeddingModelProvider`].
 ///
 /// Delegates to the provider's [`EmbeddingModelProvider::embed`] and extracts
 /// the first embedding vector from the batch response.
-pub struct DefaultTextEmbedder {
-    provider: Arc<dyn EmbeddingModelProvider>,
+pub struct DefaultTextEmbedder<P: EmbeddingModelProvider> {
+    provider: Arc<P>,
     model: String,
     embedding_dimension: usize,
 }
 
-impl DefaultTextEmbedder {
+impl<P: EmbeddingModelProvider> DefaultTextEmbedder<P> {
     /// Creates a new `DefaultTextEmbedder`.
     pub fn new(
-        provider: Arc<dyn EmbeddingModelProvider>,
+        provider: Arc<P>,
         model: impl Into<String>,
         embedding_dimension: usize,
     ) -> Self {
@@ -72,7 +72,7 @@ impl DefaultTextEmbedder {
     }
 }
 
-impl TextEmbedder for DefaultTextEmbedder {
+impl<P: EmbeddingModelProvider> TextEmbedder for DefaultTextEmbedder<P> {
     fn embedding_dimension(&self) -> usize {
         self.embedding_dimension
     }
@@ -80,10 +80,10 @@ impl TextEmbedder for DefaultTextEmbedder {
     fn embed(
         &self,
         text: &str,
-    ) -> Pin<Box<dyn Future<Output = Result<Embedding, EmbeddingError>> + Send + '_>> {
+    ) -> impl Future<Output = Result<Embedding, EmbeddingError>> + Send + '_ {
         let req = EmbeddingRequest::new(self.model.as_str(), text)
             .with_embedding_dimension(self.embedding_dimension);
-        Box::pin(async move {
+        async move {
             self.provider
                 .embed(req)
                 .await
@@ -93,13 +93,12 @@ impl TextEmbedder for DefaultTextEmbedder {
                 .next()
                 .map(Embedding::from)
                 .ok_or(EmbeddingError::EmptyResponse)
-        })
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::pin::Pin;
     use std::sync::Arc;
 
     use pretty_assertions::assert_eq;
@@ -142,15 +141,15 @@ mod tests {
         fn embed(
             &self,
             req: EmbeddingRequest,
-        ) -> Pin<Box<dyn Future<Output = ModelProviderResult<EmbeddingResponse>> + Send + '_>>
+        ) -> impl Future<Output = ModelProviderResult<EmbeddingResponse>> + Send + '_
         {
-            Box::pin(async move {
+            async move {
                 Ok(EmbeddingResponse {
                     embeddings: vec![], // empty — should trigger EmptyResponse error
                     model: req.model.clone(),
                     usage: None,
                 })
-            })
+            }
         }
     }
 
@@ -160,9 +159,9 @@ mod tests {
         fn embed(
             &self,
             _req: EmbeddingRequest,
-        ) -> Pin<Box<dyn Future<Output = ModelProviderResult<EmbeddingResponse>> + Send + '_>>
+        ) -> impl Future<Output = ModelProviderResult<EmbeddingResponse>> + Send + '_
         {
-            Box::pin(async move { Err(ModelProviderError::Timeout) })
+            async move { Err(ModelProviderError::Timeout) }
         }
     }
 
@@ -174,16 +173,16 @@ mod tests {
         fn embed(
             &self,
             req: EmbeddingRequest,
-        ) -> Pin<Box<dyn Future<Output = ModelProviderResult<EmbeddingResponse>> + Send + '_>>
+        ) -> impl Future<Output = ModelProviderResult<EmbeddingResponse>> + Send + '_
         {
             let values = self.values.clone();
-            Box::pin(async move {
+            async move {
                 Ok(EmbeddingResponse {
                     embeddings: vec![values],
                     model: req.model.clone(),
                     usage: None,
                 })
-            })
+            }
         }
     }
 

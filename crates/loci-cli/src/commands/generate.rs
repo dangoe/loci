@@ -1,5 +1,4 @@
 use clap::{Args, arg};
-use loci_core::contextualization::ContextualizationMemoryMode;
 
 /// Arguments for the `generate` command, controlling prompt generation and memory injection behavior.
 #[derive(Args)]
@@ -39,15 +38,6 @@ pub enum GenerateMemoryMode {
     Auto,
     /// Skips memory retrieval and injection, generating a response based solely on the prompt.
     Off,
-}
-
-impl Into<ContextualizationMemoryMode> for GenerateMemoryMode {
-    fn into(self) -> ContextualizationMemoryMode {
-        match self {
-            GenerateMemoryMode::Auto => ContextualizationMemoryMode::Auto,
-            GenerateMemoryMode::Off => ContextualizationMemoryMode::Off,
-        }
-    }
 }
 
 /// Debug flags for the `gen` command, which prints additional info about the contextualization process when set.

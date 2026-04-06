@@ -4,7 +4,6 @@
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::pin::Pin;
 
 use chrono::{Duration, Utc};
 use loci_core::embedding::{Embedding, TextEmbedder};
@@ -52,13 +51,13 @@ impl TextEmbedder for FakeTextEmbedder {
     fn embed(
         &self,
         text: &str,
-    ) -> Pin<Box<dyn Future<Output = Result<Embedding, EmbeddingError>> + Send + '_>> {
+    ) -> impl Future<Output = Result<Embedding, EmbeddingError>> + Send + '_ {
         let values = self
             .mappings
             .get(text)
             .cloned()
             .unwrap_or_else(|| vec![0.0; DIM]);
-        Box::pin(async move { Ok(Embedding::new(values)) })
+        async move { Ok(Embedding::new(values)) }
     }
 }
 

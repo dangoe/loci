@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT
 // This file is part of loci-core.
 
+use std::future::Future;
 use std::time::Duration;
-use std::{collections::HashMap, pin::Pin};
+use std::{collections::HashMap};
 
 use futures::Stream;
 use serde::{Deserialize, Serialize};
@@ -212,7 +213,7 @@ pub trait TextGenerationModelProvider: Send + Sync {
     fn generate(
         &self,
         req: TextGenerationRequest,
-    ) -> Pin<Box<dyn Future<Output = ModelProviderResult<TextGenerationResponse>> + Send + '_>>;
+    ) -> impl Future<Output = ModelProviderResult<TextGenerationResponse>> + Send + '_;
 
     /// Streams generation responses chunk by chunk.
     ///
@@ -223,8 +224,8 @@ pub trait TextGenerationModelProvider: Send + Sync {
     fn generate_stream(
         &self,
         req: TextGenerationRequest,
-    ) -> Pin<Box<dyn Stream<Item = ModelProviderResult<TextGenerationResponse>> + Send + '_>> {
-        Box::pin(futures::stream::once(self.generate(req)))
+    ) -> impl Stream<Item = ModelProviderResult<TextGenerationResponse>> + Send + '_ {
+        futures::stream::once(self.generate(req))
     }
 }
 
@@ -325,11 +326,11 @@ mod tests {
         fn generate(
             &self,
             req: TextGenerationRequest,
-        ) -> Pin<Box<dyn Future<Output = ModelProviderResult<TextGenerationResponse>> + Send + '_>>
+        ) -> impl Future<Output = ModelProviderResult<TextGenerationResponse>> + Send + '_
         {
             let model = req.model.clone();
             let text = req.prompt.clone();
-            Box::pin(async move { Ok(TextGenerationResponse::done(text, model, None)) })
+            async move { Ok(TextGenerationResponse::done(text, model, None)) }
         }
     }
 

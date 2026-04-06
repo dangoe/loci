@@ -1,8 +1,10 @@
+pub mod config;
 pub mod generate;
 pub mod memory;
 
 use clap::Subcommand;
 
+pub use config::ConfigCommand;
 pub use generate::GenerateArgs;
 pub use memory::MemoryCommand;
 
@@ -20,5 +22,11 @@ pub enum Command {
     Generate {
         #[command(flatten)]
         args: GenerateArgs,
+    },
+    /// Configuration management.
+    #[command(name = "config")]
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
     },
 }
