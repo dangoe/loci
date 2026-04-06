@@ -30,8 +30,8 @@ use loci_config::{
     ModelThinkingEffortLevel, ModelTuningConfig, StoreConfig, load_config,
 };
 use loci_core::contextualization::{
-    ContextualizationMemoryMode, Contextualizer, ContextualizerConfig, ContextualizerSystemConfig,
-    ContextualizerSystemMode, ContextualizerTuningConfig,
+    Contextualizer, ContextualizerConfig, ContextualizerSystemConfig, ContextualizerSystemMode,
+    ContextualizerTuningConfig,
 };
 
 use loci_core::embedding::DefaultTextEmbedder;
@@ -41,6 +41,7 @@ use loci_memory_store_qdrant::config::QdrantConfig;
 use loci_memory_store_qdrant::store::QdrantMemoryStore;
 use loci_model_provider_ollama::provider::{OllamaConfig, OllamaModelProvider};
 
+use crate::commands::generate::{GenerateArgs, GenerateDebugFlags, GenerateSystemMode};
 use crate::commands::memory::MemoryCommand;
 use crate::handlers::CommandHandler;
 use crate::handlers::memory::MemoryCommandHandler;
@@ -61,40 +62,6 @@ struct Cli {
     command: Command,
 }
 
-/// Memory mode for the `gen` command, controlling memory retrieval and injection behavior.
-#[derive(clap::ValueEnum, PartialEq, Eq, Clone, Debug)]
-enum GenMemoryMode {
-    /// Retrieves and injects memory entries into the prompt based on the configured contextualization settings.
-    Auto,
-    /// Skips memory retrieval and injection, generating a response based solely on the prompt.
-    Off,
-}
-
-impl Into<ContextualizationMemoryMode> for GenMemoryMode {
-    fn into(self) -> ContextualizationMemoryMode {
-        match self {
-            GenMemoryMode::Auto => ContextualizationMemoryMode::Auto,
-            GenMemoryMode::Off => ContextualizationMemoryMode::Off,
-        }
-    }
-}
-
-/// Debug flags for the `gen` command, which prints additional info about the contextualization process when set.
-#[derive(clap::ValueEnum, PartialEq, Eq, Clone, Debug)]
-enum GenDebugFlags {
-    /// Print the memory entries that were injected into the model provider prompt.
-    Memory,
-}
-
-/// Memory mode for generation, which controls whether and how memory is retrieved and injected into the prompt.
-#[derive(clap::ValueEnum, PartialEq, Eq, Clone, Debug)]
-enum GenSystemMode {
-    /// Append given system prompt to the default system prompt.
-    Append,
-    /// Replace default system prompt with the given system prompt.
-    Replace,
-}
-
 /// Available sub-commands.
 #[derive(Subcommand)]
 enum Command {
@@ -105,32 +72,8 @@ enum Command {
     },
     /// Generate a response for a prompt, with optional memory retrieval and contextualization.
     Gen {
-        /// The prompt to process.
-        prompt: String,
-
-        /// Optional override for the system prompt used for generation. If not set, the default system prompt will be used.
-        #[arg(long)]
-        system: Option<String>,
-
-        /// System prompt mode, which controls how the provided system prompt interacts with the default system prompt.
-        #[arg(long, value_enum, default_value_t = GenSystemMode::Append)]
-        system_mode: GenSystemMode,
-
-        /// Maximum number of memory entries to inject into the prompt.
-        #[arg(long, default_value_t = 5)]
-        max_memory_entries: usize,
-
-        /// Minimum similarity score for memory retrieval (0.0–1.0).
-        #[arg(long, default_value_t = 0.5)]
-        min_score: f64,
-
-        /// Memory mode for generation, which controls whether and how memory is retrieved and injected into the prompt.
-        #[arg(long, value_enum, default_value_t = GenMemoryMode::Auto)]
-        memory_mode: GenMemoryMode,
-
-        /// Print debug info about the contextualization process, such as retrieved memory entries.
-        #[arg(long)]
-        debug_flags: Vec<GenDebugFlags>,
+        #[command(flatten)]
+        command: GenerateArgs,
     },
     /// Configuration management.
     Config {
@@ -182,13 +125,16 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             handler.handle(command, &mut std::io::stdout()).await
         }
         Command::Gen {
-            prompt,
-            system,
-            system_mode,
-            max_memory_entries,
-            min_score,
-            memory_mode,
-            debug_flags,
+            command:
+                GenerateArgs {
+                    prompt,
+                    system,
+                    system_mode,
+                    max_memory_entries,
+                    min_score,
+                    memory_mode,
+                    debug_flags,
+                },
         } => {
             let store = Arc::new(build_store(&config).await?);
             let llm_provider = Arc::new(build_llm_provider(&config)?);
@@ -208,8 +154,8 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let ctx_config = ContextualizerConfig {
                 system: system.map(|system| ContextualizerSystemConfig {
                     mode: match system_mode {
-                        GenSystemMode::Append => ContextualizerSystemMode::Append,
-                        GenSystemMode::Replace => ContextualizerSystemMode::Replace,
+                        GenerateSystemMode::Append => ContextualizerSystemMode::Append,
+                        GenerateSystemMode::Replace => ContextualizerSystemMode::Replace,
                     },
                     system,
                 }),
@@ -223,7 +169,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
             let contextualizer = Contextualizer::new(store, llm_provider, ctx_config);
 
-            if debug_flags.contains(&GenDebugFlags::Memory) {
+            if debug_flags.contains(&GenerateDebugFlags::Memory) {
                 let (debug_info, stream) = contextualizer.contextualize_with_debug(&prompt).await?;
 
                 eprintln!("Debug info:\n");
@@ -594,7 +540,7 @@ fn setup_logging(verbose: bool) {
 
 #[cfg(test)]
 mod tests {
-    use crate::fixture::minimal_ollama_config;
+    use crate::{commands::generate::GenerateMemoryMode, fixture::minimal_ollama_config};
 
     use super::*;
     use std::collections::HashMap as StdHashMap;
@@ -675,14 +621,14 @@ mod tests {
     #[test]
     fn test_gen_memory_mode_auto_converts_to_contextualizer_auto() {
         use loci_core::contextualization::ContextualizationMemoryMode;
-        let mode: ContextualizationMemoryMode = GenMemoryMode::Auto.into();
+        let mode: ContextualizationMemoryMode = GenerateMemoryMode::Auto.into();
         assert_eq!(mode, ContextualizationMemoryMode::Auto);
     }
 
     #[test]
     fn test_gen_memory_mode_off_converts_to_contextualizer_off() {
         use loci_core::contextualization::ContextualizationMemoryMode;
-        let mode: ContextualizationMemoryMode = GenMemoryMode::Off.into();
+        let mode: ContextualizationMemoryMode = GenerateMemoryMode::Off.into();
         assert_eq!(mode, ContextualizationMemoryMode::Off);
     }
 

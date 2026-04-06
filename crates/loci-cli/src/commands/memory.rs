@@ -5,6 +5,7 @@ use uuid::Uuid;
 #[derive(Subcommand)]
 pub enum MemoryCommand {
     /// Save a new memory entry.
+    #[command(name = "save")]
     Save {
         /// Memory content.
         content: String,
@@ -16,6 +17,7 @@ pub enum MemoryCommand {
         tier: Option<MemoryTier>,
     },
     /// Query memory entries by semantic similarity.
+    #[command(name = "query")]
     Query {
         /// Topic to search for.
         topic: String,
@@ -30,11 +32,13 @@ pub enum MemoryCommand {
         filters: Vec<(String, String)>,
     },
     /// Get a memory entry by ID.
+    #[command(name = "get")]
     Get {
         /// Memory entry ID.
         id: Uuid,
     },
     /// Update an existing memory entry by ID.
+    #[command(name = "update")]
     Update {
         /// Memory entry ID.
         id: Uuid,
@@ -48,11 +52,13 @@ pub enum MemoryCommand {
         tier: Option<MemoryTier>,
     },
     /// Delete a memory entry by ID.
+    #[command(name = "delete")]
     Delete {
         /// Memory entry ID.
         id: Uuid,
     },
     /// Prunes all expired memory entries from the collection.
+    #[command(name = "prune-expired")]
     PruneExpired,
 }
 
