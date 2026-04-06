@@ -1,4 +1,4 @@
-use std::{collections::HashMap, error::Error, io::Write};
+use std::{collections::HashMap, error::Error as StdError, io::Write};
 
 use loci_core::{
     memory::{
@@ -11,7 +11,7 @@ use log::debug;
 
 use crate::{
     commands::memory::{MemoryCommand, MemoryTier},
-    handlers::CommandHandler,
+    handlers::{CommandHandler, json::entry_to_json},
 };
 
 impl Into<CoreMemoryTier> for MemoryTier {
@@ -38,7 +38,7 @@ impl<'a, S: CoreMemoryStore> MemoryCommandHandler<'a, S> {
 impl<'a, S: CoreMemoryStore, W: Write + Send> CommandHandler<'a, MemoryCommand, W>
     for MemoryCommandHandler<'a, S>
 {
-    async fn handle(&self, command: MemoryCommand, out: &mut W) -> Result<(), Box<dyn Error>> {
+    async fn handle(&self, command: MemoryCommand, out: &mut W) -> Result<(), Box<dyn StdError>> {
         match command {
             MemoryCommand::Save {
                 content,
@@ -157,22 +157,6 @@ impl<'a, S: CoreMemoryStore, W: Write + Send> CommandHandler<'a, MemoryCommand, 
 /// Converts a list of `(key, value)` pairs into a [`HashMap`].
 fn pairs_to_map(pairs: Vec<(String, String)>) -> HashMap<String, String> {
     pairs.into_iter().collect()
-}
-
-/// Serialises a [`loci_core::memory::MemoryEntry`] to a [`serde_json::Value`].
-fn entry_to_json(e: &loci_core::memory::MemoryQueryResult) -> serde_json::Value {
-    serde_json::json!({
-        "id": e.memory_entry.id.to_string(),
-        "content": e.memory_entry.content,
-        "metadata": e.memory_entry.metadata,
-        "tier": e.memory_entry.tier.as_str(),
-        "seen_count": e.memory_entry.seen_count,
-        "first_seen": e.memory_entry.first_seen.to_rfc3339(),
-        "last_seen": e.memory_entry.last_seen.to_rfc3339(),
-        "expires_at": e.memory_entry.expires_at.map(|dt| dt.to_rfc3339()),
-        "created_at": e.memory_entry.created_at.to_rfc3339(),
-        "score": e.score.value(),
-    })
 }
 
 #[cfg(test)]

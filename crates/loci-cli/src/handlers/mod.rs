@@ -1,5 +1,6 @@
-use std::error::Error;
+use std::error::Error as StdError;
 
+mod json;
 pub mod memory;
 
 /// A trait for handling commands and returning a result.
@@ -9,5 +10,5 @@ pub trait CommandHandler<'a, C, W: std::io::Write> {
         &self,
         command: C,
         out: &'a mut W,
-    ) -> impl Future<Output = Result<(), Box<dyn Error>>> + Send + '_;
+    ) -> impl Future<Output = Result<(), Box<dyn StdError>>> + Send + '_;
 }
