@@ -4,9 +4,9 @@
 
 use serde::Deserialize;
 
-/// A named embedding profile referencing a provider and model.
+/// An embedding model config entry, nested under `[models.embedding.<name>]`.
 #[derive(Debug, Clone, Deserialize)]
-pub struct EmbeddingProfileConfig {
+pub struct EmbeddingModelConfig {
     /// The provider name that serves the embedding model.
     pub provider: String,
 

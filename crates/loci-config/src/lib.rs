@@ -12,13 +12,15 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-pub use embedding::EmbeddingProfileConfig;
+pub use embedding::EmbeddingModelConfig;
 pub use error::ConfigError;
 pub use init::{ConfigInitError, DEFAULT_CONFIG_TEMPLATE, init_config};
-pub use memory::MemoryConfig;
-pub use model::{ModelConfig, ModelThinkingConfig, ModelThinkingEffortLevel, ModelTuningConfig};
+pub use memory::{MemoryConfig, MemorySection};
+pub use model::{
+    ModelsConfig, ModelThinkingConfig, ModelThinkingEffortLevel, ModelTuningConfig, TextModelConfig,
+};
 pub use provider::{ModelProviderConfig, ModelProviderKind};
-pub use routing::RoutingConfig;
+pub use routing::{EmbeddingRoutingConfig, MemoryRoutingConfig, RoutingConfig, TextRoutingConfig};
 pub use store::StoreConfig;
 
 mod embedding;
@@ -38,20 +40,12 @@ pub struct AppConfig {
     #[serde(default)]
     pub providers: HashMap<String, ModelProviderConfig>,
 
-    /// Named model aliases, each referencing a provider.
+    /// Text-generation and embedding model registries.
     #[serde(default)]
-    pub models: HashMap<String, ModelConfig>,
+    pub models: ModelsConfig,
 
-    /// Named embedding profiles, each referencing a provider.
-    #[serde(default)]
-    pub embeddings: HashMap<String, EmbeddingProfileConfig>,
-
-    /// Named memory store definitions.
-    #[serde(default)]
-    pub stores: HashMap<String, StoreConfig>,
-
-    /// Memory persistence settings.
-    pub memory: MemoryConfig,
+    /// Memory backend definitions and active backend config.
+    pub memory: MemorySection,
 
     /// Routing and default selection settings.
     pub routing: RoutingConfig,
@@ -82,8 +76,8 @@ fn resolve_secrets(config: &mut AppConfig) -> Result<(), ConfigError> {
             *key = resolve::resolve_secret(key)?;
         }
     }
-    for store in config.stores.values_mut() {
-        if let StoreConfig::Qdrant { api_key, .. } = store
+    for backend in config.memory.backends.values_mut() {
+        if let StoreConfig::Qdrant { api_key, .. } = backend
             && let Some(key) = api_key.as_mut()
         {
             *key = resolve::resolve_secret(key)?;
@@ -109,27 +103,32 @@ mod tests {
 kind = "ollama"
 endpoint = "http://localhost:11434"
 
-[models.default]
+[models.text.default]
 provider = "ollama"
-name = "qwen3:0.6b"
+model = "qwen3:0.6b"
 
-[embeddings.default]
+[models.embedding.default]
 provider = "ollama"
 model = "qwen3-embedding:0.6b"
 dimension = 768
 
-[stores.qdrant]
+[memory.backends.qdrant]
 kind = "qdrant"
 url = "http://localhost:6334"
-
-[memory]
-store = "qdrant"
 collection = "memory_entries"
+
+[memory.config]
+backend = "qdrant"
 promotion_source_threshold = 2
 
-[routing]
-default_model = "default"
-embedding = "default"
+[routing.text]
+default = "default"
+
+[routing.embedding]
+default = "default"
+
+[routing.memory]
+default = "qdrant"
 "#;
 
     #[test]
@@ -139,15 +138,15 @@ embedding = "default"
 
         assert_eq!(config.providers.len(), 1);
         assert!(config.providers.contains_key("ollama"));
-        assert_eq!(config.models["default"].provider, "ollama");
-        assert_eq!(config.models["default"].name, "qwen3:0.6b");
-        assert!(config.models["default"].tuning.is_none());
-        assert_eq!(config.embeddings["default"].dimension, 768);
-        assert_eq!(config.memory.store, "qdrant");
-        assert_eq!(config.memory.collection, "memory_entries");
-        assert_eq!(config.memory.promotion_source_threshold, 2);
-        assert_eq!(config.routing.default_model, "default");
-        assert_eq!(config.routing.embedding, "default");
+        assert_eq!(config.models.text["default"].provider, "ollama");
+        assert_eq!(config.models.text["default"].model, "qwen3:0.6b");
+        assert!(config.models.text["default"].tuning.is_none());
+        assert_eq!(config.models.embedding["default"].dimension, 768);
+        assert_eq!(config.memory.config.backend, "qdrant");
+        assert_eq!(config.memory.config.promotion_source_threshold, 2);
+        assert_eq!(config.routing.text.default, "default");
+        assert_eq!(config.routing.embedding.default, "default");
+        assert_eq!(config.routing.memory.default, "qdrant");
     }
 
     #[test]
@@ -158,17 +157,22 @@ kind = "openai"
 endpoint = "https://api.openai.com/v1"
 api_key = "sk-literal-key"
 
-[stores.qdrant]
+[memory.backends.qdrant]
 kind = "qdrant"
 url = "http://localhost:6334"
-
-[memory]
-store = "qdrant"
 collection = "mem"
 
-[routing]
-default_model = "x"
-embedding = "x"
+[memory.config]
+backend = "qdrant"
+
+[routing.text]
+default = "x"
+
+[routing.embedding]
+default = "x"
+
+[routing.memory]
+default = "qdrant"
 "#;
         let f = write_temp_config(cfg);
         let config = load_config(f.path()).unwrap();
@@ -188,17 +192,22 @@ kind = "openai"
 endpoint = "https://api.openai.com/v1"
 api_key = "env:LOCI_TEST_SECRET"
 
-[stores.qdrant]
+[memory.backends.qdrant]
 kind = "qdrant"
 url = "http://localhost:6334"
-
-[memory]
-store = "qdrant"
 collection = "mem"
 
-[routing]
-default_model = "x"
-embedding = "x"
+[memory.config]
+backend = "qdrant"
+
+[routing.text]
+default = "x"
+
+[routing.embedding]
+default = "x"
+
+[routing.memory]
+default = "qdrant"
 "#;
         let f = write_temp_config(cfg);
         let config = load_config(f.path()).unwrap();
@@ -220,17 +229,22 @@ kind = "openai"
 endpoint = "https://api.openai.com/v1"
 api_key = "env:LOCI_TEST_MISSING_VAR"
 
-[stores.qdrant]
+[memory.backends.qdrant]
 kind = "qdrant"
 url = "http://localhost:6334"
-
-[memory]
-store = "qdrant"
 collection = "mem"
 
-[routing]
-default_model = "x"
-embedding = "x"
+[memory.config]
+backend = "qdrant"
+
+[routing.text]
+default = "x"
+
+[routing.embedding]
+default = "x"
+
+[routing.memory]
+default = "qdrant"
 "#;
         let f = write_temp_config(cfg);
         let err = load_config(f.path()).unwrap_err();
@@ -254,8 +268,8 @@ embedding = "x"
     fn similarity_threshold_is_optional() {
         let f = write_temp_config(MINIMAL_CONFIG);
         let config = load_config(f.path()).unwrap();
-        assert!(config.memory.similarity_threshold.is_none());
-        assert_eq!(config.memory.promotion_source_threshold, 2);
+        assert!(config.memory.config.similarity_threshold.is_none());
+        assert_eq!(config.memory.config.promotion_source_threshold, 2);
     }
 
     #[test]
@@ -265,110 +279,129 @@ embedding = "x"
 kind = "ollama"
 endpoint = "http://localhost:11434"
 
-[stores.qdrant]
+[memory.backends.qdrant]
 kind = "qdrant"
 url = "http://localhost:6334"
-
-[memory]
-store = "qdrant"
 collection = "memory_entries"
+
+[memory.config]
+backend = "qdrant"
 promotion_source_threshold = 2
 similarity_threshold = 0.92
 
-[routing]
-default_model = "default"
-embedding = "default"
+[routing.text]
+default = "default"
+
+[routing.embedding]
+default = "default"
+
+[routing.memory]
+default = "qdrant"
 "#;
         let f = write_temp_config(cfg);
         let config = load_config(f.path()).unwrap();
-        assert_eq!(config.memory.similarity_threshold, Some(0.92));
+        assert_eq!(config.memory.config.similarity_threshold, Some(0.92));
     }
 
     #[test]
-    fn qdrant_store_with_env_api_key() {
+    fn qdrant_backend_with_env_api_key() {
         // SAFETY: single-threaded test process; no other threads read this var.
         unsafe { std::env::set_var("LOCI_QDRANT_KEY", "qdrant-secret") };
         let cfg = r#"
-[stores.qdrant]
+[memory.backends.qdrant]
 kind = "qdrant"
 url = "http://localhost:6334"
+collection = "mem"
 api_key = "env:LOCI_QDRANT_KEY"
 
-[memory]
-store = "qdrant"
-collection = "mem"
+[memory.config]
+backend = "qdrant"
 
-[routing]
-default_model = "x"
-embedding = "x"
+[routing.text]
+default = "x"
+
+[routing.embedding]
+default = "x"
+
+[routing.memory]
+default = "qdrant"
 "#;
         let f = write_temp_config(cfg);
         let config = load_config(f.path()).unwrap();
-        if let StoreConfig::Qdrant { api_key, .. } = &config.stores["qdrant"] {
+        if let StoreConfig::Qdrant { api_key, .. } = &config.memory.backends["qdrant"] {
             assert_eq!(api_key.as_deref(), Some("qdrant-secret"));
         } else {
-            panic!("expected Qdrant store");
+            panic!("expected Qdrant backend");
         }
         // SAFETY: single-threaded test process; no other threads read this var.
         unsafe { std::env::remove_var("LOCI_QDRANT_KEY") };
     }
 
     #[test]
-    fn fallback_models_defaults_to_empty_vec() {
+    fn fallback_defaults_to_empty_vec() {
         let f = write_temp_config(MINIMAL_CONFIG);
         let config = load_config(f.path()).unwrap();
-        assert!(config.routing.fallback_models.is_empty());
+        assert!(config.routing.text.fallback.is_empty());
     }
 
     #[test]
-    fn fallback_models_are_parsed_when_set() {
+    fn fallback_is_parsed_when_set() {
         let cfg = r#"
 [providers.ollama]
 kind = "ollama"
 endpoint = "http://localhost:11434"
 
-[stores.qdrant]
+[memory.backends.qdrant]
 kind = "qdrant"
 url = "http://localhost:6334"
-
-[memory]
-store = "qdrant"
 collection = "mem"
 
-[routing]
-default_model = "primary"
-embedding = "default"
-fallback_models = ["secondary", "tertiary"]
+[memory.config]
+backend = "qdrant"
+
+[routing.text]
+default = "primary"
+fallback = ["secondary", "tertiary"]
+
+[routing.embedding]
+default = "default"
+
+[routing.memory]
+default = "qdrant"
 "#;
         let f = write_temp_config(cfg);
         let config = load_config(f.path()).unwrap();
         assert_eq!(
-            config.routing.fallback_models,
+            config.routing.text.fallback,
             vec!["secondary", "tertiary"]
         );
     }
 
     #[test]
-    fn markdown_store_is_parsed_correctly() {
+    fn markdown_backend_is_parsed_correctly() {
         let cfg = r#"
-[stores.local]
+[memory.backends.local]
 kind = "markdown"
 path = "./memory"
 
-[memory]
-store = "local"
-collection = "notes"
+[memory.config]
+backend = "local"
 
-[routing]
-default_model = "x"
-embedding = "x"
+[routing.text]
+default = "x"
+
+[routing.embedding]
+default = "x"
+
+[routing.memory]
+default = "local"
 "#;
         let f = write_temp_config(cfg);
         let config = load_config(f.path()).unwrap();
-        if let StoreConfig::Markdown { path } = &config.stores["local"] {
+        if let StoreConfig::Markdown { path } = &config.memory.backends["local"] {
             assert_eq!(path, "./memory");
         } else {
-            panic!("expected Markdown store");
+            panic!("expected Markdown backend");
         }
     }
 
@@ -379,11 +412,11 @@ embedding = "x"
 kind = "ollama"
 endpoint = "http://localhost:11434"
 
-[models.default]
+[models.text.default]
 provider = "ollama"
-name = "qwen3:0.6b"
+model = "qwen3:0.6b"
 
-[models.default.tuning]
+[models.text.default.tuning]
 temperature = 0.2
 max_tokens = 512
 top_p = 0.95
@@ -392,29 +425,34 @@ repeat_last_n = 64
 keep_alive_secs = 300
 stop = ["<END>"]
 
-[models.default.tuning.thinking]
+[models.text.default.tuning.thinking]
 mode = "effort"
 level = "low"
 
-[models.default.tuning.extra_params]
+[models.text.default.tuning.extra]
 seed = 42
 
-[stores.qdrant]
+[memory.backends.qdrant]
 kind = "qdrant"
 url = "http://localhost:6334"
-
-[memory]
-store = "qdrant"
 collection = "memory_entries"
+
+[memory.config]
+backend = "qdrant"
 promotion_source_threshold = 2
 
-[routing]
-default_model = "default"
-embedding = "default"
+[routing.text]
+default = "default"
+
+[routing.embedding]
+default = "default"
+
+[routing.memory]
+default = "qdrant"
 "#;
         let f = write_temp_config(cfg);
         let config = load_config(f.path()).unwrap();
-        let tuning = config.models["default"].tuning.as_ref().unwrap();
+        let tuning = config.models.text["default"].tuning.as_ref().unwrap();
         assert_eq!(tuning.temperature, Some(0.2));
         assert_eq!(tuning.max_tokens, Some(512));
         assert_eq!(tuning.top_p, Some(0.95));
@@ -428,6 +466,6 @@ embedding = "default"
                 level: ModelThinkingEffortLevel::Low
             })
         ));
-        assert_eq!(tuning.extra_params.get("seed"), Some(&json!(42)));
+        assert_eq!(tuning.extra.get("seed"), Some(&json!(42)));
     }
 }

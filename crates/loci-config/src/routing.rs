@@ -4,17 +4,41 @@
 
 use serde::Deserialize;
 
-/// Routing and default selection configuration.
+/// Top-level routing configuration, deserialized from `[routing]`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RoutingConfig {
-    /// Name of the model entry in `[models]` to use by default for inference.
-    pub default_model: String,
+    /// Text-generation routing, under `[routing.text]`.
+    pub text: TextRoutingConfig,
 
-    /// Ordered fallback chain of model names to try when the default model
-    /// fails. Currently parsed but not yet used at runtime.
+    /// Embedding routing, under `[routing.embedding]`.
+    pub embedding: EmbeddingRoutingConfig,
+
+    /// Memory backend routing, under `[routing.memory]`.
+    pub memory: MemoryRoutingConfig,
+}
+
+/// Routing for text-generation models, deserialized from `[routing.text]`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TextRoutingConfig {
+    /// Name of the default text-generation model in `[models.text]`.
+    pub default: String,
+
+    /// Ordered fallback chain of model names. Currently parsed but not yet
+    /// used at runtime.
     #[serde(default)]
-    pub fallback_models: Vec<String>,
+    pub fallback: Vec<String>,
+}
 
-    /// Name of the embedding profile entry in `[embeddings]` to use.
-    pub embedding: String,
+/// Routing for embedding models, deserialized from `[routing.embedding]`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct EmbeddingRoutingConfig {
+    /// Name of the default embedding model in `[models.embedding]`.
+    pub default: String,
+}
+
+/// Routing for memory backends, deserialized from `[routing.memory]`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MemoryRoutingConfig {
+    /// Name of the default memory backend in `[memory.backends]`.
+    pub default: String,
 }

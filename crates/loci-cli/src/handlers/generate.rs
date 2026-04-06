@@ -64,12 +64,13 @@ impl<'a, S: CoreMemoryStore, T: CoreTextGenerationModelProvider, W: Write + Send
     async fn handle(&self, command: GenerateCommand, out: &mut W) -> Result<(), Box<dyn StdError>> {
         let GenerateCommand::Execute(command) = command;
         let model = {
-            let model_key = &self.config.routing.default_model;
+            let model_key = &self.config.routing.text.default;
             self.config
                 .models
+                .text
                 .get(model_key)
                 .ok_or_else(|| ConfigError::MissingKey {
-                    section: "models".into(),
+                    section: "models.text".into(),
                     key: model_key.clone(),
                 })?
                 .clone()
@@ -89,7 +90,7 @@ impl<'a, S: CoreMemoryStore, T: CoreTextGenerationModelProvider, W: Write + Send
             min_score,
             memory_mode: command.memory_mode.into(),
             filters: HashMap::new(),
-            text_generation_model: model.name,
+            text_generation_model: model.model,
             tuning: model.tuning.as_ref().map(model_tuning_to_contextualizer),
         };
 
@@ -133,7 +134,7 @@ fn model_tuning_to_contextualizer(tuning: &ModelTuningConfig) -> CoreContextuali
         thinking: tuning.thinking.as_ref().map(model_thinking_to_core),
         stop: tuning.stop.clone(),
         keep_alive: tuning.keep_alive_secs.map(std::time::Duration::from_secs),
-        extra_params: tuning.extra_params.clone(),
+        extra_params: tuning.extra.clone(),
     }
 }
 
@@ -214,7 +215,7 @@ mod tests {
             stop: Some(vec!["<END>".to_string()]),
             keep_alive_secs: Some(300),
             thinking: Some(ModelThinkingConfig::Enabled),
-            extra_params: HashMap::new(),
+            extra: HashMap::new(),
         };
 
         let ctx = model_tuning_to_contextualizer(&tuning);

@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 
 use loci_config::{
-    AppConfig, EmbeddingProfileConfig, MemoryConfig, ModelConfig, ModelProviderConfig,
-    ModelProviderKind, RoutingConfig, StoreConfig,
+    AppConfig, EmbeddingModelConfig, MemoryConfig, MemorySection, ModelsConfig,
+    ModelProviderConfig, ModelProviderKind, RoutingConfig, EmbeddingRoutingConfig,
+    MemoryRoutingConfig, TextModelConfig, TextRoutingConfig, StoreConfig,
 };
 
 /// Builds a minimal `AppConfig` wired to a single Ollama provider.
@@ -16,39 +17,50 @@ pub fn minimal_ollama_config() -> AppConfig {
                 api_key: None,
             },
         )]),
-        models: HashMap::from([(
-            "default".to_string(),
-            ModelConfig {
-                provider: "ollama".to_string(),
-                name: "qwen3:0.6b".to_string(),
-                tuning: None,
+        models: ModelsConfig {
+            text: HashMap::from([(
+                "default".to_string(),
+                TextModelConfig {
+                    provider: "ollama".to_string(),
+                    model: "qwen3:0.6b".to_string(),
+                    tuning: None,
+                },
+            )]),
+            embedding: HashMap::from([(
+                "default".to_string(),
+                EmbeddingModelConfig {
+                    provider: "ollama".to_string(),
+                    model: "qwen3-embedding:0.6b".to_string(),
+                    dimension: 768,
+                },
+            )]),
+        },
+        memory: MemorySection {
+            backends: HashMap::from([(
+                "qdrant".to_string(),
+                StoreConfig::Qdrant {
+                    url: "http://localhost:6333".to_string(),
+                    collection: "memory_entries".to_string(),
+                    api_key: None,
+                },
+            )]),
+            config: MemoryConfig {
+                backend: "qdrant".to_string(),
+                similarity_threshold: None,
+                promotion_source_threshold: 2,
             },
-        )]),
-        embeddings: HashMap::from([(
-            "default".to_string(),
-            EmbeddingProfileConfig {
-                provider: "ollama".to_string(),
-                model: "qwen3-embedding:0.6b".to_string(),
-                dimension: 768,
-            },
-        )]),
-        stores: HashMap::from([(
-            "qdrant".to_string(),
-            StoreConfig::Qdrant {
-                url: "http://localhost:6333".to_string(),
-                api_key: None,
-            },
-        )]),
-        memory: MemoryConfig {
-            store: "qdrant".to_string(),
-            collection: "memory_entries".to_string(),
-            similarity_threshold: None,
-            promotion_source_threshold: 2,
         },
         routing: RoutingConfig {
-            default_model: "default".to_string(),
-            fallback_models: vec![],
-            embedding: "default".to_string(),
+            text: TextRoutingConfig {
+                default: "default".to_string(),
+                fallback: vec![],
+            },
+            embedding: EmbeddingRoutingConfig {
+                default: "default".to_string(),
+            },
+            memory: MemoryRoutingConfig {
+                default: "qdrant".to_string(),
+            },
         },
     }
 }

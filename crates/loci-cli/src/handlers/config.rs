@@ -57,10 +57,13 @@ mod tests {
             "expected provider section"
         );
         assert!(
-            content.contains("[stores.qdrant]"),
-            "expected store section"
+            content.contains("[memory.backends.qdrant]"),
+            "expected memory backend section"
         );
-        assert!(content.contains("[routing]"), "expected routing section");
+        assert!(
+            content.contains("[routing.text]"),
+            "expected routing section"
+        );
     }
 
     #[tokio::test]

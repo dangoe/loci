@@ -23,26 +23,28 @@ pub async fn build_store(
     config: &AppConfig,
 ) -> Result<QdrantMemoryStore<DefaultTextEmbedder<OllamaModelProvider>>, Box<dyn std::error::Error>>
 {
-    let store_name = &config.memory.store;
+    let backend_name = &config.memory.config.backend;
     let store_cfg = config
-        .stores
-        .get(store_name)
+        .memory
+        .backends
+        .get(backend_name)
         .ok_or_else(|| ConfigError::MissingKey {
-            section: "stores".into(),
-            key: store_name.clone(),
+            section: "memory.backends".into(),
+            key: backend_name.clone(),
         })?;
 
     match store_cfg {
-        StoreConfig::Qdrant { url, .. } => {
+        StoreConfig::Qdrant { url, collection, .. } => {
             let embed_provider = resolve_embedding_provider(config)?;
             let embed_provider_instance = build_ollama_provider(embed_provider)?;
-            let embed_profile_name = &config.routing.embedding;
-            let embed_profile = config.embeddings.get(embed_profile_name).ok_or_else(|| {
-                ConfigError::MissingKey {
-                    section: "embeddings".into(),
-                    key: embed_profile_name.clone(),
-                }
-            })?;
+            let embed_profile_name = &config.routing.embedding.default;
+            let embed_profile =
+                config.models.embedding.get(embed_profile_name).ok_or_else(|| {
+                    ConfigError::MissingKey {
+                        section: "models.embedding".into(),
+                        key: embed_profile_name.clone(),
+                    }
+                })?;
 
             let embedder = DefaultTextEmbedder::new(
                 Arc::new(embed_provider_instance),
@@ -51,9 +53,9 @@ pub async fn build_store(
             );
 
             let qdrant_config = QdrantConfig {
-                collection_name: config.memory.collection.clone(),
-                similarity_threshold: config.memory.similarity_threshold,
-                promotion_source_threshold: config.memory.promotion_source_threshold,
+                collection_name: collection.clone(),
+                similarity_threshold: config.memory.config.similarity_threshold,
+                promotion_source_threshold: config.memory.config.promotion_source_threshold,
             };
 
             info!("Connecting to Qdrant at {url}");
@@ -81,12 +83,13 @@ pub fn build_llm_provider(
 pub fn resolve_embedding_provider(
     config: &AppConfig,
 ) -> Result<&ModelProviderConfig, Box<dyn std::error::Error>> {
-    let profile_name = &config.routing.embedding;
+    let profile_name = &config.routing.embedding.default;
     let profile = config
-        .embeddings
+        .models
+        .embedding
         .get(profile_name)
         .ok_or_else(|| ConfigError::MissingKey {
-            section: "embeddings".into(),
+            section: "models.embedding".into(),
             key: profile_name.clone(),
         })?;
     config.providers.get(&profile.provider).ok_or_else(|| {
@@ -101,12 +104,13 @@ pub fn resolve_embedding_provider(
 pub fn resolve_llm_provider(
     config: &AppConfig,
 ) -> Result<&ModelProviderConfig, Box<dyn std::error::Error>> {
-    let model_name = &config.routing.default_model;
+    let model_name = &config.routing.text.default;
     let model = config
         .models
+        .text
         .get(model_name)
         .ok_or_else(|| ConfigError::MissingKey {
-            section: "models".into(),
+            section: "models.text".into(),
             key: model_name.clone(),
         })?;
     config.providers.get(&model.provider).ok_or_else(|| {
@@ -160,7 +164,7 @@ mod tests {
     #[test]
     fn test_resolve_embedding_provider_missing_embedding_key_returns_err() {
         let mut config = minimal_ollama_config();
-        config.routing.embedding = "nonexistent".to_string();
+        config.routing.embedding.default = "nonexistent".to_string();
 
         let err = resolve_embedding_provider(&config).unwrap_err();
         assert!(
@@ -172,7 +176,7 @@ mod tests {
     #[test]
     fn test_resolve_embedding_provider_missing_provider_key_returns_err() {
         let mut config = minimal_ollama_config();
-        config.embeddings.get_mut("default").unwrap().provider = "ghost".to_string();
+        config.models.embedding.get_mut("default").unwrap().provider = "ghost".to_string();
 
         let err = resolve_embedding_provider(&config).unwrap_err();
         assert!(
@@ -191,7 +195,7 @@ mod tests {
     #[test]
     fn test_resolve_llm_provider_missing_model_returns_err() {
         let mut config = minimal_ollama_config();
-        config.routing.default_model = "nonexistent".to_string();
+        config.routing.text.default = "nonexistent".to_string();
 
         let err = resolve_llm_provider(&config).unwrap_err();
         assert!(
@@ -203,7 +207,7 @@ mod tests {
     #[test]
     fn test_resolve_llm_provider_missing_provider_returns_err() {
         let mut config = minimal_ollama_config();
-        config.models.get_mut("default").unwrap().provider = "ghost".to_string();
+        config.models.text.get_mut("default").unwrap().provider = "ghost".to_string();
 
         let err = resolve_llm_provider(&config).unwrap_err();
         assert!(

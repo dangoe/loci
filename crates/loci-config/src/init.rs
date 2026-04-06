@@ -6,13 +6,89 @@ use std::path::Path;
 
 use thiserror::Error;
 
+/// Template written by config initialization
+pub const DEFAULT_CONFIG_TEMPLATE: &str = r#"########################################
+# Providers — registry of available backends
+########################################
+[providers.ollama]
+kind     = "ollama"
+endpoint = "http://localhost:11434"
+
+# [providers.openai]
+# kind     = "openai"
+# endpoint = "https://api.openai.com/v1"
+# api_key  = "env:OPENAI_API_KEY"
+
+# [providers.anthropic]
+# kind     = "anthropic"
+# endpoint = "https://api.anthropic.com"
+# api_key  = "env:ANTHROPIC_API_KEY"
+
+########################################
+# Models — registry of named model configs
+########################################
+[models.text.default]
+provider = "ollama"
+model    = "qwen3:0.6b"
+
+# [models.text.default.tuning]
+# temperature     = 0.2
+# max_tokens      = 512
+# top_p           = 0.95
+# repeat_penalty  = 1.1
+# repeat_last_n   = 64
+# keep_alive_secs = 300
+# stop            = ["<END>"]
+
+# [models.text.default.tuning.thinking]
+# mode       = "disabled"   # "enabled" | "effort" | "budgeted"
+# level      = "low"        # for mode = "effort"
+# max_tokens = 256          # for mode = "budgeted"
+
+# [models.text.default.tuning.extra]
+# seed = 42
+
+[models.embedding.default]
+provider  = "ollama"
+model     = "qwen3-embedding:0.6b"
+dimension = 768
+
+########################################
+# Memory backends — registry of available stores
+########################################
+[memory.backends.qdrant]
+kind       = "qdrant"
+url        = "http://localhost:6333"
+collection = "memory_entries"
+# api_key = "env:QDRANT_API_KEY"
+
+########################################
+# Memory config — active backend + tuning
+########################################
+[memory.config]
+backend = "qdrant"
+# similarity_threshold       = 0.95  # deduplication threshold (0.0–1.0)
+# promotion_source_threshold = 2     # Candidate → Stable after N independent sources
+
+########################################
+# Routing — default selections
+########################################
+[routing.text]
+default  = "default"
+fallback = []
+
+[routing.embedding]
+default = "default"
+
+[routing.memory]
+default = "qdrant"
+"#;
+
 /// Errors that can occur while initialising a new config file.
 #[derive(Debug, Error)]
 pub enum ConfigInitError {
     /// The config file already exists at the given path.
-    #[error(
-        "config file already exists at {path}; remove it first if you want to regenerate it"
-    )]
+    #[error("config file already exists at {path}; remove it first if you want to regenerate it")]
     AlreadyExists { path: String },
 
     /// A parent directory could not be created.
@@ -57,89 +133,6 @@ pub fn init_config(path: &Path) -> Result<(), ConfigInitError> {
     Ok(())
 }
 
-/// Template written by `loci config init`.
-pub const DEFAULT_CONFIG_TEMPLATE: &str = r#"########################################
-# Providers (Compute Layer)
-########################################
-
-[providers.ollama]
-kind = "ollama"
-endpoint = "http://localhost:11434"
-
-# Uncomment and fill in to use OpenAI:
-# [providers.openai]
-# kind = "openai"
-# endpoint = "https://api.openai.com/v1"
-# api_key = "env:OPENAI_API_KEY"
-
-# Uncomment and fill in to use Anthropic:
-# [providers.anthropic]
-# kind = "anthropic"
-# endpoint = "https://api.anthropic.com"
-# api_key = "env:ANTHROPIC_API_KEY"
-
-########################################
-# Models (Inference Abstraction)
-########################################
-
-[models.default]
-provider = "ollama"
-name = "qwen3:0.6b"
-
-# Optional model-specific tuning:
-# [models.default.tuning]
-# temperature = 0.2
-# max_tokens = 512
-# top_p = 0.95
-# repeat_penalty = 1.1
-# repeat_last_n = 64
-# keep_alive_secs = 300
-# stop = ["<END>"]
-# [models.default.tuning.thinking]
-# mode = "disabled" # or "enabled", "effort", "budgeted"
-# level = "low"     # for mode = "effort"
-# max_tokens = 256  # for mode = "budgeted"
-# [models.default.tuning.extra_params]
-# seed = 42
-
-########################################
-# Embeddings
-########################################
-
-[embeddings.default]
-provider = "ollama"
-model = "qwen3-embedding:0.6b"
-dimension = 768
-
-########################################
-# Memory Store (Persistence Layer)
-########################################
-
-[stores.qdrant]
-kind = "qdrant"
-url = "http://localhost:6333"
-# api_key = "env:QDRANT_API_KEY"
-
-########################################
-# Memory Configuration
-########################################
-
-[memory]
-store = "qdrant"
-collection = "memory_entries"
-# similarity_threshold = 0.95        # optional deduplication threshold (0.0–1.0)
-# promotion_source_threshold = 2        # Candidate -> Stable after corroboration from N independent sources
-
-########################################
-# Routing / Defaults
-########################################
-
-[routing]
-default_model = "default"
-fallback_models = []
-embedding = "default"
-"#;
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,10 +150,13 @@ mod tests {
             "expected provider section"
         );
         assert!(
-            content.contains("[stores.qdrant]"),
-            "expected store section"
+            content.contains("[memory.backends.qdrant]"),
+            "expected memory backend section"
         );
-        assert!(content.contains("[routing]"), "expected routing section");
+        assert!(
+            content.contains("[routing.text]"),
+            "expected routing section"
+        );
     }
 
     #[test]
@@ -200,5 +196,16 @@ mod tests {
             err.to_string().contains(path.to_str().unwrap()),
             "error should mention path, got: {err}"
         );
+    }
+
+    #[test]
+    fn test_default_template_is_valid_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+
+        init_config(&path).unwrap();
+
+        crate::load_config(&path)
+            .expect("DEFAULT_CONFIG_TEMPLATE should parse as a valid AppConfig");
     }
 }

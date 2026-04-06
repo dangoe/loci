@@ -10,11 +10,12 @@ use serde::Deserialize;
 /// discriminant so the TOML representation mirrors the provider pattern:
 ///
 /// ```toml
-/// [stores.qdrant]
-/// kind = "qdrant"
-/// url = "http://localhost:6333"
+/// [memory.backends.qdrant]
+/// kind       = "qdrant"
+/// url        = "http://localhost:6333"
+/// collection = "memory_entries"
 ///
-/// [stores.local]
+/// [memory.backends.local]
 /// kind = "markdown"
 /// path = "./memory"
 /// ```
@@ -25,6 +26,8 @@ pub enum StoreConfig {
     Qdrant {
         /// Qdrant HTTP URL (e.g. `http://localhost:6333`).
         url: String,
+        /// Collection / namespace within Qdrant.
+        collection: String,
         /// Optional API key. May be a literal value or `env:VAR_NAME`.
         api_key: Option<String>,
     },
@@ -53,7 +56,7 @@ mod tests {
     use super::*;
 
     #[rstest]
-    #[case(StoreConfig::Qdrant { url: "http://localhost:6333".to_string(), api_key: None }, "qdrant")]
+    #[case(StoreConfig::Qdrant { url: "http://localhost:6333".to_string(), collection: "mem".to_string(), api_key: None }, "qdrant")]
     #[case(StoreConfig::Markdown { path: "./memory".to_string() }, "markdown")]
     fn test_kind_str(#[case] store: StoreConfig, #[case] expected: &str) {
         assert_eq!(store.kind_str(), expected);

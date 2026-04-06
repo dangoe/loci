@@ -7,16 +7,30 @@ use std::collections::HashMap;
 use serde::Deserialize;
 use serde_json::Value;
 
-/// A named model alias referencing a provider.
+use crate::embedding::EmbeddingModelConfig;
+
+/// Container for all model registries, deserialized from `[models]`.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct ModelsConfig {
+    /// Named text-generation model configs, each under `[models.text.<name>]`.
+    #[serde(default)]
+    pub text: HashMap<String, TextModelConfig>,
+
+    /// Named embedding model configs, each under `[models.embedding.<name>]`.
+    #[serde(default)]
+    pub embedding: HashMap<String, EmbeddingModelConfig>,
+}
+
+/// A named text-generation model config, nested under `[models.text.<name>]`.
 #[derive(Debug, Clone, Deserialize)]
-pub struct ModelConfig {
+pub struct TextModelConfig {
     /// The provider name this model is served by.
     pub provider: String,
 
-    /// The model identifier as understood by the provider (e.g. `"gpt-4.1"`).
-    pub name: String,
+    /// The model identifier as understood by the provider (e.g. `"qwen3:0.6b"`).
+    pub model: String,
 
-    /// Optional generation tuning parameters for this model alias.
+    /// Optional generation tuning parameters for this model.
     #[serde(default)]
     pub tuning: Option<ModelTuningConfig>,
 }
@@ -42,7 +56,7 @@ pub struct ModelTuningConfig {
     pub thinking: Option<ModelThinkingConfig>,
     /// Provider-specific passthrough options.
     #[serde(default)]
-    pub extra_params: HashMap<String, Value>,
+    pub extra: HashMap<String, Value>,
 }
 
 /// Configuration for model reasoning/thinking behavior.
