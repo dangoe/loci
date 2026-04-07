@@ -2,16 +2,28 @@
 // SPDX-License-Identifier: MIT
 // This file is part of loci-config.
 
+use std::collections::HashMap;
+
 use serde::Deserialize;
 
-/// Memory persistence configuration.
+use crate::store::StoreConfig;
+
+/// Top-level memory section, deserialized from `[memory]`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MemorySection {
+    /// Named memory backend definitions, each under `[memory.backends.<name>]`.
+    #[serde(default)]
+    pub backends: HashMap<String, StoreConfig>,
+
+    /// Active backend selection and tuning, under `[memory.config]`.
+    pub config: MemoryConfig,
+}
+
+/// Memory persistence configuration, deserialized from `[memory.config]`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct MemoryConfig {
-    /// Name of the store entry in `[stores]` to use.
-    pub store: String,
-
-    /// Collection / namespace within the store.
-    pub collection: String,
+    /// Name of the backend entry in `[memory.backends]` to use.
+    pub backend: String,
 
     /// Optional cosine similarity threshold for deduplication (0.0–1.0).
     /// When set, a new memory is not saved if an existing one already reaches

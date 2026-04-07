@@ -25,3 +25,8 @@ uuid.workspace = true
 env_logger = "0.11.10"
 systemd-journal-logger = { version = "2.2", optional = true }
 log.workspace = true
+
+[dev-dependencies]
+pretty_assertions.workspace = true
+rstest.workspace = true
+tempfile = "3"

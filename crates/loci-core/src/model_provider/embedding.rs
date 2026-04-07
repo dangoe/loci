@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // This file is part of loci-core.
 
-use std::{collections::HashMap, pin::Pin};
+use std::{collections::HashMap};
 
 use serde::{Deserialize, Serialize};
 
@@ -85,7 +85,7 @@ pub trait EmbeddingModelProvider: Send + Sync {
     fn embed(
         &self,
         req: EmbeddingRequest,
-    ) -> Pin<Box<dyn Future<Output = ModelProviderResult<EmbeddingResponse>> + Send + '_>>;
+    ) -> impl Future<Output = ModelProviderResult<EmbeddingResponse>> + Send + '_;
 }
 
 #[cfg(test)]
