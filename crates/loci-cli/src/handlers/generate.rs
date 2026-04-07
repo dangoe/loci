@@ -1,4 +1,4 @@
-use std::{collections::HashMap, error::Error as StdError, io::Write};
+use std::{error::Error as StdError, io::Write};
 
 use loci_config::{
     AppConfig, ConfigError, ModelThinkingConfig, ModelThinkingEffortLevel, ModelTuningConfig,
@@ -45,11 +45,7 @@ pub struct GenerateCommandHandler<'a, S: CoreMemoryStore, T: CoreTextGenerationM
 }
 
 impl<'a, S: CoreMemoryStore, T: CoreTextGenerationModelProvider> GenerateCommandHandler<'a, S, T> {
-    pub fn new(
-        store: &'a S,
-        text_generation_model_provider: &'a T,
-        config: &'a AppConfig,
-    ) -> Self {
+    pub fn new(store: &'a S, text_generation_model_provider: &'a T, config: &'a AppConfig) -> Self {
         Self {
             store,
             text_generation_model_provider,
@@ -89,16 +85,13 @@ impl<'a, S: CoreMemoryStore, T: CoreTextGenerationModelProvider, W: Write + Send
             max_memory_entries: command.max_memory_entries,
             min_score,
             memory_mode: command.memory_mode.into(),
-            filters: HashMap::new(),
+            filters: command.filters.into_iter().collect(),
             text_generation_model: model.model,
             tuning: model.tuning.as_ref().map(model_tuning_to_contextualizer),
         };
 
-        let contextualizer = CoreContextualizer::new(
-            self.store,
-            self.text_generation_model_provider,
-            ctx_config,
-        );
+        let contextualizer =
+            CoreContextualizer::new(self.store, self.text_generation_model_provider, ctx_config);
 
         if command.debug_flags.contains(&GenerateDebugFlags::Memory) {
             let (debug_info, stream) = contextualizer
@@ -179,12 +172,33 @@ async fn stream_text_generation<W: std::io::Write>(
 mod tests {
     use std::collections::HashMap;
 
+    use pretty_assertions::assert_eq;
     use rstest::rstest;
 
     use crate::{
-        commands::generate::GenerateMemoryMode,
-        handlers::generate::{model_tuning_to_contextualizer, stream_text_generation},
+        commands::generate::{
+            GenerateArgs, GenerateCommand, GenerateDebugFlags, GenerateMemoryMode, GenerateSystemMode,
+        },
+        fixture,
+        handlers::{
+            CommandHandler,
+            generate::{GenerateCommandHandler, model_thinking_to_core, model_tuning_to_contextualizer, stream_text_generation},
+        },
+        mock::{MockStore, MockTextGenerationModelProvider},
     };
+
+    fn default_generate_args(prompt: &str) -> GenerateArgs {
+        GenerateArgs {
+            prompt: prompt.to_string(),
+            system: None,
+            system_mode: GenerateSystemMode::Append,
+            max_memory_entries: 5,
+            min_score: 0.5,
+            memory_mode: GenerateMemoryMode::Auto,
+            filters: vec![],
+            debug_flags: vec![],
+        }
+    }
 
     #[test]
     fn test_gen_memory_mode_auto_converts_to_contextualizer_auto() {
@@ -271,8 +285,6 @@ mod tests {
         #[case] label: &str,
     ) {
         use loci_core::model_provider::text_generation::{ThinkingEffortLevel, ThinkingMode};
-
-        use crate::handlers::generate::model_thinking_to_core;
 
         let result = model_thinking_to_core(&input);
         match (label, &result) {
@@ -362,5 +374,254 @@ mod tests {
             result.unwrap_err().to_string().contains("boom"),
             "error message should include the underlying cause"
         );
+    }
+
+    // ── stream_text_generation edge cases ────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_stream_text_generation_empty_stream_writes_nothing() {
+        use futures::stream;
+        use loci_core::error::ContextualizerError;
+        use loci_core::model_provider::text_generation::TextGenerationResponse;
+
+        let chunks: Vec<Result<TextGenerationResponse, ContextualizerError>> = vec![];
+        let mut out = Vec::new();
+        stream_text_generation(stream::iter(chunks), &mut out)
+            .await
+            .unwrap();
+
+        assert!(out.is_empty(), "no bytes should be written for an empty stream");
+    }
+
+    #[tokio::test]
+    async fn test_stream_text_generation_single_done_chunk_appends_newline() {
+        use futures::stream;
+        use loci_core::error::ContextualizerError;
+        use loci_core::model_provider::text_generation::TextGenerationResponse;
+
+        let chunks: Vec<Result<TextGenerationResponse, ContextualizerError>> = vec![Ok(
+            TextGenerationResponse {
+                text: "hi".to_string(),
+                model: "m".to_string(),
+                usage: None,
+                done: true,
+            },
+        )];
+        let mut out = Vec::new();
+        stream_text_generation(stream::iter(chunks), &mut out)
+            .await
+            .unwrap();
+
+        let output = String::from_utf8(out).unwrap();
+        assert_eq!(output, "hi\n");
+    }
+
+    #[tokio::test]
+    async fn test_stream_text_generation_no_done_chunk_omits_trailing_newline() {
+        use futures::stream;
+        use loci_core::error::ContextualizerError;
+        use loci_core::model_provider::text_generation::TextGenerationResponse;
+
+        let chunks: Vec<Result<TextGenerationResponse, ContextualizerError>> = vec![
+            Ok(TextGenerationResponse {
+                text: "a".to_string(),
+                model: "m".to_string(),
+                usage: None,
+                done: false,
+            }),
+            Ok(TextGenerationResponse {
+                text: "b".to_string(),
+                model: "m".to_string(),
+                usage: None,
+                done: false,
+            }),
+        ];
+        let mut out = Vec::new();
+        stream_text_generation(stream::iter(chunks), &mut out)
+            .await
+            .unwrap();
+
+        let output = String::from_utf8(out).unwrap();
+        assert_eq!(output, "ab");
+    }
+
+    // ── model_tuning_to_contextualizer ───────────────────────────────────────
+
+    #[test]
+    fn test_model_tuning_to_contextualizer_maps_extra_params() {
+        use loci_config::ModelTuningConfig;
+        use serde_json::json;
+
+        let mut extra = HashMap::new();
+        extra.insert("top_k".to_string(), json!(40));
+        extra.insert("seed".to_string(), json!(42));
+
+        let tuning = ModelTuningConfig {
+            extra,
+            ..ModelTuningConfig::default()
+        };
+
+        let ctx = model_tuning_to_contextualizer(&tuning);
+
+        assert_eq!(ctx.extra_params.get("top_k").unwrap(), &json!(40));
+        assert_eq!(ctx.extra_params.get("seed").unwrap(), &json!(42));
+    }
+
+    // ── GenerateCommandHandler::handle ───────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_generate_handle_streams_response() {
+        let store = MockStore::new().with_query(vec![]);
+        let provider = MockTextGenerationModelProvider::new()
+            .with_chunks(vec!["hello", " world"]);
+        let config = fixture::minimal_ollama_config();
+        let mut out = Vec::new();
+
+        let handler = GenerateCommandHandler::new(&store, &provider, &config);
+        handler
+            .handle(
+                GenerateCommand::Execute(default_generate_args("test prompt")),
+                &mut out,
+            )
+            .await
+            .unwrap();
+
+        let output = String::from_utf8(out).unwrap();
+        assert!(output.contains("hello"), "got: {output:?}");
+        assert!(output.contains(" world"), "got: {output:?}");
+    }
+
+    #[tokio::test]
+    async fn test_generate_handle_missing_model_key_returns_err() {
+        let store = MockStore::new();
+        let provider = MockTextGenerationModelProvider::new();
+        let mut config = fixture::minimal_ollama_config();
+        config.routing.text.default = "nonexistent".to_string();
+        let mut out = Vec::new();
+
+        let handler = GenerateCommandHandler::new(&store, &provider, &config);
+        let result = handler
+            .handle(
+                GenerateCommand::Execute(default_generate_args("hi")),
+                &mut out,
+            )
+            .await;
+
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("nonexistent"),
+            "error should mention the missing key, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_generate_handle_invalid_min_score_returns_err() {
+        let store = MockStore::new();
+        let provider = MockTextGenerationModelProvider::new();
+        let config = fixture::minimal_ollama_config();
+        let mut out = Vec::new();
+
+        let mut args = default_generate_args("hi");
+        args.min_score = 1.5; // outside [0.0, 1.0]
+
+        let handler = GenerateCommandHandler::new(&store, &provider, &config);
+        let result = handler
+            .handle(GenerateCommand::Execute(args), &mut out)
+            .await;
+
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("invalid min_score"),
+            "error should mention invalid min_score"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_generate_handle_debug_memory_flag_writes_response_header() {
+        let store = MockStore::new().with_query(vec![]);
+        let provider =
+            MockTextGenerationModelProvider::new().with_chunks(vec!["debug output"]);
+        let config = fixture::minimal_ollama_config();
+        let mut out = Vec::new();
+
+        let mut args = default_generate_args("debug prompt");
+        args.debug_flags = vec![GenerateDebugFlags::Memory];
+
+        let handler = GenerateCommandHandler::new(&store, &provider, &config);
+        handler
+            .handle(GenerateCommand::Execute(args), &mut out)
+            .await
+            .unwrap();
+
+        let output = String::from_utf8(out).unwrap();
+        assert!(
+            output.contains("Response:"),
+            "debug path should write response header, got: {output:?}"
+        );
+        assert!(
+            output.contains("debug output"),
+            "debug path should stream model output, got: {output:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_generate_handle_memory_mode_off_succeeds_without_store_entries() {
+        let store = MockStore::new(); // query_entries empty — would fail if queried and result expected
+        let provider = MockTextGenerationModelProvider::new().with_chunks(vec!["ok"]);
+        let config = fixture::minimal_ollama_config();
+        let mut out = Vec::new();
+
+        let mut args = default_generate_args("silent prompt");
+        args.memory_mode = GenerateMemoryMode::Off;
+
+        let handler = GenerateCommandHandler::new(&store, &provider, &config);
+        handler
+            .handle(GenerateCommand::Execute(args), &mut out)
+            .await
+            .unwrap();
+
+        let output = String::from_utf8(out).unwrap();
+        assert!(output.contains("ok"), "got: {output:?}");
+    }
+
+    #[tokio::test]
+    async fn test_generate_handle_system_mode_append_succeeds() {
+        let store = MockStore::new().with_query(vec![]);
+        let provider = MockTextGenerationModelProvider::new();
+        let config = fixture::minimal_ollama_config();
+        let mut out = Vec::new();
+
+        let mut args = default_generate_args("prompt");
+        args.system = Some("be brief".to_string());
+        args.system_mode = GenerateSystemMode::Append;
+
+        let handler = GenerateCommandHandler::new(&store, &provider, &config);
+        handler
+            .handle(GenerateCommand::Execute(args), &mut out)
+            .await
+            .unwrap();
+
+        assert!(!out.is_empty(), "should produce output");
+    }
+
+    #[tokio::test]
+    async fn test_generate_handle_system_mode_replace_succeeds() {
+        let store = MockStore::new().with_query(vec![]);
+        let provider = MockTextGenerationModelProvider::new();
+        let config = fixture::minimal_ollama_config();
+        let mut out = Vec::new();
+
+        let mut args = default_generate_args("prompt");
+        args.system = Some("you are a pirate".to_string());
+        args.system_mode = GenerateSystemMode::Replace;
+
+        let handler = GenerateCommandHandler::new(&store, &provider, &config);
+        handler
+            .handle(GenerateCommand::Execute(args), &mut out)
+            .await
+            .unwrap();
+
+        assert!(!out.is_empty(), "should produce output");
     }
 }

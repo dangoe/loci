@@ -164,6 +164,9 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
+    use pretty_assertions::assert_eq;
+    use rstest::rstest;
+
     use loci_core::memory::{
         MemoryEntry as CoreMemoryEntry, MemoryInput as CoreMemoryInput,
         MemoryQueryResult as CoreMemoryQueryResult, MemoryTier as CoreMemoryTier,
@@ -424,6 +427,9 @@ mod tests {
             query_entries: vec![],
             update_entry: Some(updated),
             captured_update_input: captured.clone(),
+            captured_query: Arc::new(Mutex::new(None)),
+            delete_error: false,
+            prune_error: false,
         };
         let mut out = Vec::new();
 
@@ -514,5 +520,238 @@ mod tests {
 
     fn parse_json_output(buf: &[u8]) -> Value {
         serde_json::from_str(std::str::from_utf8(buf).unwrap().trim()).unwrap()
+    }
+
+    // ── MemoryTier conversions ────────────────────────────────────────────────
+
+    #[rstest]
+    #[case(MemoryTier::Ephemeral, CoreMemoryTier::Ephemeral)]
+    #[case(MemoryTier::Candidate, CoreMemoryTier::Candidate)]
+    #[case(MemoryTier::Stable, CoreMemoryTier::Stable)]
+    #[case(MemoryTier::Core, CoreMemoryTier::Core)]
+    fn test_memory_tier_all_variants_convert(
+        #[case] input: MemoryTier,
+        #[case] expected: CoreMemoryTier,
+    ) {
+        let result: CoreMemoryTier = input.into();
+        assert_eq!(result, expected);
+    }
+
+    // ── pairs_to_map edge cases ───────────────────────────────────────────────
+
+    #[test]
+    fn test_pairs_to_map_empty_returns_empty_map() {
+        let map = pairs_to_map(vec![]);
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn test_pairs_to_map_duplicate_key_last_value_wins() {
+        let pairs = vec![
+            ("k".to_string(), "first".to_string()),
+            ("k".to_string(), "last".to_string()),
+        ];
+        let map = pairs_to_map(pairs);
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get("k").unwrap(), "last");
+    }
+
+    // ── memory save ──────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_memory_save_with_metadata_outputs_metadata_in_json() {
+        let mut meta = HashMap::new();
+        meta.insert("source".to_string(), "wiki".to_string());
+        let entry = make_result_with_metadata("some fact", meta);
+        let store = MockStore::new().with_save(entry);
+        let mut out = Vec::new();
+
+        let handler = MemoryCommandHandler::new(&store);
+        handler
+            .handle(
+                MemoryCommand::Save {
+                    content: "some fact".to_string(),
+                    metadata: vec![("source".to_string(), "wiki".to_string())],
+                    tier: None,
+                },
+                &mut out,
+            )
+            .await
+            .unwrap();
+
+        let v = parse_json_output(&out);
+        assert_eq!(v["metadata"]["source"].as_str().unwrap(), "wiki");
+    }
+
+    // ── memory query ─────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_memory_query_empty_results_outputs_empty_array() {
+        let store = MockStore::new(); // query_entries defaults to vec![]
+        let mut out = Vec::new();
+
+        let handler = MemoryCommandHandler::new(&store);
+        handler
+            .handle(
+                MemoryCommand::Query {
+                    topic: "nothing".to_string(),
+                    max_results: 10,
+                    min_score: 0.0,
+                    filters: vec![],
+                },
+                &mut out,
+            )
+            .await
+            .unwrap();
+
+        let v = parse_json_output(&out);
+        assert_eq!(v.as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_memory_query_forwards_filters_to_store() {
+        let store = MockStore::new();
+        let mut out = Vec::new();
+
+        let handler = MemoryCommandHandler::new(&store);
+        handler
+            .handle(
+                MemoryCommand::Query {
+                    topic: "topic".to_string(),
+                    max_results: 5,
+                    min_score: 0.0,
+                    filters: vec![
+                        ("lang".to_string(), "rust".to_string()),
+                        ("env".to_string(), "prod".to_string()),
+                    ],
+                },
+                &mut out,
+            )
+            .await
+            .unwrap();
+
+        let captured = store.captured_query.lock().unwrap().take().unwrap();
+        assert_eq!(captured.filters.get("lang").unwrap(), "rust");
+        assert_eq!(captured.filters.get("env").unwrap(), "prod");
+    }
+
+    // ── memory update ────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_memory_update_replaces_metadata_when_provided() {
+        let id = Uuid::new_v4();
+        let original_meta =
+            HashMap::from([("old_key".to_string(), "old_val".to_string())]);
+        let existing = make_result_with_metadata("original", original_meta);
+        let updated = make_result_with_metadata(
+            "original",
+            HashMap::from([("new_key".to_string(), "new_val".to_string())]),
+        );
+        let captured = Arc::new(Mutex::new(None::<CoreMemoryInput>));
+        let store = MockStore {
+            save_entry: None,
+            get_entry: Some(existing),
+            query_entries: vec![],
+            update_entry: Some(updated),
+            captured_update_input: captured.clone(),
+            captured_query: Arc::new(Mutex::new(None)),
+            delete_error: false,
+            prune_error: false,
+        };
+        let mut out = Vec::new();
+
+        let handler = MemoryCommandHandler::new(&store);
+        handler
+            .handle(
+                MemoryCommand::Update {
+                    id,
+                    content: None,
+                    metadata: vec![("new_key".to_string(), "new_val".to_string())],
+                    tier: None,
+                },
+                &mut out,
+            )
+            .await
+            .unwrap();
+
+        let input = captured.lock().unwrap().take().unwrap();
+        assert!(
+            !input.metadata.contains_key("old_key"),
+            "old metadata should be replaced when --meta is provided"
+        );
+        assert_eq!(input.metadata.get("new_key").unwrap(), "new_val");
+    }
+
+    #[tokio::test]
+    async fn test_memory_update_get_not_found_propagates_error() {
+        let store = MockStore::new(); // get_entry = None → NotFound
+        let mut out = Vec::new();
+
+        let handler = MemoryCommandHandler::new(&store);
+        let result = handler
+            .handle(
+                MemoryCommand::Update {
+                    id: Uuid::new_v4(),
+                    content: Some("new".to_string()),
+                    metadata: vec![],
+                    tier: None,
+                },
+                &mut out,
+            )
+            .await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_memory_update_store_write_fails_propagates_error() {
+        let existing = make_result("existing", CoreMemoryTier::Candidate);
+        let store = MockStore::new().with_get(existing); // update_entry = None → NotFound
+        let mut out = Vec::new();
+
+        let handler = MemoryCommandHandler::new(&store);
+        let result = handler
+            .handle(
+                MemoryCommand::Update {
+                    id: Uuid::new_v4(),
+                    content: Some("updated".to_string()),
+                    metadata: vec![],
+                    tier: None,
+                },
+                &mut out,
+            )
+            .await;
+
+        assert!(result.is_err());
+    }
+
+    // ── memory delete ────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_memory_delete_propagates_store_error() {
+        let store = MockStore::new().with_delete_error();
+        let mut out = Vec::new();
+
+        let handler = MemoryCommandHandler::new(&store);
+        let result = handler
+            .handle(MemoryCommand::Delete { id: Uuid::new_v4() }, &mut out)
+            .await;
+
+        assert!(result.is_err());
+    }
+
+    // ── memory prune-expired ─────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_memory_prune_expired_propagates_store_error() {
+        let store = MockStore::new().with_prune_error();
+        let mut out = Vec::new();
+
+        let handler = MemoryCommandHandler::new(&store);
+        let result = handler
+            .handle(MemoryCommand::PruneExpired, &mut out)
+            .await;
+
+        assert!(result.is_err());
     }
 }

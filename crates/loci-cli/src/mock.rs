@@ -1,10 +1,17 @@
 use std::sync::{Arc, Mutex};
 
+use futures::stream;
 use loci_core::{
     error::MemoryStoreError as CoreMemoryStoreError,
     memory::{
         MemoryInput as CoreMemoryInput, MemoryQuery as CoreMemoryQuery,
         MemoryQueryResult as CoreMemoryQueryResult, MemoryTier as CoreMemoryTier,
+    },
+    model_provider::{
+        common::ModelProviderResult,
+        text_generation::{
+            TextGenerationModelProvider, TextGenerationRequest, TextGenerationResponse,
+        },
     },
 };
 use uuid::Uuid;
@@ -20,6 +27,12 @@ pub struct MockStore {
     pub update_entry: Option<CoreMemoryQueryResult>,
     /// Captures the last `MemoryInput` passed to `update()` for assertion.
     pub captured_update_input: Arc<Mutex<Option<CoreMemoryInput>>>,
+    /// Captures the last `MemoryQuery` passed to `query()` for assertion.
+    pub captured_query: Arc<Mutex<Option<CoreMemoryQuery>>>,
+    /// When `true`, `delete()` returns a `Connection` error instead of `Ok(())`.
+    pub delete_error: bool,
+    /// When `true`, `prune_expired()` returns a `Connection` error instead of `Ok(())`.
+    pub prune_error: bool,
 }
 
 impl MockStore {
@@ -30,6 +43,9 @@ impl MockStore {
             query_entries: vec![],
             update_entry: None,
             captured_update_input: Arc::new(Mutex::new(None)),
+            captured_query: Arc::new(Mutex::new(None)),
+            delete_error: false,
+            prune_error: false,
         }
     }
 
@@ -50,6 +66,18 @@ impl MockStore {
 
     pub fn with_update(mut self, entry: CoreMemoryQueryResult) -> Self {
         self.update_entry = Some(entry);
+        self
+    }
+
+    /// Configures `delete()` to return a `Connection` error.
+    pub fn with_delete_error(mut self) -> Self {
+        self.delete_error = true;
+        self
+    }
+
+    /// Configures `prune_expired()` to return a `Connection` error.
+    pub fn with_prune_error(mut self) -> Self {
+        self.prune_error = true;
         self
     }
 }
@@ -79,9 +107,10 @@ impl loci_core::store::MemoryStore for MockStore {
 
     fn query(
         &self,
-        _query: CoreMemoryQuery,
+        query: CoreMemoryQuery,
     ) -> impl Future<Output = Result<Vec<CoreMemoryQueryResult>, CoreMemoryStoreError>> + Send + '_
     {
+        *self.captured_query.lock().unwrap() = Some(query);
         let entries = self.query_entries.clone();
         async move { Ok(entries) }
     }
@@ -111,10 +140,83 @@ impl loci_core::store::MemoryStore for MockStore {
         &self,
         _id: Uuid,
     ) -> impl Future<Output = Result<(), CoreMemoryStoreError>> + Send + '_ {
-        async move { Ok(()) }
+        let err = self.delete_error;
+        async move {
+            if err {
+                Err(CoreMemoryStoreError::Connection("mock: delete error".into()))
+            } else {
+                Ok(())
+            }
+        }
     }
 
     fn prune_expired(&self) -> impl Future<Output = Result<(), CoreMemoryStoreError>> + Send + '_ {
-        async move { Ok(()) }
+        let err = self.prune_error;
+        async move {
+            if err {
+                Err(CoreMemoryStoreError::Connection("mock: prune error".into()))
+            } else {
+                Ok(())
+            }
+        }
+    }
+}
+
+/// A configurable mock text-generation provider for unit tests.
+///
+/// Streams back preset text chunks. The last chunk is marked `done: true`;
+/// all preceding chunks have `done: false`. Defaults to a single `"ok"` chunk.
+pub struct MockTextGenerationModelProvider {
+    pub chunks: Vec<String>,
+}
+
+impl MockTextGenerationModelProvider {
+    pub fn new() -> Self {
+        Self {
+            chunks: vec!["ok".to_string()],
+        }
+    }
+
+    pub fn with_chunks(mut self, chunks: Vec<impl Into<String>>) -> Self {
+        self.chunks = chunks.into_iter().map(Into::into).collect();
+        self
+    }
+}
+
+impl TextGenerationModelProvider for MockTextGenerationModelProvider {
+    fn generate(
+        &self,
+        _req: TextGenerationRequest,
+    ) -> impl Future<Output = ModelProviderResult<TextGenerationResponse>> + Send + '_ {
+        let text = self.chunks.first().cloned().unwrap_or_default();
+        async move {
+            Ok(TextGenerationResponse {
+                text,
+                model: "mock".to_string(),
+                usage: None,
+                done: true,
+            })
+        }
+    }
+
+    fn generate_stream(
+        &self,
+        _req: TextGenerationRequest,
+    ) -> impl futures::Stream<Item = ModelProviderResult<TextGenerationResponse>> + Send + '_ {
+        let n = self.chunks.len();
+        let responses: Vec<ModelProviderResult<TextGenerationResponse>> = self
+            .chunks
+            .iter()
+            .enumerate()
+            .map(|(i, text)| {
+                Ok(TextGenerationResponse {
+                    text: text.clone(),
+                    model: "mock".to_string(),
+                    usage: None,
+                    done: i + 1 == n,
+                })
+            })
+            .collect();
+        stream::iter(responses)
     }
 }
