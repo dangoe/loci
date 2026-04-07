@@ -1,6 +1,7 @@
 pub mod config;
 pub mod generate;
 pub mod memory;
+mod parse;
 
 use clap::Subcommand;
 

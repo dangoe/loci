@@ -1,5 +1,7 @@
 use clap::{Args, arg};
 
+use crate::commands::parse::parse_key_value;
+
 /// Domain-level dispatch type for the `generate` command.
 ///
 /// This is not a clap type — the CLI still parses directly into [`GenerateArgs`].
@@ -37,6 +39,10 @@ pub struct GenerateArgs {
     /// Memory mode for generation, which controls whether and how memory is retrieved and injected into the prompt.
     #[arg(long, value_enum, default_value_t = GenerateMemoryMode::Auto)]
     pub memory_mode: GenerateMemoryMode,
+
+    /// Memory meta data filter criteria
+    #[arg(long = "filter", value_parser = parse_key_value)]
+    pub filters: Vec<(String, String)>,
 
     /// Print debug info about the contextualization process, such as retrieved memory entries.
     #[arg(long)]
