@@ -29,7 +29,7 @@ endpoint = "http://localhost:11434"
 ########################################
 [models.text.default]
 provider = "ollama"
-model    = "qwen3:0.6b"
+model    = "qwen3.5:0.8b"
 
 # [models.text.default.tuning]
 # temperature     = 0.2
@@ -40,8 +40,8 @@ model    = "qwen3:0.6b"
 # keep_alive_secs = 300
 # stop            = ["<END>"]
 
-# [models.text.default.tuning.thinking]
-# mode       = "disabled"   # "enabled" | "effort" | "budgeted"
+[models.text.default.tuning.thinking]
+mode         = "disabled"   # "enabled" | "effort" | "budgeted"
 # level      = "low"        # for mode = "effort"
 # max_tokens = 256          # for mode = "budgeted"
 
@@ -58,7 +58,7 @@ dimension = 768
 ########################################
 [memory.backends.qdrant]
 kind       = "qdrant"
-url        = "http://localhost:6333"
+url        = "http://localhost:6334"
 collection = "memory_entries"
 # api_key = "env:QDRANT_API_KEY"
 
