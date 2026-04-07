@@ -17,9 +17,9 @@ Instead of every conversation starting from a blank slate, loci:
 
 1. **Retrieves relevant memory entries** from a semantic vector store and injects them into the
    prompt as context before forwarding to the LLM.
-2. **Streams model output** back to the caller via the `Contextualizer`.
+2. **Streams model output** back to the caller.
 
-The system is stateless in process — all memory state lives in Qdrant.
+The system is stateless in process — all memory state lives in the configured memory store backend.
 
 ```
 Client / REPL
@@ -29,7 +29,7 @@ Client / REPL
 │           loci Contextualizer        │
 │  1. query MemoryStore (semantic)     │
 │  2. inject [MEMORY CONTEXT] block    │
-│  3. forward enriched prompt ───────► │  Target LLM
+│  3. forward enriched prompt ───────► │  Model Provider
 │  ◄────────────────────────────────── │  (Ollama / any model provider)
 │  4. stream response                  │
 └──────────────────────────────────────┘
@@ -88,7 +88,7 @@ against a local [Ollama](https://ollama.com/) instance.
 Default models in the generated config:
 
 - Embedding: `qwen3-embedding:0.6b` (768 dimensions)
-- Text generation: `qwen3:0.6b`
+- Text generation: `qwen3.5:0.8b`
 
 ---
 
@@ -110,7 +110,7 @@ This starts:
 
 - **Qdrant** on `http://localhost:6333` (HTTP) / `http://localhost:6334` (gRPC)
 
-Note: Ollama is not started by the Docker compose setup in this repository. Due to GPU usage constraints Ollama must be installed and run natively on your machine (see "Ollama (native)" below).
+Note: Ollama is not started by the Docker compose setup in this repository. Due to GPU usage constraints Ollama is meant be installed and run natively on your machine (see "Ollama (native)" below).
 
 ### Ollama (native)
 
@@ -118,7 +118,7 @@ Ollama must be installed and started natively (it is not started by `docker comp
 
 ```bash
 ollama pull qwen3-embedding:0.6b
-ollama pull qwen3:0.6b
+ollama pull qwen3.5:0.8b
 ```
 
 ### Configure
@@ -155,7 +155,7 @@ cargo run --bin loci -- <subcommand>
 | Flag               | Env var       | Default                      | Description              |
 | ------------------ | ------------- | ---------------------------- | ------------------------ |
 | `--config` / `-c`  | `LOCI_CONFIG` | `~/.config/loci/config.toml` | Path to TOML config file |
-| `--verbose` / `-v` | —             | off                          | Enable debug logging     |
+| `--verbose` / `-v` |               | off                          | Enable debug logging     |
 
 ### `loci memory save`
 
@@ -167,11 +167,11 @@ loci memory save "Deployment target is Kubernetes" --meta env=production --meta 
 loci memory save "This is a curated fact" --tier core --meta source=manual
 ```
 
-| Argument / Flag    | Description                                |
-| ------------------ | ------------------------------------------ | ------ | -------------------------------- |
-| `<content>`        | Memory text (required positional argument) |
-| `--meta KEY=VALUE` | Metadata key-value pair (repeatable)       |
-| `--tier <candidate | stable                                     | core>` | Optional persisted tier override |
+| Argument / Flag                        | Description                                |
+| -------------------------------------- | ------------------------------------------ |
+| `<content>`                            | Memory text (required positional argument) |
+| `--meta KEY=VALUE`                     | Metadata key-value pair (repeatable)       |
+| `--tier <candidate \| stable \| core>` | Optional persisted tier override           |
 
 ### `loci memory query`
 
@@ -208,12 +208,12 @@ loci memory update <uuid> --tier core
 loci memory update <uuid> --meta source=manual
 ```
 
-| Argument / Flag    | Description                                       |
-| ------------------ | ------------------------------------------------- | ------ | ---------------------- |
-| `<uuid>`           | Memory entry ID (required)                        |
-| `[content]`        | New content (optional positional argument)        |
-| `--meta KEY=VALUE` | Replace metadata with provided pairs (repeatable) |
-| `--tier <candidate | stable                                            | core>` | Optional tier override |
+| Argument / Flag                        | Description                                       |
+| -------------------------------------- | ------------------------------------------------- |
+| `<uuid>`                               | Memory entry ID (required)                        |
+| `[content]`                            | New content (optional positional argument)        |
+| `--meta KEY=VALUE`                     | Replace metadata with provided pairs (repeatable) |
+| `--tier <candidate \| stable \| core>` | Optional tier override                            |
 
 ### `loci memory delete`
 
@@ -228,7 +228,7 @@ loci memory delete <uuid>
 Remove **all** expired memory entries from the collection.
 
 ```bash
-loci memory clear
+loci memory prune-expired
 ```
 
 ### `loci gen`
@@ -245,7 +245,7 @@ loci gen "Summarise our deployment setup" --max-memory-entries 8 --min-score 0.5
 | `<prompt>`                 | _(required)_ | Prompt text (positional)                          |
 | `--max-memory-entries <n>` | `5`          | Max memory entries to inject as context           |
 | `--min-score <f64>`        | `0.5`        | Minimum weighted score for context memory entries |
-| `--memory-mode             | 'auto'       | Memory query mode (`auto` and `off`)              |
+| `--memory-mode`            | 'auto'       | Memory query mode (`auto` and `off`)              |
 | `--debug-flags <FLAGS>`    | _(none)_     | Comma-separated debug flags (e.g. `memory`)       |
 
 ### `loci config init`
