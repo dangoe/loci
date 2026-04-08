@@ -14,6 +14,7 @@ use loci_core::memory::{
 use loci_core::store::MemoryStore;
 use loci_memory_store_qdrant::config::QdrantConfig;
 use loci_memory_store_qdrant::store::QdrantMemoryStore;
+use pretty_assertions::assert_eq;
 use qdrant_client::qdrant::{PointsIdsList, SetPayloadPointsBuilder};
 use qdrant_client::{Payload, Qdrant};
 use testcontainers::core::wait::HttpWaitStrategy;
@@ -164,6 +165,7 @@ async fn test_query_ranks_results_by_similarity() {
 
     assert_eq!(results.len(), 2);
     assert_eq!(results[0].memory_entry.content, "x-axis");
+    assert_eq!(results[1].memory_entry.content, "y-axis");
     assert!(results[0].score.value() > results[1].score.value());
 }
 
@@ -280,7 +282,7 @@ async fn test_query_respects_min_score() {
 #[cfg_attr(not(feature = "integration"), ignore)]
 async fn test_query_respects_expiration() {
     let embedder = FakeTextEmbedder::new()
-        .with("expired", unit_vec(0))
+        .with("short-lived", unit_vec(0))
         .with("core", unit_vec(0))
         .with("stable", unit_vec(0))
         .with("candidate", unit_vec(0))
@@ -302,14 +304,23 @@ async fn test_query_respects_expiration() {
         );
     }
 
-    prepare_expired_entry(&container, &store).await;
+    let expired = prepare_expired_entry(&container, &store).await;
 
     let results = store.query(query("query", 10)).await.unwrap();
 
     assert_eq!(results.len(), valid_entries.len());
-    assert_eq!(
-        extract_ids(results.as_slice()),
-        extract_ids(valid_entries.as_slice())
+
+    let mut result_ids = extract_ids(results.as_slice());
+    let mut valid_ids = extract_ids(valid_entries.as_slice());
+    result_ids.sort();
+    valid_ids.sort();
+    assert_eq!(result_ids, valid_ids);
+
+    assert!(
+        results
+            .iter()
+            .all(|r| r.memory_entry.id != expired.memory_entry.id),
+        "expired entry must not appear in query results"
     );
 }
 
@@ -318,18 +329,28 @@ async fn test_query_respects_expiration() {
 async fn test_deleted_memory_is_not_returned_by_query() {
     let embedder = FakeTextEmbedder::new()
         .with("to be deleted", unit_vec(0))
+        .with("survivor", unit_vec(0))
         .with("query", unit_vec(0));
     let (store, _container) = start_store(embedder, None).await;
 
-    let entry = store.save(input("to be deleted")).await.unwrap();
-    store.delete(entry.memory_entry.id).await.unwrap();
+    let deleted = store.save(input("to be deleted")).await.unwrap();
+    let survivor = store.save(input("survivor")).await.unwrap();
+    store.delete(deleted.memory_entry.id).await.unwrap();
 
     let results = store.query(query("query", 10)).await.unwrap();
 
+    // The surviving entry must still be returned so the assertion below is not vacuously true.
     assert!(
         results
             .iter()
-            .all(|e| e.memory_entry.id != entry.memory_entry.id)
+            .any(|e| e.memory_entry.id == survivor.memory_entry.id),
+        "surviving entry must appear in results"
+    );
+    assert!(
+        results
+            .iter()
+            .all(|e| e.memory_entry.id != deleted.memory_entry.id),
+        "deleted entry must not appear in results"
     );
 }
 
@@ -351,7 +372,7 @@ async fn test_prune_expired_memory_entries() {
         .await
         .unwrap();
 
-    prepare_expired_entry(&container, &store).await;
+    let expired = prepare_expired_entry(&container, &store).await;
 
     store.prune_expired().await.unwrap();
 
@@ -359,6 +380,12 @@ async fn test_prune_expired_memory_entries() {
 
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].memory_entry.id, long_lived.memory_entry.id);
+    assert!(
+        results
+            .iter()
+            .all(|r| r.memory_entry.id != expired.memory_entry.id),
+        "expired entry must have been pruned"
+    );
 }
 
 #[tokio::test]
@@ -374,6 +401,7 @@ async fn test_deduplication_reuses_id_when_score_meets_threshold() {
     let duplicate = store.save(input("near-duplicate")).await.unwrap();
 
     assert_eq!(duplicate.memory_entry.id, original.memory_entry.id);
+    assert_eq!(duplicate.memory_entry.seen_count, 2);
 }
 
 #[tokio::test]
@@ -407,6 +435,10 @@ async fn test_update_changes_content_and_returns_updated_entry() {
 
     assert_eq!(updated.memory_entry.id, saved.memory_entry.id);
     assert_eq!(updated.memory_entry.content, "updated content");
+
+    // Verify the change is persisted in the store.
+    let fetched = store.get(saved.memory_entry.id).await.unwrap();
+    assert_eq!(fetched.memory_entry.content, "updated content");
 }
 
 #[tokio::test]
@@ -450,7 +482,10 @@ async fn test_deduplication_does_not_collapse_different_metadata() {
 
 #[tokio::test]
 #[cfg_attr(not(feature = "integration"), ignore)]
-async fn test_query_modes_do_not_increment_seen_count() {
+// NOTE: MemoryQueryMode::Use is documented as updating usage counters, but that
+// behaviour is not yet implemented — both Lookup and Use currently behave identically.
+// This test documents the current (intentional) behaviour.
+async fn test_neither_query_mode_increments_seen_count() {
     let embedder = FakeTextEmbedder::new()
         .with("remember this", unit_vec(0))
         .with("query", unit_vec(0));
@@ -501,6 +536,10 @@ async fn test_candidate_promotes_when_same_fact_arrives_from_different_source() 
 
     assert_eq!(second.memory_entry.id, first.memory_entry.id);
     assert_eq!(second.memory_entry.tier, MemoryTier::Stable);
+
+    // Verify the promotion is persisted in the store.
+    let fetched = store.get(first.memory_entry.id).await.unwrap();
+    assert_eq!(fetched.memory_entry.tier, MemoryTier::Stable);
 }
 
 #[tokio::test]
@@ -517,12 +556,17 @@ async fn test_set_tier_promotes_to_core() {
 
     assert_eq!(updated.memory_entry.tier, MemoryTier::Core);
     assert_eq!(updated.memory_entry.expires_at, None);
+
+    // Verify the tier change is persisted in the store.
+    let fetched = store.get(saved.memory_entry.id).await.unwrap();
+    assert_eq!(fetched.memory_entry.tier, MemoryTier::Core);
+    assert_eq!(fetched.memory_entry.expires_at, None);
 }
 
 async fn prepare_expired_entry(
     container: &ContainerAsync<GenericImage>,
     store: &QdrantMemoryStore<FakeTextEmbedder>,
-) {
+) -> MemoryQueryResult {
     let short_lived = store
         .save(MemoryInput {
             content: "short-lived".to_string(),
@@ -549,8 +593,98 @@ async fn prepare_expired_entry(
         )
         .await
         .unwrap();
+
+    short_lived
 }
 
 fn extract_ids(results: &[MemoryQueryResult]) -> Vec<Uuid> {
     results.iter().map(|e| e.memory_entry.id).collect()
+}
+
+#[tokio::test]
+#[cfg_attr(not(feature = "integration"), ignore)]
+async fn test_get_returns_saved_entry() {
+    let embedder = FakeTextEmbedder::new().with("fetch me", unit_vec(0));
+    let (store, _container) = start_store(embedder, None).await;
+
+    let saved = store.save(input("fetch me")).await.unwrap();
+    let fetched = store.get(saved.memory_entry.id).await.unwrap();
+
+    assert_eq!(fetched.memory_entry.id, saved.memory_entry.id);
+    assert_eq!(fetched.memory_entry.content, "fetch me");
+    assert_eq!(fetched.memory_entry.tier, MemoryTier::Candidate);
+    assert_eq!(fetched.memory_entry.seen_count, 1);
+}
+
+#[tokio::test]
+#[cfg_attr(not(feature = "integration"), ignore)]
+async fn test_get_returns_not_found_for_unknown_id() {
+    let embedder = FakeTextEmbedder::new();
+    let (store, _container) = start_store(embedder, None).await;
+
+    let unknown_id = Uuid::new_v4();
+    let result = store.get(unknown_id).await;
+
+    assert!(matches!(result, Err(MemoryStoreError::NotFound(id)) if id == unknown_id));
+}
+
+#[tokio::test]
+#[cfg_attr(not(feature = "integration"), ignore)]
+async fn test_save_ephemeral_returns_error() {
+    let embedder = FakeTextEmbedder::new();
+    let (store, _container) = start_store(embedder, None).await;
+
+    let result = store
+        .save(MemoryInput {
+            content: "ephemeral".to_string(),
+            metadata: HashMap::new(),
+            tier: Some(MemoryTier::Ephemeral),
+        })
+        .await;
+
+    assert!(
+        matches!(result, Err(MemoryStoreError::Query(_))),
+        "saving an ephemeral entry must return a Query error"
+    );
+}
+
+#[tokio::test]
+#[cfg_attr(not(feature = "integration"), ignore)]
+async fn test_update_to_ephemeral_returns_error() {
+    let embedder = FakeTextEmbedder::new().with("content", unit_vec(0));
+    let (store, _container) = start_store(embedder, None).await;
+
+    let saved = store.save(input("content")).await.unwrap();
+    let result = store
+        .update(
+            saved.memory_entry.id,
+            MemoryInput {
+                content: "content".to_string(),
+                metadata: HashMap::new(),
+                tier: Some(MemoryTier::Ephemeral),
+            },
+        )
+        .await;
+
+    assert!(
+        matches!(result, Err(MemoryStoreError::Query(_))),
+        "updating to ephemeral tier must return a Query error"
+    );
+}
+
+#[tokio::test]
+#[cfg_attr(not(feature = "integration"), ignore)]
+async fn test_set_tier_to_ephemeral_returns_error() {
+    let embedder = FakeTextEmbedder::new().with("content", unit_vec(0));
+    let (store, _container) = start_store(embedder, None).await;
+
+    let saved = store.save(input("content")).await.unwrap();
+    let result = store
+        .set_tier(saved.memory_entry.id, MemoryTier::Ephemeral)
+        .await;
+
+    assert!(
+        matches!(result, Err(MemoryStoreError::Query(_))),
+        "setting tier to ephemeral must return a Query error"
+    );
 }
