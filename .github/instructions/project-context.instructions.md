@@ -30,9 +30,7 @@ A Rust workspace for memory-augmented LLM prompts.
 
 ```bash
 cargo check                                                # type-check workspace
-cargo test                                                 # run workspace tests
-cargo test -p loci-core <name>                            # run one core test by name
-cargo test -p loci-memory-store-qdrant --features integration -- --test-threads=1
+cargo test-all                                             # run all workspace tests
 cargo clippy                                               # lint
 cargo fmt --check                                          # formatting check
 ```
