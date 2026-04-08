@@ -8,7 +8,9 @@ use std::future::Future;
 use chrono::{Duration, Utc};
 use loci_core::embedding::{Embedding, TextEmbedder};
 use loci_core::error::{EmbeddingError, MemoryStoreError};
-use loci_core::memory::{MemoryInput, MemoryQuery, MemoryQueryMode, MemoryTier, Score};
+use loci_core::memory::{
+    MemoryInput, MemoryQuery, MemoryQueryMode, MemoryQueryResult, MemoryTier, Score,
+};
 use loci_core::store::MemoryStore;
 use loci_memory_store_qdrant::config::QdrantConfig;
 use loci_memory_store_qdrant::store::QdrantMemoryStore;
@@ -276,6 +278,43 @@ async fn test_query_respects_min_score() {
 
 #[tokio::test]
 #[cfg_attr(not(feature = "integration"), ignore)]
+async fn test_query_respects_expiration() {
+    let embedder = FakeTextEmbedder::new()
+        .with("expired", unit_vec(0))
+        .with("core", unit_vec(0))
+        .with("stable", unit_vec(0))
+        .with("candidate", unit_vec(0))
+        .with("query", unit_vec(0));
+    let (store, container) = start_store(embedder, None).await;
+
+    let mut valid_entries: Vec<MemoryQueryResult> = Vec::new();
+
+    for tier in vec![MemoryTier::Core, MemoryTier::Stable, MemoryTier::Candidate] {
+        valid_entries.push(
+            store
+                .save(MemoryInput {
+                    content: tier.as_str().to_string(),
+                    metadata: HashMap::new(),
+                    tier: Some(tier),
+                })
+                .await
+                .unwrap(),
+        );
+    }
+
+    prepare_expired_entry(&container, &store).await;
+
+    let results = store.query(query("query", 10)).await.unwrap();
+
+    assert_eq!(results.len(), valid_entries.len());
+    assert_eq!(
+        extract_ids(results.as_slice()),
+        extract_ids(valid_entries.as_slice())
+    );
+}
+
+#[tokio::test]
+#[cfg_attr(not(feature = "integration"), ignore)]
 async fn test_deleted_memory_is_not_returned_by_query() {
     let embedder = FakeTextEmbedder::new()
         .with("to be deleted", unit_vec(0))
@@ -299,18 +338,9 @@ async fn test_deleted_memory_is_not_returned_by_query() {
 async fn test_prune_expired_memory_entries() {
     let embedder = FakeTextEmbedder::new()
         .with("short-lived", unit_vec(0))
-        .with("long-lived", unit_vec(1))
+        .with("long-lived", unit_vec(0))
         .with("query", unit_vec(0));
-    let (store, _container) = start_store(embedder, None).await;
-
-    let short_lived = store
-        .save(MemoryInput {
-            content: "short-lived".to_string(),
-            metadata: HashMap::new(),
-            tier: Some(MemoryTier::Candidate),
-        })
-        .await
-        .unwrap();
+    let (store, container) = start_store(embedder, None).await;
 
     let long_lived = store
         .save(MemoryInput {
@@ -321,23 +351,7 @@ async fn test_prune_expired_memory_entries() {
         .await
         .unwrap();
 
-    let host = _container.get_host().await.unwrap();
-    let port = _container.get_host_port_ipv4(QDRANT_PORT).await.unwrap();
-    let url = format!("http://{host}:{port}");
-    let client = Qdrant::from_url(&url).build().unwrap();
-
-    let mut expired_payload = Payload::new();
-    expired_payload.insert("expires_at", (Utc::now() - Duration::days(1)).to_rfc3339());
-    client
-        .set_payload(
-            SetPayloadPointsBuilder::new("memory_entries", expired_payload)
-                .points_selector(PointsIdsList {
-                    ids: vec![short_lived.memory_entry.id.to_string().into()],
-                })
-                .wait(true),
-        )
-        .await
-        .unwrap();
+    prepare_expired_entry(&container, &store).await;
 
     store.prune_expired().await.unwrap();
 
@@ -503,4 +517,40 @@ async fn test_set_tier_promotes_to_core() {
 
     assert_eq!(updated.memory_entry.tier, MemoryTier::Core);
     assert_eq!(updated.memory_entry.expires_at, None);
+}
+
+async fn prepare_expired_entry(
+    container: &ContainerAsync<GenericImage>,
+    store: &QdrantMemoryStore<FakeTextEmbedder>,
+) {
+    let short_lived = store
+        .save(MemoryInput {
+            content: "short-lived".to_string(),
+            metadata: HashMap::new(),
+            tier: Some(MemoryTier::Candidate),
+        })
+        .await
+        .unwrap();
+
+    let host = container.get_host().await.unwrap();
+    let port = container.get_host_port_ipv4(QDRANT_PORT).await.unwrap();
+    let url = format!("http://{host}:{port}");
+    let client = Qdrant::from_url(&url).build().unwrap();
+
+    let mut expired_payload = Payload::new();
+    expired_payload.insert("expires_at", (Utc::now() - Duration::days(1)).timestamp());
+    client
+        .set_payload(
+            SetPayloadPointsBuilder::new("memory_entries", expired_payload)
+                .points_selector(PointsIdsList {
+                    ids: vec![short_lived.memory_entry.id.to_string().into()],
+                })
+                .wait(true),
+        )
+        .await
+        .unwrap();
+}
+
+fn extract_ids(results: &[MemoryQueryResult]) -> Vec<Uuid> {
+    results.iter().map(|e| e.memory_entry.id).collect()
 }

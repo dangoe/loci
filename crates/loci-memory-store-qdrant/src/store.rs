@@ -13,6 +13,7 @@ use loci_core::memory::{
 use loci_core::store::MemoryStore;
 use qdrant_client::Payload;
 use qdrant_client::Qdrant;
+use qdrant_client::qdrant::{Condition, Filter, Range};
 use qdrant_client::qdrant::{
     CreateCollectionBuilder, DeletePointsBuilder, Distance, GetCollectionInfoResponse,
     GetPointsBuilder, PointId, PointStruct, PointsIdsList, ScrollPointsBuilder,
@@ -117,19 +118,19 @@ impl<E: TextEmbedder> QdrantMemoryStore<E> {
         memory: &MemoryEntry,
         embedding: &Embedding,
     ) -> Result<(), MemoryStoreError> {
-        let metadata_json = serde_json::to_string(&memory.metadata)
+        let metadata_value = serde_json::to_value(&memory.metadata)
             .map_err(|e| MemoryStoreError::Query(e.to_string()))?;
 
         let mut payload = Payload::new();
         payload.insert(FIELD_CONTENT, memory.content.clone());
-        payload.insert(FIELD_METADATA, metadata_json);
-        payload.insert(FIELD_CREATED_AT, memory.created_at.to_rfc3339());
+        payload.insert(FIELD_METADATA, metadata_value);
+        payload.insert(FIELD_CREATED_AT, memory.created_at.timestamp());
         payload.insert(FIELD_TIER, memory.tier.as_str());
         payload.insert(FIELD_SEEN_COUNT, i64::from(memory.seen_count));
-        payload.insert(FIELD_FIRST_SEEN, memory.first_seen.to_rfc3339());
-        payload.insert(FIELD_LAST_SEEN, memory.last_seen.to_rfc3339());
+        payload.insert(FIELD_FIRST_SEEN, memory.first_seen.timestamp());
+        payload.insert(FIELD_LAST_SEEN, memory.last_seen.timestamp());
         if let Some(expires_at) = memory.expires_at {
-            payload.insert(FIELD_EXPIRES_AT, expires_at.to_rfc3339());
+            payload.insert(FIELD_EXPIRES_AT, expires_at.timestamp());
         }
 
         let point = PointStruct::new(
@@ -178,36 +179,45 @@ impl<E: TextEmbedder> QdrantMemoryStore<E> {
         filters: &HashMap<String, String>,
     ) -> Result<Vec<MemoryQueryResult>, MemoryStoreError> {
         let vector: Vec<f32> = embedding.values().to_vec();
+        let now = Utc::now();
+
+        // Workaround until rescoring is supported
+        let fetch_limit = (max_results * 5) as u64;
+
+        let mut conditions: Vec<Condition> = filters
+            .iter()
+            .map(|(k, v)| Condition::matches(format!("{}.{}", FIELD_METADATA, k), v.to_string()))
+            .collect();
+        conditions.push(
+            Filter::should(vec![
+                Condition::is_null(FIELD_EXPIRES_AT),
+                Condition::is_empty(FIELD_EXPIRES_AT),
+                Condition::range(
+                    FIELD_EXPIRES_AT,
+                    Range {
+                        gt: Some(now.timestamp() as f64),
+                        ..Default::default()
+                    },
+                ),
+            ])
+            .into(),
+        );
+
+        let request = SearchPointsBuilder::new(&self.config.collection_name, vector, fetch_limit)
+            .filter(Filter::must(conditions))
+            .with_payload(true);
 
         let response = self
             .client
-            .search_points(
-                SearchPointsBuilder::new(&self.config.collection_name, vector, max_results as u64)
-                    .with_payload(true),
-            )
+            .search_points(request)
             .await
             .map_err(|e| MemoryStoreError::Query(e.to_string()))?;
 
-        let now = Utc::now();
         let mut entries = Vec::new();
         for point in response.result {
             let candidate = Self::parse_scored_point(&point)?;
-            if is_expired(candidate.memory_entry.expires_at, now) {
-                self.delete_expired(candidate.memory_entry.id).await;
-                continue;
-            }
-            if !filters.iter().all(|(k, v)| {
-                candidate
-                    .memory_entry
-                    .metadata
-                    .get(k)
-                    .map(|s| s == v)
-                    .unwrap_or(false)
-            }) {
-                continue;
-            }
-
             let weighted = blend_score(candidate.similarity, candidate.memory_entry.tier)?;
+
             if weighted.value() < min_score {
                 continue;
             }
@@ -220,7 +230,6 @@ impl<E: TextEmbedder> QdrantMemoryStore<E> {
 
         entries.sort_by(|a, b| b.score.value().total_cmp(&a.score.value()));
         entries.truncate(max_results);
-
         Ok(entries)
     }
 
@@ -521,7 +530,8 @@ impl<E: TextEmbedder> MemoryStore for QdrantMemoryStore<E> {
 
             for point in response.result {
                 let id = extract_uuid_from_point_id(point.id.as_ref())?;
-                let expires_at = parse_optional_datetime(&point.payload, FIELD_EXPIRES_AT)?;
+                let expires_at =
+                    parse_optional_value(&point.payload, FIELD_EXPIRES_AT, parse_timestamp)?;
                 if is_expired(expires_at, now) {
                     expired_ids.push(PointId::from(id.to_string()));
                 }
@@ -578,27 +588,45 @@ fn extract_uuid_from_point_id(id: Option<&PointId>) -> Result<Uuid, MemoryStoreE
     }
 }
 
-fn extract_created_at_from_payload(
-    payload: &HashMap<String, qdrant_client::qdrant::Value>,
-) -> Result<DateTime<Utc>, MemoryStoreError> {
-    let raw = payload
-        .get(FIELD_CREATED_AT)
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| MemoryStoreError::Query("missing created_at in payload".to_string()))?;
-    DateTime::parse_from_rfc3339(raw)
-        .map(|dt| dt.into())
-        .map_err(|e| MemoryStoreError::Query(e.to_string()))
-}
-
-fn parse_optional_datetime(
+fn parse_mandatory_value<T, F>(
     payload: &HashMap<String, qdrant_client::qdrant::Value>,
     field: &str,
-) -> Result<Option<DateTime<Utc>>, MemoryStoreError> {
-    match payload.get(field).and_then(|v| v.as_str()) {
-        Some(raw) => DateTime::parse_from_rfc3339(raw)
-            .map(|dt| Some(dt.into()))
-            .map_err(|e| MemoryStoreError::Query(e.to_string())),
+    parser: F,
+) -> Result<T, MemoryStoreError>
+where
+    F: FnOnce(&qdrant_client::qdrant::Value) -> Result<T, MemoryStoreError>,
+{
+    let v = payload
+        .get(field)
+        .ok_or_else(|| MemoryStoreError::Query(format!("missing field: {field}")))?;
+    parser(v)
+}
+
+fn parse_optional_value<T, F>(
+    payload: &HashMap<String, qdrant_client::qdrant::Value>,
+    field: &str,
+    parser: F,
+) -> Result<Option<T>, MemoryStoreError>
+where
+    F: FnOnce(&qdrant_client::qdrant::Value) -> Result<T, MemoryStoreError>,
+{
+    match payload.get(field) {
+        Some(v) => parser(v).map(Some),
         None => Ok(None),
+    }
+}
+
+fn parse_timestamp(
+    value: &qdrant_client::qdrant::Value,
+) -> Result<DateTime<Utc>, MemoryStoreError> {
+    let raw = value
+        .as_integer()
+        .or_else(|| value.as_double().map(|f| f as i64))
+        .ok_or_else(|| MemoryStoreError::Query(format!("{} is not a valid timestamp", value)))?;
+
+    match DateTime::from_timestamp_secs(raw) {
+        Some(dt) => Ok(dt),
+        None => Err(MemoryStoreError::Query("invalid timestamp".to_string())),
     }
 }
 
@@ -612,14 +640,13 @@ fn parse_payload_to_memory(
         .ok_or_else(|| MemoryStoreError::Query("missing content in payload".to_string()))?
         .to_owned();
 
-    let metadata: HashMap<String, String> =
-        match payload.get(FIELD_METADATA).and_then(|v| v.as_str()) {
-            Some(json) => serde_json::from_str(json)
-                .map_err(|e| MemoryStoreError::Query(format!("invalid metadata JSON: {e}")))?,
-            None => HashMap::new(),
-        };
+    let metadata: HashMap<String, String> = payload
+        .get(FIELD_METADATA)
+        .and_then(|v| serde_json::to_value(v).ok()) // get the nested JSON object
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
 
-    let created_at = extract_created_at_from_payload(payload)?;
+    let created_at = parse_mandatory_value(payload, FIELD_CREATED_AT, parse_timestamp)?;
     let tier = payload
         .get(FIELD_TIER)
         .and_then(|v| v.as_str())
@@ -632,9 +659,11 @@ fn parse_payload_to_memory(
         .map(|v| v.max(0) as u32)
         .unwrap_or(1);
 
-    let first_seen = parse_optional_datetime(payload, FIELD_FIRST_SEEN)?.unwrap_or(created_at);
-    let last_seen = parse_optional_datetime(payload, FIELD_LAST_SEEN)?.unwrap_or(created_at);
-    let expires_at = parse_optional_datetime(payload, FIELD_EXPIRES_AT)?
+    let first_seen =
+        parse_optional_value(payload, FIELD_FIRST_SEEN, parse_timestamp)?.unwrap_or(created_at);
+    let last_seen =
+        parse_optional_value(payload, FIELD_LAST_SEEN, parse_timestamp)?.unwrap_or(created_at);
+    let expires_at = parse_optional_value(payload, FIELD_EXPIRES_AT, parse_timestamp)?
         .or_else(|| tier.default_ttl().map(|ttl| created_at + ttl));
 
     Ok(MemoryEntry {

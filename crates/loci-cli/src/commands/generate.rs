@@ -41,7 +41,7 @@ pub struct GenerateArgs {
     pub memory_mode: GenerateMemoryMode,
 
     /// Memory meta data filter criteria
-    #[arg(long = "filter", value_parser = parse_key_value)]
+    #[arg(long = "filters", value_parser = parse_key_value)]
     pub filters: Vec<(String, String)>,
 
     /// Print debug info about the contextualization process, such as retrieved memory entries.

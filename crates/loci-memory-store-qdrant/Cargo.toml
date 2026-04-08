@@ -12,7 +12,7 @@ tokio = { workspace = true, optional = true }
 loci-core = { path = "../loci-core" }
 chrono.workspace = true
 log.workspace = true
-qdrant-client = "1.14"
+qdrant-client = "1.17"
 serde_json.workspace = true
 uuid.workspace = true
 

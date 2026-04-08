@@ -137,7 +137,7 @@ impl std::error::Error for InvalidScore {}
 
 /// A stored memory. Intentionally embedding-free — model providers that require
 /// vector similarity compute embeddings internally.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MemoryEntry {
     pub id: Uuid,
     pub content: String,
@@ -178,7 +178,7 @@ impl MemoryEntry {
 }
 
 /// A query result pairing a [`MemoryEntry`] with its similarity [`Score`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MemoryQueryResult {
     pub memory_entry: MemoryEntry,
     pub score: Score,
