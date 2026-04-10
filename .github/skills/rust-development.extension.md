@@ -23,6 +23,7 @@ cargo fmt --check                                          # formatting check
 | `loci-model-provider-ollama` | `crates/loci-model-provider-ollama` | `OllamaModelProvider` for embeddings and text generation                                                  |
 | `loci-config`                | `crates/loci-config`                | Config schema and loader (`env:` secret resolution)                                                       |
 | `loci-cli`                   | `crates/loci-cli`                   | CLI entry point and command handling                                                                      |
+| `loci-e2e-tests`             | `crates/loci-e2e-tests`             | End-to-end tests (requires Docker + Ollama)                                                               |
 
 ## Runtime Status
 
@@ -32,7 +33,7 @@ cargo fmt --check                                          # formatting check
 
 ## Core Domain Notes (`loci-core`)
 
-- `MemoryStore` is text-centric: `save/get/query/update/set_tier/delete/clear`.
+- `MemoryStore` is text-centric: `save/get/query/update/set_tier/delete/prune_expired`.
 - `MemoryEntry` stores lifecycle fields (`tier`, `seen_count`, `first_seen`, `last_seen`, `expires_at`);
   embeddings are computed in store/provider layers, not stored on `MemoryEntry`.
 - `Contextualizer` queries memory entries using `MemoryQueryMode::Use` and streams model output.

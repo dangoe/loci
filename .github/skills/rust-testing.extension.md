@@ -36,3 +36,13 @@ cargo test -p loci-memory-store-qdrant --features integration test_saved_memory_
 ```
 
 Use `--test-threads=1` for integration tests to avoid resource contention from parallel containers.
+
+## Cargo Aliases
+
+The workspace defines cargo aliases in `.cargo/config.toml`:
+
+```bash
+cargo test-it                                    # cargo test --features integration -- --test-threads=1
+cargo test-e2e                                   # cargo test --features e2e -- --test-threads=1
+cargo test-all                                   # cargo test --features integration,e2e -- --test-threads=1
+```

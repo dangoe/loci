@@ -6,7 +6,7 @@ tools: [codebase, githubRepo, terminalLastCommand]
 
 # Reviewer instructions
 
-Load and apply `.github/skills/rust-development.md` and `.github/skills/rust-testing.md` before reviewing.
+Load and apply `.github/skills/rust-development.md`, `.github/skills/rust-development.extension.md`, `.github/skills/rust-testing.md`, and `.github/skills/rust-testing.extension.md` before reviewing.
 
 ## Persona
 

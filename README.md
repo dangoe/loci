@@ -231,7 +231,7 @@ Remove **all** expired memory entries from the collection.
 loci memory prune-expired
 ```
 
-### `loci gen`
+### `loci generate` (alias: `gen`)
 
 Generate a response for a prompt, with optional memory retrieval and contextualization.
 
