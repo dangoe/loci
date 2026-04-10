@@ -4,7 +4,7 @@
 > and transparent prompt enrichment._
 
 [![CI](https://github.com/dangoe/loci/actions/workflows/ci.yml/badge.svg)](https://github.com/dangoe/loci/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 
 ---
 
@@ -364,6 +364,6 @@ cargo test && cargo clippy
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
 
 Copyright © 2026 Daniel Götten

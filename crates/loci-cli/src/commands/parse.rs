@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Daniel Götten
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// This file is part of loci-cli.
+
 /// Parses a `key=value` string into a `(String, String)` pair.
 pub fn parse_key_value(s: &str) -> Result<(String, String), String> {
     let (k, v) = s

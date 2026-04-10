@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Daniel Götten
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // This file is part of loci-config.
 
 //! Configuration types and loading for the loci CLI.

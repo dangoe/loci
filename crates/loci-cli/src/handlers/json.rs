@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Daniel Götten
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// This file is part of loci-cli.
+
 /// Serialises a [`loci_core::memory::MemoryEntry`] to a [`serde_json::Value`].
 pub fn entry_to_json(e: &loci_core::memory::MemoryQueryResult) -> serde_json::Value {
     serde_json::json!({
