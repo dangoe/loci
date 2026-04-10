@@ -321,10 +321,7 @@ impl TextGenerationModelProvider for OllamaModelProvider {
 }
 
 impl EmbeddingModelProvider for OllamaModelProvider {
-    async fn embed(
-        &self,
-        req: EmbeddingRequest,
-    ) -> ModelProviderResult<EmbeddingResponse> {
+    async fn embed(&self, req: EmbeddingRequest) -> ModelProviderResult<EmbeddingResponse> {
         let body = OllamaEmbeddingRequest {
             model: &req.model,
             input: &req.input,
