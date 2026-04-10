@@ -1,2 +1,4 @@
 [alias]
-test-all = "test --features integration -- --test-threads=1"
+test-it = "test --features integration -- --test-threads=1"
+test-e2e = "test --features e2e -- --test-threads=1"
+test-all = "test --features integration,e2e -- --test-threads=1"

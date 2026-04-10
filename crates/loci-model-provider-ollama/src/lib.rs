@@ -3,3 +3,6 @@
 // This file is part of loci-model-provider-ollama.
 
 pub mod provider;
+
+#[cfg(feature = "e2e")]
+pub mod testing;

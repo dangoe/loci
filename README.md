@@ -277,9 +277,30 @@ cargo test           # run all unit tests
 cargo clippy         # lint
 cargo fmt            # format
 
-# All tests including integration tests (requires Docker)
-cargo test-all # shorthand for 'cargo test --features integration -- --test-threads=1'
+# Integration tests — requires Docker (Qdrant via testcontainers)
+cargo test-it        # shorthand for 'cargo test --features integration -- --test-threads=1'
+
+# E2E tests — requires a running Ollama instance + Docker
+cargo test-e2e       # shorthand for 'cargo test --features e2e -- --test-threads=1'
+
+# All tests (unit + integration + e2e)
+cargo test-all       # shorthand for 'cargo test --features integration,e2e -- --test-threads=1'
 ```
+
+### E2E test prerequisites
+
+The E2E tests require a running [Ollama](https://ollama.com) instance with models pulled:
+
+```bash
+ollama serve                         # start Ollama (if not already running)
+ollama pull qwen3:0.6b               # text generation model
+ollama pull qwen3-embedding:0.6b     # embedding model
+```
+
+Override models/URL via environment variables:
+- `OLLAMA_BASE_URL` (default: `http://localhost:11434`)
+- `OLLAMA_TEXT_MODEL` (default: `qwen3:0.6b`)
+- `OLLAMA_EMBEDDING_MODEL` (default: `qwen3-embedding:0.6b`)
 
 ---
 

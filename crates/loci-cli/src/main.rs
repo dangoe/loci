@@ -80,10 +80,6 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 /// Resolves the config file path: uses the provided value when set,
 /// otherwise falls back to `~/.config/loci/config.toml`.
 fn resolve_config_path(cli_value: Option<PathBuf>) -> PathBuf {

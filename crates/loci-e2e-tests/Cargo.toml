@@ -1,0 +1,17 @@
+[package]
+name = "loci-e2e-tests"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[features]
+e2e = []
+
+[dev-dependencies]
+futures.workspace = true
+loci-core = { path = "../loci-core" }
+loci-memory-store-qdrant = { path = "../loci-memory-store-qdrant" }
+loci-model-provider-ollama = { path = "../loci-model-provider-ollama", features = ["e2e"] }
+pretty_assertions.workspace = true
+testcontainers = { version = "0.27", features = ["http_wait_plain"] }
+tokio.workspace = true

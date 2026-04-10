@@ -30,7 +30,9 @@ A Rust workspace for memory-augmented LLM prompts.
 
 ```bash
 cargo check                                                # type-check workspace
-cargo test-all                                             # run all workspace tests
+cargo test-it                                              # unit + integration tests (requires Docker)
+cargo test-e2e                                             # e2e tests (requires Docker + Ollama)
+cargo test-all                                             # all tests (unit + integration + e2e)
 cargo clippy                                               # lint
 cargo fmt --check                                          # formatting check
 ```

@@ -3,6 +3,9 @@ name = "loci-model-provider-ollama"
 version.workspace = true
 edition.workspace = true
 
+[features]
+e2e = []
+
 [dependencies]
 async-stream.workspace = true
 futures.workspace = true
@@ -11,3 +14,7 @@ log.workspace = true
 reqwest = { version = "0.12", features = ["json", "stream"] }
 serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+futures.workspace = true
+tokio.workspace = true

@@ -1457,6 +1457,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "loci-e2e-tests"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "loci-core",
+ "loci-memory-store-qdrant",
+ "loci-model-provider-ollama",
+ "pretty_assertions",
+ "testcontainers",
+ "tokio",
+]
+
+[[package]]
 name = "loci-memory-store-qdrant"
 version = "0.1.0"
 dependencies = [
@@ -1482,6 +1495,7 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
