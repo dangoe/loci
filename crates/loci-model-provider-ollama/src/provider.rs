@@ -17,7 +17,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use std::{future::Future, time::Duration};
+use std::time::Duration;
 
 /// Configuration for the Ollama model provider.
 #[derive(Debug, Clone)]
@@ -201,55 +201,53 @@ impl OllamaModelProvider {
 }
 
 impl TextGenerationModelProvider for OllamaModelProvider {
-    fn generate(
+    async fn generate(
         &self,
         req: TextGenerationRequest,
-    ) -> impl Future<Output = ModelProviderResult<TextGenerationResponse>> + Send + '_ {
-        async move {
-            let body = self.build_text_request(&req, false);
+    ) -> ModelProviderResult<TextGenerationResponse> {
+        let body = self.build_text_request(&req, false);
 
-            debug!("Sending request to Ollama: {:?}", body);
+        debug!("Sending request to Ollama: {:?}", body);
 
-            let http_response = self
-                .client
-                .post(format!("{}/api/generate", self.config.base_url))
-                .json(&body)
-                .send()
+        let http_response = self
+            .client
+            .post(format!("{}/api/generate", self.config.base_url))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| ModelProviderError::Transport {
+                message: e.to_string(),
+            })?;
+
+        debug!("Received response from Ollama: {:?}", http_response);
+
+        let parse_response: OllamaTextGenerationResponse =
+            http_response
+                .json()
                 .await
-                .map_err(|e| ModelProviderError::Transport {
+                .map_err(|e| ModelProviderError::Parse {
                     message: e.to_string(),
                 })?;
 
-            debug!("Received response from Ollama: {:?}", http_response);
+        debug!("Parsed response from Ollama: {:?}", parse_response);
 
-            let parse_response: OllamaTextGenerationResponse =
-                http_response
-                    .json()
-                    .await
-                    .map_err(|e| ModelProviderError::Parse {
-                        message: e.to_string(),
-                    })?;
+        let total_tokens = match (parse_response.prompt_eval_count, parse_response.eval_count) {
+            (Some(a), Some(b)) => Some(a + b),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        };
 
-            debug!("Parsed response from Ollama: {:?}", parse_response);
-
-            let total_tokens = match (parse_response.prompt_eval_count, parse_response.eval_count) {
-                (Some(a), Some(b)) => Some(a + b),
-                (Some(a), None) => Some(a),
-                (None, Some(b)) => Some(b),
-                (None, None) => None,
-            };
-
-            Ok(TextGenerationResponse {
-                text: parse_response.response,
-                model: parse_response.model,
-                usage: Some(TokenUsage {
-                    prompt_tokens: parse_response.prompt_eval_count,
-                    completion_tokens: parse_response.eval_count,
-                    total_tokens,
-                }),
-                done: true,
-            })
-        }
+        Ok(TextGenerationResponse {
+            text: parse_response.response,
+            model: parse_response.model,
+            usage: Some(TokenUsage {
+                prompt_tokens: parse_response.prompt_eval_count,
+                completion_tokens: parse_response.eval_count,
+                total_tokens,
+            }),
+            done: true,
+        })
     }
 
     fn generate_stream(
@@ -323,42 +321,40 @@ impl TextGenerationModelProvider for OllamaModelProvider {
 }
 
 impl EmbeddingModelProvider for OllamaModelProvider {
-    fn embed(
+    async fn embed(
         &self,
         req: EmbeddingRequest,
-    ) -> impl Future<Output = ModelProviderResult<EmbeddingResponse>> + Send + '_ {
-        async move {
-            let body = OllamaEmbeddingRequest {
-                model: &req.model,
-                input: &req.input,
-                dimensions: req.embedding_dimension,
-                options: None,
-                keep_alive: None,
-            };
+    ) -> ModelProviderResult<EmbeddingResponse> {
+        let body = OllamaEmbeddingRequest {
+            model: &req.model,
+            input: &req.input,
+            dimensions: req.embedding_dimension,
+            options: None,
+            keep_alive: None,
+        };
 
-            let http_response = self
-                .client
-                .post(format!("{}/api/embed", self.config.base_url))
-                .json(&body)
-                .send()
+        let http_response = self
+            .client
+            .post(format!("{}/api/embed", self.config.base_url))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| ModelProviderError::Transport {
+                message: format!("Failed to send request: {e}"),
+            })?;
+
+        let parsed_response: OllamaEmbeddingResponse =
+            http_response
+                .json()
                 .await
-                .map_err(|e| ModelProviderError::Transport {
-                    message: format!("Failed to send request: {e}"),
+                .map_err(|e| ModelProviderError::Parse {
+                    message: format!("Failed to parse response: {e}"),
                 })?;
 
-            let parsed_response: OllamaEmbeddingResponse =
-                http_response
-                    .json()
-                    .await
-                    .map_err(|e| ModelProviderError::Parse {
-                        message: format!("Failed to parse response: {e}"),
-                    })?;
-
-            Ok(EmbeddingResponse {
-                embeddings: parsed_response.embeddings,
-                model: parsed_response.model,
-                usage: None,
-            })
-        }
+        Ok(EmbeddingResponse {
+            embeddings: parsed_response.embeddings,
+            model: parsed_response.model,
+            usage: None,
+        })
     }
 }
