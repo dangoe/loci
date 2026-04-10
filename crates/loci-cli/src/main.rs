@@ -91,7 +91,10 @@ fn resolve_config_path(cli_value: Option<PathBuf>) -> PathBuf {
         return path;
     }
     dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
+        .unwrap_or_else(|| {
+            log::warn!("could not determine system config directory, falling back to '.'");
+            PathBuf::from(".")
+        })
         .join("loci")
         .join("config.toml")
 }
@@ -99,10 +102,13 @@ fn resolve_config_path(cli_value: Option<PathBuf>) -> PathBuf {
 fn setup_logging(verbose: bool) {
     #[cfg(feature = "systemd-journal-logger")]
     {
-        JournalLog::new()
-            .expect("Failed to connect to journald")
-            .install()
-            .expect("Failed to install journald logger");
+        let journald_ok = JournalLog::new()
+            .and_then(|journal| journal.install())
+            .is_ok();
+        if !journald_ok {
+            eprintln!("warning: failed to connect to journald, falling back to env_logger");
+            env_logger::init();
+        }
     }
 
     #[cfg(not(feature = "systemd-journal-logger"))]

@@ -6,6 +6,7 @@ pub fn entry_to_json(e: &loci_core::memory::MemoryQueryResult) -> serde_json::Va
         "metadata": e.memory_entry.metadata,
         "tier": e.memory_entry.tier.as_str(),
         "seen_count": e.memory_entry.seen_count,
+        "sources": e.memory_entry.sources,
         "first_seen": e.memory_entry.first_seen.to_rfc3339(),
         "last_seen": e.memory_entry.last_seen.to_rfc3339(),
         "expires_at": e.memory_entry.expires_at.map(|dt| dt.to_rfc3339()),

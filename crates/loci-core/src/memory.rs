@@ -109,6 +109,9 @@ impl Score {
     /// The minimum possible score (0.0).
     pub const ZERO: Score = Score(0.0);
 
+    /// The maximum possible score (1.0).
+    pub const MAX: Score = Score(1.0);
+
     /// Creates a new `Score`. Returns [`InvalidScore`] if `value` is outside [0.0, 1.0].
     pub fn new(value: f64) -> Result<Self, InvalidScore> {
         if !(0.0..=1.0).contains(&value) {
@@ -144,6 +147,9 @@ pub struct MemoryEntry {
     pub metadata: HashMap<String, String>,
     pub tier: MemoryTier,
     pub seen_count: u32,
+    /// Distinct source identifiers that have contributed to this memory.
+    /// Used for source-corroboration promotion (Candidate -> Stable).
+    pub sources: Vec<String>,
     pub first_seen: DateTime<Utc>,
     pub last_seen: DateTime<Utc>,
     pub expires_at: Option<DateTime<Utc>>,
@@ -163,12 +169,17 @@ impl MemoryEntry {
         tier: MemoryTier,
     ) -> Self {
         let now = Utc::now();
+        let sources = metadata
+            .get("source")
+            .map(|source| vec![source.clone()])
+            .unwrap_or_default();
         Self {
             id: Uuid::new_v4(),
             content,
             metadata,
             tier,
             seen_count: 1,
+            sources,
             first_seen: now,
             last_seen: now,
             expires_at: tier.default_ttl().map(|ttl| now + ttl),

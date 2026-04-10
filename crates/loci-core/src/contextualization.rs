@@ -14,6 +14,8 @@ use crate::model_provider::common::ModelProviderParams;
 use crate::model_provider::text_generation::{self, TextGenerationRequest, TextGenerationResponse};
 use crate::store::MemoryStore;
 
+const MEMORY_PLACEHOLDER: &str = "{{memory}}";
+
 const SYSTEM_PROMPT_BASE_TEMPLATE: &str = "You are a helpful assistant with a long-term memory of past conversations.
 Rules:
 - Speak naturally. Never mention retrieval, context, memory stores, or system internals.
@@ -66,7 +68,9 @@ pub struct ContextualizerSystemConfig {
 pub enum ContextualizerSystemMode {
     /// The contextualizer should construct the system prompt by appending retrieved memory entries to a base template.
     Append,
-    /// The contextualizer should use a caller-defined system prompt template that includes a placeholder for memory entries, and inject retrieved memory entries into that placeholder.
+    /// The contextualizer should use a caller-defined system prompt template that includes a `{{memory}}`
+    /// placeholder for memory entries, and inject retrieved memory entries into that placeholder.
+    /// If the placeholder is absent, memory entries are appended at the end.
     Replace,
 }
 
@@ -214,7 +218,7 @@ where
     fn build_request(
         &self,
         prompt: &str,
-        memory_entries: &Vec<MemoryQueryResult>,
+        memory_entries: &[MemoryQueryResult],
     ) -> TextGenerationRequest {
         let mut req =
             TextGenerationRequest::new(self.config.text_generation_model.to_string(), prompt)
@@ -253,38 +257,51 @@ where
         req
     }
 
-    fn build_system_prompt(&self, memory_entries: &Vec<MemoryQueryResult>) -> String {
-        fn normalize(s: impl Into<String>) -> String {
-            s.into().trim().replace('\n', "\n- ")
-        }
+    fn build_system_prompt(&self, memory_entries: &[MemoryQueryResult]) -> String {
+        let memory_block = Self::format_memory_block(memory_entries);
 
         let mut buf = String::new();
 
         match &self.config.system {
             Some(system_config) => match system_config.mode {
                 ContextualizerSystemMode::Append => {
-                    buf.push_str(normalize(SYSTEM_PROMPT_BASE_TEMPLATE).as_str());
-                    buf.push_str(normalize(system_config.system.clone()).as_str());
+                    buf.push_str(SYSTEM_PROMPT_BASE_TEMPLATE.trim());
+                    buf.push('\n');
+                    buf.push_str(system_config.system.trim());
+                    buf.push('\n');
+                    buf.push_str(&memory_block);
                 }
                 ContextualizerSystemMode::Replace => {
-                    buf.push_str(normalize(system_config.system.clone()).as_str());
+                    let template = system_config.system.trim();
+                    if template.contains(MEMORY_PLACEHOLDER) {
+                        buf.push_str(&template.replace(MEMORY_PLACEHOLDER, &memory_block));
+                    } else {
+                        buf.push_str(template);
+                        buf.push('\n');
+                        buf.push_str(&memory_block);
+                    }
                 }
             },
-            None => buf.push_str(normalize(SYSTEM_PROMPT_BASE_TEMPLATE).as_str()),
+            None => {
+                buf.push_str(SYSTEM_PROMPT_BASE_TEMPLATE.trim());
+                buf.push('\n');
+                buf.push_str(&memory_block);
+            }
         };
 
-        buf.push('\n');
-        buf.push_str("## Relevant memory entries\n");
+        buf
+    }
 
+    fn format_memory_block(memory_entries: &[MemoryQueryResult]) -> String {
+        let mut block = String::from("## Relevant memory entries\n");
         if memory_entries.is_empty() {
-            buf.push_str("None. Answer from general knowledge.\n");
+            block.push_str("None. Answer from general knowledge.\n");
         } else {
             for entry in memory_entries {
-                buf.push_str(&format!("- {}\n", entry.memory_entry.content));
+                block.push_str(&format!("- {}\n", entry.memory_entry.content));
             }
         }
-
-        buf
+        block
     }
 
     async fn query_memory(
@@ -520,7 +537,7 @@ mod tests {
     fn test_build_system_prompt_with_no_memory_entries_contains_placeholder() {
         let (store, provider) = make_components(vec![], "reply");
         let ctx = Contextualizer::new(&store, &provider, default_config());
-        let prompt = ctx.build_system_prompt(&vec![]);
+        let prompt = ctx.build_system_prompt(&[]);
         assert!(
             prompt.contains("None. Answer from general knowledge."),
             "expected placeholder, got: {prompt}",
@@ -528,27 +545,56 @@ mod tests {
     }
 
     #[test]
-    fn test_build_system_prompt_with_override_uses_override() {
+    fn test_build_system_prompt_replace_mode_substitutes_placeholder() {
         let mut config = default_config();
         config.system = Some(ContextualizerSystemConfig {
             mode: ContextualizerSystemMode::Replace,
-            system: "Custom system prompt.\nMemory entries:\n{memory_entries}".to_string(),
+            system: "Custom system prompt.\n{{memory}}\nEnd of prompt.".to_string(),
         });
         let store = MockStore { entries: vec![] };
         let provider = MockTextGenerationProvider {
             reply: "reply".to_string(),
         };
-        let ctx = Contextualizer::new(&store, &provider,
-            config,
-        );
-        let prompt = ctx.build_system_prompt(&vec![make_entry("entry")]);
+        let ctx = Contextualizer::new(&store, &provider, config);
+        let prompt = ctx.build_system_prompt(&[make_entry("entry")]);
         assert!(
             prompt.contains("Custom system prompt."),
             "expected custom prompt, got: {prompt}",
         );
         assert!(
-            prompt.contains("{memory_entries}"),
-            "expected memory placeholder, got: {prompt}",
+            prompt.contains("- entry"),
+            "expected memory entry in placeholder position, got: {prompt}",
+        );
+        assert!(
+            prompt.contains("End of prompt."),
+            "expected text after placeholder, got: {prompt}",
+        );
+        assert!(
+            !prompt.contains("{{memory}}"),
+            "placeholder should have been substituted, got: {prompt}",
+        );
+    }
+
+    #[test]
+    fn test_build_system_prompt_replace_mode_without_placeholder_appends() {
+        let mut config = default_config();
+        config.system = Some(ContextualizerSystemConfig {
+            mode: ContextualizerSystemMode::Replace,
+            system: "Custom system prompt without placeholder.".to_string(),
+        });
+        let store = MockStore { entries: vec![] };
+        let provider = MockTextGenerationProvider {
+            reply: "reply".to_string(),
+        };
+        let ctx = Contextualizer::new(&store, &provider, config);
+        let prompt = ctx.build_system_prompt(&[make_entry("entry")]);
+        assert!(
+            prompt.contains("Custom system prompt without placeholder."),
+            "expected custom prompt, got: {prompt}",
+        );
+        assert!(
+            prompt.contains("- entry"),
+            "expected memory entry appended, got: {prompt}",
         );
     }
 

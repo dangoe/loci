@@ -35,6 +35,7 @@ const FIELD_SEEN_COUNT: &str = "seen_count";
 const FIELD_FIRST_SEEN: &str = "first_seen";
 const FIELD_LAST_SEEN: &str = "last_seen";
 const FIELD_EXPIRES_AT: &str = "expires_at";
+const FIELD_SOURCES: &str = "sources";
 
 const SOURCE_METADATA_KEY: &str = "source";
 
@@ -132,6 +133,9 @@ impl<E: TextEmbedder> QdrantMemoryStore<E> {
         if let Some(expires_at) = memory.expires_at {
             payload.insert(FIELD_EXPIRES_AT, expires_at.timestamp());
         }
+        let sources_value = serde_json::to_value(&memory.sources)
+            .map_err(|e| MemoryStoreError::Query(e.to_string()))?;
+        payload.insert(FIELD_SOURCES, sources_value);
 
         let point = PointStruct::new(
             PointId::from(memory.id.to_string()),
@@ -282,15 +286,15 @@ impl<E: TextEmbedder> QdrantMemoryStore<E> {
             return;
         }
 
-        let existing_source = memory.metadata.get(SOURCE_METADATA_KEY);
-        let incoming_source = incoming_metadata.get(SOURCE_METADATA_KEY);
+        if let Some(incoming_source) = incoming_metadata.get(SOURCE_METADATA_KEY) {
+            if !memory.sources.contains(incoming_source) {
+                memory.sources.push(incoming_source.clone());
+            }
 
-        if let (Some(existing), Some(incoming)) = (existing_source, incoming_source)
-            && existing != incoming
-            && self.config.promotion_source_threshold <= 2
-        {
-            memory.tier = MemoryTier::Stable;
-            memory.expires_at = memory.tier.default_ttl().map(|ttl| Utc::now() + ttl);
+            if memory.sources.len() >= self.config.promotion_source_threshold as usize {
+                memory.tier = MemoryTier::Stable;
+                memory.expires_at = memory.tier.default_ttl().map(|ttl| Utc::now() + ttl);
+            }
         }
     }
 
@@ -369,13 +373,10 @@ impl<E: TextEmbedder> MemoryStore for QdrantMemoryStore<E> {
             existing.memory_entry.last_seen = Utc::now();
             existing.memory_entry.seen_count = existing.memory_entry.seen_count.saturating_add(1);
 
-            let existing_embedding = self
-                .embedder
-                .embed(&existing.memory_entry.content)
-                .await
-                .map_err(MemoryStoreError::Embedding)?;
-            self.do_upsert(&existing.memory_entry, &existing_embedding)
-                .await?;
+            // Reuse the already-computed embedding: the existing entry's content is
+            // unchanged and within the similarity threshold, so the new content's
+            // embedding is a close-enough vector for the upsert.
+            self.do_upsert(&existing.memory_entry, &embedding).await?;
 
             log::debug!(
                 "deduplication: reusing memory {} (score {:.4})",
@@ -388,7 +389,7 @@ impl<E: TextEmbedder> MemoryStore for QdrantMemoryStore<E> {
         self.do_upsert(&memory, &embedding).await?;
         Ok(MemoryQueryResult {
             memory_entry: memory,
-            score: Score::new(1.0).expect("1.0 is always a valid score"),
+            score: Score::MAX,
         })
     }
 
@@ -396,7 +397,7 @@ impl<E: TextEmbedder> MemoryStore for QdrantMemoryStore<E> {
         let memory = self.load_memory(id).await?;
         Ok(MemoryQueryResult {
             memory_entry: memory,
-            score: Score::new(1.0).expect("1.0 is always a valid score"),
+            score: Score::MAX,
         })
     }
 
@@ -447,6 +448,7 @@ impl<E: TextEmbedder> MemoryStore for QdrantMemoryStore<E> {
             metadata: input.metadata,
             tier,
             seen_count: existing.seen_count,
+            sources: existing.sources,
             first_seen: existing.first_seen,
             last_seen: existing.last_seen,
             expires_at,
@@ -462,7 +464,7 @@ impl<E: TextEmbedder> MemoryStore for QdrantMemoryStore<E> {
 
         Ok(MemoryQueryResult {
             memory_entry: memory,
-            score: Score::new(1.0).expect("1.0 is always a valid score"),
+            score: Score::MAX,
         })
     }
 
@@ -490,7 +492,7 @@ impl<E: TextEmbedder> MemoryStore for QdrantMemoryStore<E> {
 
         Ok(MemoryQueryResult {
             memory_entry: memory,
-            score: Score::new(1.0).expect("1.0 is always a valid score"),
+            score: Score::MAX,
         })
     }
 
@@ -649,8 +651,15 @@ fn parse_payload_to_memory(
     let created_at = parse_mandatory_value(payload, FIELD_CREATED_AT, parse_timestamp)?;
     let tier = payload
         .get(FIELD_TIER)
-        .and_then(|v| v.as_str())
-        .and_then(|s| MemoryTier::parse(s.as_str()))
+        .and_then(|value| value.as_str())
+        .and_then(|value_as_string| {
+            MemoryTier::parse(value_as_string).or_else(|| {
+                log::warn!(
+                    "unknown tier value '{value_as_string}' for entry {id}, defaulting to Candidate"
+                );
+                None
+            })
+        })
         .unwrap_or(MemoryTier::Candidate);
 
     let seen_count = payload
@@ -666,12 +675,19 @@ fn parse_payload_to_memory(
     let expires_at = parse_optional_value(payload, FIELD_EXPIRES_AT, parse_timestamp)?
         .or_else(|| tier.default_ttl().map(|ttl| created_at + ttl));
 
+    let sources: Vec<String> = payload
+        .get(FIELD_SOURCES)
+        .and_then(|value| serde_json::to_value(value).ok())
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default();
+
     Ok(MemoryEntry {
         id,
         content,
         metadata,
         tier,
         seen_count,
+        sources,
         first_seen,
         last_seen,
         expires_at,
