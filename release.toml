@@ -1,0 +1,6 @@
+[workspace]
+shared-version = true
+tag-name = "v{{version}}"
+publish = false
+push = true
+tag = true
