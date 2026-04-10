@@ -1,4 +1,4 @@
-use clap::{Args, arg};
+use clap::Args;
 
 use crate::commands::parse::parse_key_value;
 
