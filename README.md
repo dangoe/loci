@@ -307,58 +307,87 @@ Override models/URL via environment variables:
 
 ## Roadmap
 
-The items below are **planned** — they are not yet implemented.
+The items below are **planned** — they are not yet implemented. They are listed in
+dependency order: each step builds on the capabilities introduced by the previous ones.
 
-### Session-Aware Memory Proxy
+### Phase 1: Memory Extraction Strategies
+
+Currently, saving memories is a manual process. Before any automated ingestion can be
+useful, loci needs the ability to distill raw content into meaningful memory entries.
+
+A `MemoryExtractionStrategy` trait will process content asynchronously and produce
+candidate memory entries. Two built-in strategies are planned:
+
+- **`LlmSummarizationStrategy`** — sends content to the LLM with a system prompt that
+  extracts factual statements as new memory entries.
+- **`KeywordEntityStrategy`** — lightweight keyword and entity extraction that does not
+  require an additional LLM call.
+
+The trait is open for extension; custom strategies can be plugged in. Once extraction
+strategies exist, they also enable automatic memory extraction from prompt/response pairs
+during generation.
+
+### Phase 2: Scanner Integration
+
+With extraction strategies in place, loci can begin ingesting knowledge from external
+sources automatically. Scanners provide the raw content; extraction strategies decide
+what is worth remembering.
+
+A `Scanner` trait will define a pluggable interface for content sources. Planned built-in
+scanners include:
+
+- **Git repository scanner** — extract knowledge from commit history, diffs, READMEs,
+  and code comments.
+- **File system scanner** — watch directories for new or changed files and feed their
+  content through extraction.
+
+Scanners feed content into extraction strategies, which produce memory entries that flow
+into the existing memory store with full lifecycle support (deduplication, tiering,
+source-corroboration promotion).
+
+### Phase 3: Session-Aware Memory Proxy
+
+With rich memory populated by scanners and extraction, the next step is scoping retrieval
+and injection per session.
 
 A `SessionStore` trait (pluggable: in-process HashMap, SQLite, Redis, …) keyed by a
 session ID. Each session carries configuration (filters, model preferences, context window
 size) and a lightweight interaction history. The proxy itself remains stateless — no
 per-session state is held in process memory beyond the current request.
 
-### Memory Extraction Strategies
+### Phase 4: Enhanced REPL CLI
 
-After each LLM turn, the prompt/response pair is processed asynchronously by a
-`MemoryExtractionStrategy`. Two built-in strategies are planned:
-
-- **`LlmSummarizationStrategy`** — sends the pair to the LLM with a system prompt that
-  extracts factual statements as new memory entries.
-- **`KeywordEntityStrategy`** — lightweight keyword and entity extraction that does not
-  require an additional LLM call.
-
-The trait is open for extension; custom strategies can be plugged in.
-
-### Enhanced REPL CLI
-
-A chat-mode REPL for interactive sessions:
+A chat-mode REPL for interactive sessions, building on session-aware memory:
 
 - Multi-turn conversation with persistent session state
 - Line editing, input history, and auto-complete (`rustyline` or similar)
 - Formatted memory context display with relevance scores
 - Session ID management directly from the REPL prompt
 
-### Protocol Layer
+### Phase 5: Protocol Layer
 
-The long-term vision is to expose loci as a network proxy that any client can target
-without modification. The specific protocol is undecided; an **OpenAI-compatible API** is
-the leading candidate for maximum client interoperability.
+Expose loci as a network proxy that any client can target without modification. The
+specific protocol is undecided; an **OpenAI-compatible API** is the leading candidate
+for maximum client interoperability.
+
+### Phase 6: Semantic Knowledge Graph
+
+The long-term vision is to move beyond flat memory entries toward a semantic knowledge
+graph that captures relationships between concepts. Building on the volume and variety
+of data from scanners, extraction strategies, and multi-session interactions, the
+knowledge graph will enable:
+
+- Relationship-aware retrieval (not just similarity, but connectedness)
+- Reasoning across related facts from different sources and sessions
+- Richer context injection that preserves the structure of knowledge, not just
+  individual statements
 
 ---
 
 ## Contributing
 
-Contributions are welcome! Please open an issue to discuss significant changes before
-submitting a pull request.
-
-```bash
-# Fork, clone, create a feature branch
-git checkout -b feat/my-feature
-
-# Make changes, ensure tests pass
-cargo test && cargo clippy
-
-# Open a pull request
-```
+Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for branching strategy,
+development workflow, and guidelines.
 
 ---
 
