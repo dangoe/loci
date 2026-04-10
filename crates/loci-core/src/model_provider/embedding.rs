@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // This file is part of loci-core.
 
-use std::{collections::HashMap};
+use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 

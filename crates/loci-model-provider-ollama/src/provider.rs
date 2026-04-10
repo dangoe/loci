@@ -12,7 +12,7 @@ use loci_core::model_provider::{
         ThinkingEffortLevel, ThinkingMode, TokenUsage,
     },
 };
-use log::{debug, error};
+use log::debug;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -204,8 +204,7 @@ impl TextGenerationModelProvider for OllamaModelProvider {
     fn generate(
         &self,
         req: TextGenerationRequest,
-    ) -> impl Future<Output = ModelProviderResult<TextGenerationResponse>> + Send + '_
-    {
+    ) -> impl Future<Output = ModelProviderResult<TextGenerationResponse>> + Send + '_ {
         async move {
             let body = self.build_text_request(&req, false);
 
@@ -223,17 +222,13 @@ impl TextGenerationModelProvider for OllamaModelProvider {
 
             debug!("Received response from Ollama: {:?}", http_response);
 
-            let parsed: Result<OllamaTextGenerationResponse, reqwest::Error> =
-                http_response.json().await;
-
-            if parsed.is_err() {
-                error!("Failed to parse response: {:?}", parsed);
-            }
-
             let parse_response: OllamaTextGenerationResponse =
-                parsed.map_err(|e| ModelProviderError::Parse {
-                    message: e.to_string(),
-                })?;
+                http_response
+                    .json()
+                    .await
+                    .map_err(|e| ModelProviderError::Parse {
+                        message: e.to_string(),
+                    })?;
 
             debug!("Parsed response from Ollama: {:?}", parse_response);
 
@@ -260,8 +255,7 @@ impl TextGenerationModelProvider for OllamaModelProvider {
     fn generate_stream(
         &self,
         req: TextGenerationRequest,
-    ) -> impl futures::Stream<Item = ModelProviderResult<TextGenerationResponse>> + Send + '_
-    {
+    ) -> impl futures::Stream<Item = ModelProviderResult<TextGenerationResponse>> + Send + '_ {
         async_stream::try_stream! {
             let body = self.build_text_request(&req, true);
 
@@ -280,7 +274,9 @@ impl TextGenerationModelProvider for OllamaModelProvider {
 
             while let Some(chunk) = byte_stream.next().await {
                 let bytes = chunk.map_err(|e| ModelProviderError::Transport { message: e.to_string() })?;
-                buffer.push_str(&String::from_utf8_lossy(&bytes));
+                let text = String::from_utf8(bytes.to_vec())
+                    .map_err(|e| ModelProviderError::Parse { message: e.to_string() })?;
+                buffer.push_str(&text);
 
                 while let Some(newline_pos) = buffer.find('\n') {
                     let line = buffer[..newline_pos].trim().to_string();

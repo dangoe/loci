@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: MIT
 // This file is part of loci-core.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::time::Duration;
-use std::{collections::HashMap};
 
 use futures::Stream;
 use serde::{Deserialize, Serialize};
@@ -241,8 +241,6 @@ mod tests {
 
     use super::*;
 
-    // ── TextGenerationRequest ────────────────────────────────────────────────
-
     #[test]
     fn test_new_sets_model_prompt_and_defaults_options_to_none() {
         let req = TextGenerationRequest::new("gpt-4o", "hello");
@@ -301,8 +299,6 @@ mod tests {
         assert_eq!(req.extra_params["seed"], json!(42));
     }
 
-    // ── TextGenerationResponse ───────────────────────────────────────────────
-
     #[test]
     fn test_done_constructor_sets_fields_and_marks_done() {
         let usage = TokenUsage {
@@ -318,16 +314,13 @@ mod tests {
         assert!(resp.usage.is_some());
     }
 
-    // ── Default generate_stream implementation ───────────────────────────────
-
     struct EchoProvider;
 
     impl TextGenerationModelProvider for EchoProvider {
         fn generate(
             &self,
             req: TextGenerationRequest,
-        ) -> impl Future<Output = ModelProviderResult<TextGenerationResponse>> + Send + '_
-        {
+        ) -> impl Future<Output = ModelProviderResult<TextGenerationResponse>> + Send + '_ {
             let model = req.model.clone();
             let text = req.prompt.clone();
             async move { Ok(TextGenerationResponse::done(text, model, None)) }

@@ -24,27 +24,32 @@ pub async fn build_store(
 ) -> Result<QdrantMemoryStore<DefaultTextEmbedder<OllamaModelProvider>>, Box<dyn std::error::Error>>
 {
     let backend_name = &config.memory.config.backend;
-    let store_cfg = config
-        .memory
-        .backends
-        .get(backend_name)
-        .ok_or_else(|| ConfigError::MissingKey {
-            section: "memory.backends".into(),
-            key: backend_name.clone(),
-        })?;
+    let store_cfg =
+        config
+            .memory
+            .backends
+            .get(backend_name)
+            .ok_or_else(|| ConfigError::MissingKey {
+                section: "memory.backends".into(),
+                key: backend_name.clone(),
+            })?;
 
     match store_cfg {
-        StoreConfig::Qdrant { url, collection, .. } => {
+        StoreConfig::Qdrant {
+            url, collection, ..
+        } => {
             let embed_provider = resolve_embedding_provider(config)?;
             let embed_provider_instance = build_ollama_provider(embed_provider)?;
             let embed_profile_name = &config.routing.embedding.default;
             let embed_profile =
-                config.models.embedding.get(embed_profile_name).ok_or_else(|| {
-                    ConfigError::MissingKey {
+                config
+                    .models
+                    .embedding
+                    .get(embed_profile_name)
+                    .ok_or_else(|| ConfigError::MissingKey {
                         section: "models.embedding".into(),
                         key: embed_profile_name.clone(),
-                    }
-                })?;
+                    })?;
 
             let embedder = DefaultTextEmbedder::new(
                 Arc::new(embed_provider_instance),
@@ -84,14 +89,15 @@ pub fn resolve_embedding_provider(
     config: &AppConfig,
 ) -> Result<&ModelProviderConfig, Box<dyn std::error::Error>> {
     let profile_name = &config.routing.embedding.default;
-    let profile = config
-        .models
-        .embedding
-        .get(profile_name)
-        .ok_or_else(|| ConfigError::MissingKey {
-            section: "models.embedding".into(),
-            key: profile_name.clone(),
-        })?;
+    let profile =
+        config
+            .models
+            .embedding
+            .get(profile_name)
+            .ok_or_else(|| ConfigError::MissingKey {
+                section: "models.embedding".into(),
+                key: profile_name.clone(),
+            })?;
     config.providers.get(&profile.provider).ok_or_else(|| {
         Box::new(ConfigError::MissingKey {
             section: "providers".into(),

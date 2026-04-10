@@ -103,8 +103,6 @@ mod tests {
 
     use super::*;
 
-    // ── EmbeddingError ───────────────────────────────────────────────────────
-
     #[test]
     fn test_embedding_error_model_provider_display() {
         let err = EmbeddingError::ModelProvider(ModelProviderError::Timeout);
@@ -129,8 +127,6 @@ mod tests {
     fn test_embedding_error_empty_response_has_no_source() {
         assert!(EmbeddingError::EmptyResponse.source().is_none());
     }
-
-    // ── MemoryStoreError ─────────────────────────────────────────────────────
 
     #[test]
     fn test_memory_store_error_connection_display() {
@@ -184,8 +180,6 @@ mod tests {
     fn test_memory_store_error_not_found_has_no_source() {
         assert!(MemoryStoreError::NotFound(Uuid::nil()).source().is_none());
     }
-
-    // ── ContextualizerError ──────────────────────────────────────────────────
 
     #[test]
     fn test_contextualizer_error_memory_store_display() {

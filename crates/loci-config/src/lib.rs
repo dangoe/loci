@@ -17,7 +17,7 @@ pub use error::ConfigError;
 pub use init::{ConfigInitError, DEFAULT_CONFIG_TEMPLATE, init_config};
 pub use memory::{MemoryConfig, MemorySection};
 pub use model::{
-    ModelsConfig, ModelThinkingConfig, ModelThinkingEffortLevel, ModelTuningConfig, TextModelConfig,
+    ModelThinkingConfig, ModelThinkingEffortLevel, ModelTuningConfig, ModelsConfig, TextModelConfig,
 };
 pub use provider::{ModelProviderConfig, ModelProviderKind};
 pub use routing::{EmbeddingRoutingConfig, MemoryRoutingConfig, RoutingConfig, TextRoutingConfig};
@@ -371,9 +371,172 @@ default = "qdrant"
 "#;
         let f = write_temp_config(cfg);
         let config = load_config(f.path()).unwrap();
-        assert_eq!(
-            config.routing.text.fallback,
-            vec!["secondary", "tertiary"]
+        assert_eq!(config.routing.text.fallback, vec!["secondary", "tertiary"]);
+    }
+
+    /// `[providers]` is `#[serde(default)]`, so an absent section is valid and
+    /// results in an empty providers map rather than a parse error.
+    #[test]
+    fn missing_providers_section_is_accepted_with_empty_map() {
+        let cfg = r#"
+[memory.backends.qdrant]
+kind = "qdrant"
+url = "http://localhost:6334"
+collection = "mem"
+
+[memory.config]
+backend = "qdrant"
+
+[routing.text]
+default = "x"
+
+[routing.embedding]
+default = "x"
+
+[routing.memory]
+default = "qdrant"
+"#;
+        let f = write_temp_config(cfg);
+        let config = load_config(f.path()).unwrap();
+        assert!(
+            config.providers.is_empty(),
+            "providers should be empty when the section is absent"
+        );
+    }
+
+    #[test]
+    fn invalid_provider_kind_returns_parse_error() {
+        let cfg = r#"
+[providers.bad]
+kind = "invalid_kind"
+endpoint = "http://localhost:11434"
+
+[memory.backends.qdrant]
+kind = "qdrant"
+url = "http://localhost:6334"
+collection = "mem"
+
+[memory.config]
+backend = "qdrant"
+
+[routing.text]
+default = "x"
+
+[routing.embedding]
+default = "x"
+
+[routing.memory]
+default = "qdrant"
+"#;
+        let f = write_temp_config(cfg);
+        let err = load_config(f.path()).unwrap_err();
+        assert!(
+            matches!(err, ConfigError::Parse { .. }),
+            "expected Parse error for unknown provider kind, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn text_model_without_provider_returns_parse_error() {
+        // `provider` is a required field on `TextModelConfig` (no `#[serde(default)]`).
+        let cfg = r#"
+[models.text.default]
+model = "qwen3:0.6b"
+
+[memory.backends.qdrant]
+kind = "qdrant"
+url = "http://localhost:6334"
+collection = "mem"
+
+[memory.config]
+backend = "qdrant"
+
+[routing.text]
+default = "default"
+
+[routing.embedding]
+default = "x"
+
+[routing.memory]
+default = "qdrant"
+"#;
+        let f = write_temp_config(cfg);
+        let err = load_config(f.path()).unwrap_err();
+        assert!(
+            matches!(err, ConfigError::Parse { .. }),
+            "expected Parse error when `provider` is missing from a text model, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn text_model_without_model_field_returns_parse_error() {
+        // `model` is a required field on `TextModelConfig` (no `#[serde(default)]`).
+        let cfg = r#"
+[models.text.default]
+provider = "ollama"
+
+[memory.backends.qdrant]
+kind = "qdrant"
+url = "http://localhost:6334"
+collection = "mem"
+
+[memory.config]
+backend = "qdrant"
+
+[routing.text]
+default = "default"
+
+[routing.embedding]
+default = "x"
+
+[routing.memory]
+default = "qdrant"
+"#;
+        let f = write_temp_config(cfg);
+        let err = load_config(f.path()).unwrap_err();
+        assert!(
+            matches!(err, ConfigError::Parse { .. }),
+            "expected Parse error when `model` is missing from a text model, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn temperature_as_string_returns_parse_error() {
+        // `temperature` is typed as `Option<f32>`; a string value is a type mismatch.
+        let cfg = r#"
+[providers.ollama]
+kind = "ollama"
+endpoint = "http://localhost:11434"
+
+[models.text.default]
+provider = "ollama"
+model = "qwen3:0.6b"
+
+[models.text.default.tuning]
+temperature = "not_a_number"
+
+[memory.backends.qdrant]
+kind = "qdrant"
+url = "http://localhost:6334"
+collection = "mem"
+
+[memory.config]
+backend = "qdrant"
+
+[routing.text]
+default = "default"
+
+[routing.embedding]
+default = "x"
+
+[routing.memory]
+default = "qdrant"
+"#;
+        let f = write_temp_config(cfg);
+        let err = load_config(f.path()).unwrap_err();
+        assert!(
+            matches!(err, ConfigError::Parse { .. }),
+            "expected Parse error for temperature = \"not_a_number\", got: {err:?}"
         );
     }
 

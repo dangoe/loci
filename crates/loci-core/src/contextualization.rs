@@ -473,8 +473,7 @@ mod tests {
         fn generate(
             &self,
             req: TextGenerationRequest,
-        ) -> impl Future<Output = ModelProviderResult<TextGenerationResponse>> + Send + '_
-        {
+        ) -> impl Future<Output = ModelProviderResult<TextGenerationResponse>> + Send + '_ {
             let reply = self.reply.clone();
             async move { Ok(TextGenerationResponse::done(reply, req.model, None)) }
         }
@@ -486,8 +485,7 @@ mod tests {
         fn generate(
             &self,
             _req: TextGenerationRequest,
-        ) -> impl Future<Output = ModelProviderResult<TextGenerationResponse>> + Send + '_
-        {
+        ) -> impl Future<Output = ModelProviderResult<TextGenerationResponse>> + Send + '_ {
             async move { Err(ModelProviderError::Timeout) }
         }
     }
@@ -607,8 +605,7 @@ mod tests {
         fn generate(
             &self,
             req: TextGenerationRequest,
-        ) -> impl Future<Output = ModelProviderResult<TextGenerationResponse>> + Send + '_
-        {
+        ) -> impl Future<Output = ModelProviderResult<TextGenerationResponse>> + Send + '_ {
             *self.last_req.lock().unwrap() = Some(req.clone());
             async move {
                 Ok(TextGenerationResponse::done(

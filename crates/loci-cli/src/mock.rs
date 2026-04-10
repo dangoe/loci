@@ -143,7 +143,9 @@ impl loci_core::store::MemoryStore for MockStore {
         let err = self.delete_error;
         async move {
             if err {
-                Err(CoreMemoryStoreError::Connection("mock: delete error".into()))
+                Err(CoreMemoryStoreError::Connection(
+                    "mock: delete error".into(),
+                ))
             } else {
                 Ok(())
             }

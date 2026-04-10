@@ -560,8 +560,6 @@ impl<E: TextEmbedder> MemoryStore for QdrantMemoryStore<E> {
     }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
 /// Extracts the vector dimension from a [`GetCollectionInfoResponse`].
 ///
 /// Returns `None` when any part of the config chain is absent (e.g. a sparse-only
@@ -716,4 +714,152 @@ fn metadata_matches_for_dedup(
             .iter()
             .filter(|(k, _)| k.as_str() != SOURCE_METADATA_KEY)
             .all(|(k, v)| existing.get(k) == Some(v))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use chrono::Utc;
+
+    use loci_core::memory::MemoryTier;
+
+    use super::{blend_score, is_expired, metadata_matches_for_dedup};
+
+    #[test]
+    fn blend_score_candidate_at_full_similarity() {
+        // Candidate weight is 0.6; 1.0 * 0.6 = 0.6
+        let score = blend_score(1.0, MemoryTier::Candidate).unwrap();
+        assert!((score.value() - 0.6).abs() < 1e-9);
+    }
+
+    #[test]
+    fn blend_score_stable_at_full_similarity() {
+        // Stable weight is 0.9
+        let score = blend_score(1.0, MemoryTier::Stable).unwrap();
+        assert!((score.value() - 0.9).abs() < 1e-9);
+    }
+
+    #[test]
+    fn blend_score_core_at_full_similarity() {
+        // Core weight is 1.0
+        let score = blend_score(1.0, MemoryTier::Core).unwrap();
+        assert!((score.value() - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn blend_score_ephemeral_is_zero_regardless_of_similarity() {
+        // Ephemeral weight is 0.0
+        let score = blend_score(1.0, MemoryTier::Ephemeral).unwrap();
+        assert_eq!(score.value(), 0.0);
+    }
+
+    #[test]
+    fn blend_score_zero_similarity_yields_zero() {
+        for tier in [
+            MemoryTier::Candidate,
+            MemoryTier::Stable,
+            MemoryTier::Core,
+            MemoryTier::Ephemeral,
+        ] {
+            let score = blend_score(0.0, tier).unwrap();
+            assert_eq!(score.value(), 0.0, "expected 0.0 for tier {tier:?}");
+        }
+    }
+
+    #[test]
+    fn blend_score_partial_similarity_is_scaled() {
+        // Stable weight 0.9 * similarity 0.5 = 0.45
+        let score = blend_score(0.5, MemoryTier::Stable).unwrap();
+        assert!((score.value() - 0.45).abs() < 1e-9);
+    }
+
+    #[test]
+    fn is_expired_none_expires_at_is_never_expired() {
+        assert!(!is_expired(None, Utc::now()));
+    }
+
+    #[test]
+    fn is_expired_future_timestamp_is_not_expired() {
+        let future = Utc::now() + chrono::Duration::days(1);
+        assert!(!is_expired(Some(future), Utc::now()));
+    }
+
+    #[test]
+    fn is_expired_past_timestamp_is_expired() {
+        let past = Utc::now() - chrono::Duration::days(1);
+        assert!(is_expired(Some(past), Utc::now()));
+    }
+
+    #[test]
+    fn is_expired_exact_now_is_expired() {
+        // The function uses `<=`, so a timestamp equal to `now` is expired.
+        let now = Utc::now();
+        assert!(is_expired(Some(now), now));
+    }
+
+    #[test]
+    fn metadata_matches_for_dedup_identical_maps_match() {
+        let meta: HashMap<String, String> = [("lang".to_string(), "rust".to_string())]
+            .into_iter()
+            .collect();
+        assert!(metadata_matches_for_dedup(&meta, &meta));
+    }
+
+    #[test]
+    fn metadata_matches_for_dedup_empty_maps_match() {
+        assert!(metadata_matches_for_dedup(&HashMap::new(), &HashMap::new()));
+    }
+
+    #[test]
+    fn metadata_matches_for_dedup_differing_values_do_not_match() {
+        let existing: HashMap<String, String> = [("env".to_string(), "prod".to_string())]
+            .into_iter()
+            .collect();
+        let incoming: HashMap<String, String> = [("env".to_string(), "dev".to_string())]
+            .into_iter()
+            .collect();
+        assert!(!metadata_matches_for_dedup(&existing, &incoming));
+    }
+
+    #[test]
+    fn metadata_matches_for_dedup_different_keys_do_not_match() {
+        let existing: HashMap<String, String> =
+            [("a".to_string(), "1".to_string())].into_iter().collect();
+        let incoming: HashMap<String, String> =
+            [("b".to_string(), "1".to_string())].into_iter().collect();
+        assert!(!metadata_matches_for_dedup(&existing, &incoming));
+    }
+
+    #[test]
+    fn metadata_matches_for_dedup_source_key_is_excluded_from_comparison() {
+        // Two maps that differ only in the "source" key must be considered matching,
+        // because source provenance is intentionally excluded from dedup comparison.
+        let existing: HashMap<String, String> = [
+            ("source".to_string(), "wiki".to_string()),
+            ("lang".to_string(), "rust".to_string()),
+        ]
+        .into_iter()
+        .collect();
+        let incoming: HashMap<String, String> = [
+            ("source".to_string(), "blog".to_string()),
+            ("lang".to_string(), "rust".to_string()),
+        ]
+        .into_iter()
+        .collect();
+        assert!(metadata_matches_for_dedup(&existing, &incoming));
+    }
+
+    #[test]
+    fn metadata_matches_for_dedup_source_only_maps_match() {
+        // Both maps contain only the "source" key with different values.
+        // Since "source" is excluded, both filtered maps are empty → they match.
+        let existing: HashMap<String, String> = [("source".to_string(), "a".to_string())]
+            .into_iter()
+            .collect();
+        let incoming: HashMap<String, String> = [("source".to_string(), "b".to_string())]
+            .into_iter()
+            .collect();
+        assert!(metadata_matches_for_dedup(&existing, &incoming));
+    }
 }

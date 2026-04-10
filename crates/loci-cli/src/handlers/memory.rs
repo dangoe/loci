@@ -14,9 +14,9 @@ use crate::{
     handlers::{CommandHandler, json::entry_to_json},
 };
 
-impl Into<CoreMemoryTier> for MemoryTier {
-    fn into(self) -> CoreMemoryTier {
-        match self {
+impl From<MemoryTier> for CoreMemoryTier {
+    fn from(val: MemoryTier) -> Self {
+        match val {
             MemoryTier::Ephemeral => CoreMemoryTier::Ephemeral,
             MemoryTier::Candidate => CoreMemoryTier::Candidate,
             MemoryTier::Stable => CoreMemoryTier::Stable,
@@ -522,8 +522,6 @@ mod tests {
         serde_json::from_str(std::str::from_utf8(buf).unwrap().trim()).unwrap()
     }
 
-    // ── MemoryTier conversions ────────────────────────────────────────────────
-
     #[rstest]
     #[case(MemoryTier::Ephemeral, CoreMemoryTier::Ephemeral)]
     #[case(MemoryTier::Candidate, CoreMemoryTier::Candidate)]
@@ -536,8 +534,6 @@ mod tests {
         let result: CoreMemoryTier = input.into();
         assert_eq!(result, expected);
     }
-
-    // ── pairs_to_map edge cases ───────────────────────────────────────────────
 
     #[test]
     fn test_pairs_to_map_empty_returns_empty_map() {
@@ -555,8 +551,6 @@ mod tests {
         assert_eq!(map.len(), 1);
         assert_eq!(map.get("k").unwrap(), "last");
     }
-
-    // ── memory save ──────────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn test_memory_save_with_metadata_outputs_metadata_in_json() {
@@ -582,8 +576,6 @@ mod tests {
         let v = parse_json_output(&out);
         assert_eq!(v["metadata"]["source"].as_str().unwrap(), "wiki");
     }
-
-    // ── memory query ─────────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn test_memory_query_empty_results_outputs_empty_array() {
@@ -635,13 +627,10 @@ mod tests {
         assert_eq!(captured.filters.get("env").unwrap(), "prod");
     }
 
-    // ── memory update ────────────────────────────────────────────────────────
-
     #[tokio::test]
     async fn test_memory_update_replaces_metadata_when_provided() {
         let id = Uuid::new_v4();
-        let original_meta =
-            HashMap::from([("old_key".to_string(), "old_val".to_string())]);
+        let original_meta = HashMap::from([("old_key".to_string(), "old_val".to_string())]);
         let existing = make_result_with_metadata("original", original_meta);
         let updated = make_result_with_metadata(
             "original",
@@ -725,8 +714,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ── memory delete ────────────────────────────────────────────────────────
-
     #[tokio::test]
     async fn test_memory_delete_propagates_store_error() {
         let store = MockStore::new().with_delete_error();
@@ -740,17 +727,13 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ── memory prune-expired ─────────────────────────────────────────────────
-
     #[tokio::test]
     async fn test_memory_prune_expired_propagates_store_error() {
         let store = MockStore::new().with_prune_error();
         let mut out = Vec::new();
 
         let handler = MemoryCommandHandler::new(&store);
-        let result = handler
-            .handle(MemoryCommand::PruneExpired, &mut out)
-            .await;
+        let result = handler.handle(MemoryCommand::PruneExpired, &mut out).await;
 
         assert!(result.is_err());
     }

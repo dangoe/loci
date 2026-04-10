@@ -19,11 +19,7 @@ impl<'a> ConfigCommandHandler<'a> {
 }
 
 impl<'a, W: Write + Send> CommandHandler<'a, ConfigCommand, W> for ConfigCommandHandler<'a> {
-    async fn handle(
-        &self,
-        command: ConfigCommand,
-        out: &mut W,
-    ) -> Result<(), Box<dyn StdError>> {
+    async fn handle(&self, command: ConfigCommand, out: &mut W) -> Result<(), Box<dyn StdError>> {
         match command {
             ConfigCommand::Init => {
                 init_config(self.path)?;
@@ -46,10 +42,7 @@ mod tests {
         let mut out = Vec::new();
 
         let handler = ConfigCommandHandler::new(&path);
-        handler
-            .handle(ConfigCommand::Init, &mut out)
-            .await
-            .unwrap();
+        handler.handle(ConfigCommand::Init, &mut out).await.unwrap();
 
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(
@@ -73,10 +66,7 @@ mod tests {
         let mut out = Vec::new();
 
         let handler = ConfigCommandHandler::new(&path);
-        handler
-            .handle(ConfigCommand::Init, &mut out)
-            .await
-            .unwrap();
+        handler.handle(ConfigCommand::Init, &mut out).await.unwrap();
 
         assert!(path.exists(), "config file should have been created");
     }
@@ -108,10 +98,7 @@ mod tests {
         let mut out = Vec::new();
 
         let handler = ConfigCommandHandler::new(&path);
-        handler
-            .handle(ConfigCommand::Init, &mut out)
-            .await
-            .unwrap();
+        handler.handle(ConfigCommand::Init, &mut out).await.unwrap();
 
         let output = String::from_utf8(out).unwrap();
         assert!(

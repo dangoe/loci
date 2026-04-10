@@ -29,9 +29,9 @@ use crate::{
     handlers::{CommandHandler, json::entry_to_json},
 };
 
-impl Into<CoreContextualizationMemoryMode> for GenerateMemoryMode {
-    fn into(self) -> CoreContextualizationMemoryMode {
-        match self {
+impl From<GenerateMemoryMode> for CoreContextualizationMemoryMode {
+    fn from(val: GenerateMemoryMode) -> Self {
+        match val {
             GenerateMemoryMode::Auto => CoreContextualizationMemoryMode::Auto,
             GenerateMemoryMode::Off => CoreContextualizationMemoryMode::Off,
         }
@@ -177,12 +177,16 @@ mod tests {
 
     use crate::{
         commands::generate::{
-            GenerateArgs, GenerateCommand, GenerateDebugFlags, GenerateMemoryMode, GenerateSystemMode,
+            GenerateArgs, GenerateCommand, GenerateDebugFlags, GenerateMemoryMode,
+            GenerateSystemMode,
         },
         fixture,
         handlers::{
             CommandHandler,
-            generate::{GenerateCommandHandler, model_thinking_to_core, model_tuning_to_contextualizer, stream_text_generation},
+            generate::{
+                GenerateCommandHandler, model_thinking_to_core, model_tuning_to_contextualizer,
+                stream_text_generation,
+            },
         },
         mock::{MockStore, MockTextGenerationModelProvider},
     };
@@ -376,8 +380,6 @@ mod tests {
         );
     }
 
-    // ── stream_text_generation edge cases ────────────────────────────────────
-
     #[tokio::test]
     async fn test_stream_text_generation_empty_stream_writes_nothing() {
         use futures::stream;
@@ -390,7 +392,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(out.is_empty(), "no bytes should be written for an empty stream");
+        assert!(
+            out.is_empty(),
+            "no bytes should be written for an empty stream"
+        );
     }
 
     #[tokio::test]
@@ -399,14 +404,13 @@ mod tests {
         use loci_core::error::ContextualizerError;
         use loci_core::model_provider::text_generation::TextGenerationResponse;
 
-        let chunks: Vec<Result<TextGenerationResponse, ContextualizerError>> = vec![Ok(
-            TextGenerationResponse {
+        let chunks: Vec<Result<TextGenerationResponse, ContextualizerError>> =
+            vec![Ok(TextGenerationResponse {
                 text: "hi".to_string(),
                 model: "m".to_string(),
                 usage: None,
                 done: true,
-            },
-        )];
+            })];
         let mut out = Vec::new();
         stream_text_generation(stream::iter(chunks), &mut out)
             .await
@@ -445,8 +449,6 @@ mod tests {
         assert_eq!(output, "ab");
     }
 
-    // ── model_tuning_to_contextualizer ───────────────────────────────────────
-
     #[test]
     fn test_model_tuning_to_contextualizer_maps_extra_params() {
         use loci_config::ModelTuningConfig;
@@ -467,13 +469,10 @@ mod tests {
         assert_eq!(ctx.extra_params.get("seed").unwrap(), &json!(42));
     }
 
-    // ── GenerateCommandHandler::handle ───────────────────────────────────────
-
     #[tokio::test]
     async fn test_generate_handle_streams_response() {
         let store = MockStore::new().with_query(vec![]);
-        let provider = MockTextGenerationModelProvider::new()
-            .with_chunks(vec!["hello", " world"]);
+        let provider = MockTextGenerationModelProvider::new().with_chunks(vec!["hello", " world"]);
         let config = fixture::minimal_ollama_config();
         let mut out = Vec::new();
 
@@ -532,7 +531,10 @@ mod tests {
 
         assert!(result.is_err());
         assert!(
-            result.unwrap_err().to_string().contains("invalid min_score"),
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("invalid min_score"),
             "error should mention invalid min_score"
         );
     }
@@ -540,8 +542,7 @@ mod tests {
     #[tokio::test]
     async fn test_generate_handle_debug_memory_flag_writes_response_header() {
         let store = MockStore::new().with_query(vec![]);
-        let provider =
-            MockTextGenerationModelProvider::new().with_chunks(vec!["debug output"]);
+        let provider = MockTextGenerationModelProvider::new().with_chunks(vec!["debug output"]);
         let config = fixture::minimal_ollama_config();
         let mut out = Vec::new();
 

@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
 use loci_config::{
-    AppConfig, EmbeddingModelConfig, MemoryConfig, MemorySection, ModelsConfig,
-    ModelProviderConfig, ModelProviderKind, RoutingConfig, EmbeddingRoutingConfig,
-    MemoryRoutingConfig, TextModelConfig, TextRoutingConfig, StoreConfig,
+    AppConfig, EmbeddingModelConfig, EmbeddingRoutingConfig, MemoryConfig, MemoryRoutingConfig,
+    MemorySection, ModelProviderConfig, ModelProviderKind, ModelsConfig, RoutingConfig,
+    StoreConfig, TextModelConfig, TextRoutingConfig,
 };
 
 /// Builds a minimal `AppConfig` wired to a single Ollama provider.

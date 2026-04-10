@@ -59,11 +59,7 @@ pub struct DefaultTextEmbedder<P: EmbeddingModelProvider> {
 
 impl<P: EmbeddingModelProvider> DefaultTextEmbedder<P> {
     /// Creates a new `DefaultTextEmbedder`.
-    pub fn new(
-        provider: Arc<P>,
-        model: impl Into<String>,
-        embedding_dimension: usize,
-    ) -> Self {
+    pub fn new(provider: Arc<P>, model: impl Into<String>, embedding_dimension: usize) -> Self {
         Self {
             provider,
             model: model.into(),
@@ -133,16 +129,13 @@ mod tests {
         assert_eq!(Embedding::new(vec![]).dimension(), 0);
     }
 
-    // ── DefaultTextEmbedder ──────────────────────────────────────────────────
-
     struct EmptyResponseProvider;
 
     impl EmbeddingModelProvider for EmptyResponseProvider {
         fn embed(
             &self,
             req: EmbeddingRequest,
-        ) -> impl Future<Output = ModelProviderResult<EmbeddingResponse>> + Send + '_
-        {
+        ) -> impl Future<Output = ModelProviderResult<EmbeddingResponse>> + Send + '_ {
             async move {
                 Ok(EmbeddingResponse {
                     embeddings: vec![], // empty — should trigger EmptyResponse error
@@ -159,8 +152,7 @@ mod tests {
         fn embed(
             &self,
             _req: EmbeddingRequest,
-        ) -> impl Future<Output = ModelProviderResult<EmbeddingResponse>> + Send + '_
-        {
+        ) -> impl Future<Output = ModelProviderResult<EmbeddingResponse>> + Send + '_ {
             async move { Err(ModelProviderError::Timeout) }
         }
     }
@@ -173,8 +165,7 @@ mod tests {
         fn embed(
             &self,
             req: EmbeddingRequest,
-        ) -> impl Future<Output = ModelProviderResult<EmbeddingResponse>> + Send + '_
-        {
+        ) -> impl Future<Output = ModelProviderResult<EmbeddingResponse>> + Send + '_ {
             let values = self.values.clone();
             async move {
                 Ok(EmbeddingResponse {
