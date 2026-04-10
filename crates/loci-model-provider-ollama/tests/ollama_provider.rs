@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // This file is part of loci-model-provider-ollama.
 
+#![cfg(feature = "e2e")]
+
 use futures::StreamExt as _;
 use loci_core::model_provider::{
     embedding::{EmbeddingModelProvider, EmbeddingRequest},
