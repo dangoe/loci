@@ -10,9 +10,9 @@ use crate::commands::parse::parse_key_value;
 /// Memory sub-commands.
 #[derive(Subcommand)]
 pub enum MemoryCommand {
-    /// Save a new memory entry.
-    #[command(name = "save")]
-    Save {
+    /// Add a new memory entry.
+    #[command(name = "add")]
+    Add {
         /// Memory content.
         content: String,
         /// Metadata as key=value pairs (repeatable).

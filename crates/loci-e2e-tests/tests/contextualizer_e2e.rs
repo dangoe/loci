@@ -78,7 +78,7 @@ fn input(content: &str) -> MemoryInput {
 
 #[tokio::test]
 #[cfg_attr(not(feature = "e2e"), ignore)]
-async fn test_save_and_query_with_real_embeddings() {
+async fn test_add_entry_and_query_with_real_embeddings() {
     ensure_ollama_available().await;
 
     let provider = Arc::new(ollama_provider());

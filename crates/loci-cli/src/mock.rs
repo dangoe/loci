@@ -53,7 +53,7 @@ impl MockStore {
         }
     }
 
-    pub fn with_save(mut self, entry: CoreMemoryQueryResult) -> Self {
+    pub fn with_add(mut self, entry: CoreMemoryQueryResult) -> Self {
         self.save_entry = Some(entry);
         self
     }
@@ -73,7 +73,7 @@ impl MockStore {
         self
     }
 
-    /// Configures `delete()` to return a `Connection` error.
+    /// Configures `delete_entry()` to return a `Connection` error.
     pub fn with_delete_error(mut self) -> Self {
         self.delete_error = true;
         self

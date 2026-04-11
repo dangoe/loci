@@ -43,6 +43,8 @@ Client / REPL
 
 ## Current State
 
+> **Note:** loci is under active development. APIs, CLI commands, and trait signatures may change between versions without prior deprecation.
+
 The following is fully implemented and working today.
 
 ### Workspace
@@ -77,7 +79,7 @@ Features:
 - Per-tier TTL defaults and query-time expiry filtering
 - Weighted retrieval ranking (`similarity * tier_weight`)
 - Source-corroboration promotion (`Candidate -> Stable`) when the same fact is observed from a different `source` metadata value
-- Manual curation path (`set_tier`) for promoting to `Core`
+- Manual curation path (`set_entry_tier`) for promoting to `Core`
 - Metadata filtering (AND semantics, exact match)
 - Min score threshold and max result limits
 
@@ -158,14 +160,14 @@ cargo run --bin loci -- <subcommand>
 | `--config` / `-c`  | `LOCI_CONFIG` | `~/.config/loci/config.toml` | Path to TOML config file |
 | `--verbose` / `-v` |               | off                          | Enable debug logging     |
 
-### `loci memory save`
+### `loci memory add`
 
-Store a new memory.
+Add a new memory entry.
 
 ```bash
-loci memory save "The project uses Qdrant for vector storage"
-loci memory save "Deployment target is Kubernetes" --meta env=production --meta team=platform
-loci memory save "This is a curated fact" --tier core --meta source=manual
+loci memory add "The project uses Qdrant for vector storage"
+loci memory add "Deployment target is Kubernetes" --meta env=production --meta team=platform
+loci memory add "This is a curated fact" --tier core --meta source=manual
 ```
 
 | Argument / Flag                        | Description                                |

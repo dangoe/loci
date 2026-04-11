@@ -289,7 +289,7 @@ async fn test_deleted_memory_is_not_returned_by_query() {
 
 #[tokio::test]
 #[cfg_attr(not(feature = "integration"), ignore)]
-async fn test_get_returns_not_found_for_unknown_id() {
+async fn test_get_entry_returns_not_found_for_unknown_id() {
     let embedder = FakeTextEmbedder::new();
     let (store, _container) = start_store(embedder, None).await;
 
@@ -301,7 +301,7 @@ async fn test_get_returns_not_found_for_unknown_id() {
 
 #[tokio::test]
 #[cfg_attr(not(feature = "integration"), ignore)]
-async fn test_get_returns_saved_entry() {
+async fn test_get_entry_returns_added_entry() {
     let embedder = FakeTextEmbedder::new().with("fetch me", unit_vec(0));
     let (store, _container) = start_store(embedder, None).await;
 
@@ -539,7 +539,7 @@ async fn test_query_respects_min_score() {
 
 #[tokio::test]
 #[cfg_attr(not(feature = "integration"), ignore)]
-async fn test_saved_memory_is_returned_by_query() {
+async fn test_added_memory_is_returned_by_query() {
     let embedder = FakeTextEmbedder::new()
         .with("hello world", unit_vec(0))
         .with("hello world query", unit_vec(0));
@@ -557,7 +557,7 @@ async fn test_saved_memory_is_returned_by_query() {
 
 #[tokio::test]
 #[cfg_attr(not(feature = "integration"), ignore)]
-async fn test_save_ephemeral_returns_error() {
+async fn test_add_entry_ephemeral_returns_error() {
     let embedder = FakeTextEmbedder::new();
     let (store, _container) = start_store(embedder, None).await;
 
@@ -577,7 +577,7 @@ async fn test_save_ephemeral_returns_error() {
 
 #[tokio::test]
 #[cfg_attr(not(feature = "integration"), ignore)]
-async fn test_set_tier_promotes_to_core() {
+async fn test_set_entry_tier_promotes_to_core() {
     let embedder = FakeTextEmbedder::new().with("curate me", unit_vec(0));
     let (store, _container) = start_store(embedder, None).await;
 
@@ -598,7 +598,7 @@ async fn test_set_tier_promotes_to_core() {
 
 #[tokio::test]
 #[cfg_attr(not(feature = "integration"), ignore)]
-async fn test_set_tier_to_ephemeral_returns_error() {
+async fn test_set_entry_tier_to_ephemeral_returns_error() {
     let embedder = FakeTextEmbedder::new().with("content", unit_vec(0));
     let (store, _container) = start_store(embedder, None).await;
 
@@ -615,7 +615,7 @@ async fn test_set_tier_to_ephemeral_returns_error() {
 
 #[tokio::test]
 #[cfg_attr(not(feature = "integration"), ignore)]
-async fn test_update_changes_content_and_returns_updated_entry() {
+async fn test_update_entry_changes_content_and_returns_updated_entry() {
     let embedder = FakeTextEmbedder::new()
         .with("original content", unit_vec(0))
         .with("updated content", unit_vec(1));
@@ -637,7 +637,7 @@ async fn test_update_changes_content_and_returns_updated_entry() {
 
 #[tokio::test]
 #[cfg_attr(not(feature = "integration"), ignore)]
-async fn test_update_returns_not_found_for_unknown_id() {
+async fn test_update_entry_returns_not_found_for_unknown_id() {
     let embedder = FakeTextEmbedder::new().with("anything", unit_vec(0));
     let (store, _container) = start_store(embedder, None).await;
 
@@ -649,7 +649,7 @@ async fn test_update_returns_not_found_for_unknown_id() {
 
 #[tokio::test]
 #[cfg_attr(not(feature = "integration"), ignore)]
-async fn test_update_to_ephemeral_returns_error() {
+async fn test_update_entry_to_ephemeral_returns_error() {
     let embedder = FakeTextEmbedder::new().with("content", unit_vec(0));
     let (store, _container) = start_store(embedder, None).await;
 
