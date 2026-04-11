@@ -6,6 +6,7 @@ members = [
     "crates/loci-config",
     "crates/loci-cli",
     "crates/loci-e2e-tests",
+    "crates/loci-server",
 ]
 resolver = "2"
 
@@ -16,6 +17,7 @@ license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 async-stream = "0.3"
+axum = { version = "0.8", features = ["macros"] }
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "5"
 futures = "0.3"
@@ -25,6 +27,7 @@ serde_json = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 toml = "0.8"
-uuid = { version = "1", features = ["v4"] }
+tower-http = { version = "0.6", features = ["trace", "cors"] }
+uuid = { version = "1", features = ["v4", "serde"] }
 pretty_assertions = "1"
 rstest = "0.25"

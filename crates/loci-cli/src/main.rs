@@ -18,6 +18,7 @@ mod infra;
 mod mock;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[cfg(feature = "systemd-journal-logger")]
 use systemd_journal_logger::JournalLog;
@@ -69,9 +70,10 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             handler.handle(command, &mut std::io::stdout()).await
         }
         Command::Generate { args } => {
-            let store = build_store(&config).await?;
-            let llm_provider = build_llm_provider(&config)?;
-            let handler = GenerateCommandHandler::new(&store, &llm_provider, &config);
+            let store = Arc::new(build_store(&config).await?);
+            let llm_provider = Arc::new(build_llm_provider(&config)?);
+            let handler =
+                GenerateCommandHandler::new(Arc::clone(&store), Arc::clone(&llm_provider), &config);
             handler
                 .handle(GenerateCommand::Execute(args), &mut std::io::stdout())
                 .await

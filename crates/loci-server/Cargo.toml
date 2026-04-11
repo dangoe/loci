@@ -1,0 +1,32 @@
+[package]
+name = "loci-server"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "loci-server"
+path = "src/main.rs"
+
+[dependencies]
+loci-core = { path = "../loci-core" }
+loci-config = { path = "../loci-config" }
+loci-memory-store-qdrant = { path = "../loci-memory-store-qdrant", features = ["background-delete"] }
+loci-model-provider-ollama = { path = "../loci-model-provider-ollama" }
+
+axum.workspace = true
+tower-http.workspace = true
+async-stream.workspace = true
+clap = { version = "4", features = ["derive", "env"] }
+dirs.workspace = true
+env_logger = "0.11"
+futures.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+pretty_assertions.workspace = true
+rstest.workspace = true
