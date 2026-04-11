@@ -132,21 +132,9 @@ async fn test_contextualizer_injects_relevant_memory() {
         .await
         .expect("save should succeed");
 
-    let config = ContextualizerConfig {
-        text_generation_model: text_model(),
-        system: None,
-        memory_mode: ContextualizationMemoryMode::Auto,
-        max_memory_entries: 5,
-        min_score: Score::ZERO,
-        filters: HashMap::new(),
-        tuning: Some(ContextualizerTuningConfig {
-            temperature: Some(0.0),
-            max_tokens: Some(100),
-            ..Default::default()
-        }),
-    };
+    let config = build_base_contextualizer_config();
 
-    let ctx = Contextualizer::new(&store, provider.as_ref(), config);
+    let ctx = Contextualizer::new(Arc::new(store), provider, config);
     let stream = ctx
         .contextualize("What is my name?")
         .await
@@ -176,21 +164,9 @@ async fn test_contextualizer_with_no_relevant_memory() {
 
     // Empty store — no memories saved
 
-    let config = ContextualizerConfig {
-        text_generation_model: text_model(),
-        system: None,
-        memory_mode: ContextualizationMemoryMode::Auto,
-        max_memory_entries: 5,
-        min_score: Score::ZERO,
-        filters: HashMap::new(),
-        tuning: Some(ContextualizerTuningConfig {
-            temperature: Some(0.0),
-            max_tokens: Some(100),
-            ..Default::default()
-        }),
-    };
+    let config = build_base_contextualizer_config();
 
-    let ctx = Contextualizer::new(&store, provider.as_ref(), config);
+    let ctx = Contextualizer::new(Arc::new(store), provider, config);
 
     let (debug_info, stream) = ctx
         .contextualize_with_debug("What is my favorite food?")
@@ -239,4 +215,20 @@ async fn test_deduplication_with_real_embeddings() {
         first.memory_entry.id, second.memory_entry.id,
         "identical content should be deduplicated (same ID returned)"
     );
+}
+
+fn build_base_contextualizer_config() -> ContextualizerConfig {
+    ContextualizerConfig {
+        text_generation_model: text_model(),
+        system: None,
+        memory_mode: ContextualizationMemoryMode::Auto,
+        max_memory_entries: 5,
+        min_score: Score::ZERO,
+        filters: HashMap::new(),
+        tuning: Some(ContextualizerTuningConfig {
+            temperature: Some(0.0),
+            max_tokens: Some(100),
+            ..Default::default()
+        }),
+    }
 }
