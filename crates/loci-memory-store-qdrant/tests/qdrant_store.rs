@@ -500,7 +500,10 @@ async fn test_query_respects_max_results() {
     let (store, _container) = start_store(embedder, None).await;
 
     for i in 0..5 {
-        store.add_entry(input(&format!("memory {i}"))).await.unwrap();
+        store
+            .add_entry(input(&format!("memory {i}")))
+            .await
+            .unwrap();
     }
 
     let results = store.query(query("query", 3)).await.unwrap();
