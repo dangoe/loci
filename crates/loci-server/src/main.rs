@@ -26,10 +26,13 @@ async fn main() {
 }
 
 fn setup_logging(verbose: bool) {
-    env_logger::init();
-    log::set_max_level(if verbose {
+    let default_level = if verbose {
         LevelFilter::Debug
     } else {
         LevelFilter::Info
-    });
+    };
+    env_logger::Builder::new()
+        .filter_level(default_level)
+        .parse_default_env()
+        .init();
 }
