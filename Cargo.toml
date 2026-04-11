@@ -21,7 +21,7 @@ axum = { version = "0.8", features = ["macros"] }
 chrono = { version = "0.4", features = ["serde"] }
 buffa = { version = "0.3", features = ["json"] }
 buffa-types = { version = "0.3", features = ["json"] }
-connectrpc = { version = "0.3", features = ["axum"] }
+connectrpc = { version = "0.3", features = ["axum", "client"] }
 connectrpc-build = "0.3"
 prost = "0.13"
 dirs = "5"

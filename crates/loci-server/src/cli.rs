@@ -8,7 +8,7 @@ use clap::Parser;
 
 #[derive(Parser)]
 #[command(name = "loci-server", about = "loci ConnectRPC server")]
-pub(crate) struct ServerArgs {
+pub struct ServerArgs {
     /// Path to the loci configuration file.
     #[arg(long, short, env = "LOCI_CONFIG", hide_env_values = true)]
     pub config: Option<PathBuf>,

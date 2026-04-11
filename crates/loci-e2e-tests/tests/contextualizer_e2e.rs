@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // This file is part of loci-e2e-tests.
 
+mod support;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -9,68 +11,13 @@ use futures::StreamExt as _;
 use loci_core::contextualization::{
     ContextualizationMemoryMode, Contextualizer, ContextualizerConfig, ContextualizerTuningConfig,
 };
-use loci_core::embedding::DefaultTextEmbedder;
 use loci_core::memory::{MemoryInput, MemoryQuery, MemoryQueryMode, Score};
 use loci_core::store::MemoryStore;
-use loci_memory_store_qdrant::config::QdrantConfig;
-use loci_memory_store_qdrant::store::QdrantMemoryStore;
-use loci_model_provider_ollama::provider::OllamaModelProvider;
 use loci_model_provider_ollama::testing::{
-    embedding_model, ensure_ollama_available, ollama_provider, text_model,
+    ensure_ollama_available, ollama_provider, text_model,
 };
-use testcontainers::core::wait::HttpWaitStrategy;
-use testcontainers::core::{ContainerPort, IntoContainerPort, WaitFor};
-use testcontainers::runners::AsyncRunner;
-use testcontainers::{ContainerAsync, GenericImage};
 
-const QDRANT_PORT: u16 = 6334;
-const EMBEDDING_DIM: usize = 1024;
-
-type RealEmbedder = DefaultTextEmbedder<OllamaModelProvider>;
-
-async fn start_qdrant_store(
-    embedder: RealEmbedder,
-    similarity_threshold: Option<f64>,
-) -> (
-    QdrantMemoryStore<RealEmbedder>,
-    ContainerAsync<GenericImage>,
-) {
-    let image = GenericImage::new("qdrant/qdrant", "latest")
-        .with_exposed_port(QDRANT_PORT.tcp())
-        .with_wait_for(WaitFor::http(
-            HttpWaitStrategy::new("/healthz")
-                .with_port(ContainerPort::Tcp(6333))
-                .with_expected_status_code(200u16),
-        ));
-
-    let container: ContainerAsync<GenericImage> = image
-        .start()
-        .await
-        .expect("Docker must be available to run E2E tests");
-
-    let host = container.get_host().await.unwrap();
-    let port = container.get_host_port_ipv4(QDRANT_PORT).await.unwrap();
-    let url = format!("http://{host}:{port}");
-
-    let config = QdrantConfig {
-        collection_name: "memory_entries".to_string(),
-        similarity_threshold,
-        promotion_source_threshold: 2,
-    };
-
-    let store =
-        QdrantMemoryStore::new(&url, config, embedder).expect("failed to create Qdrant client");
-    store
-        .initialize()
-        .await
-        .expect("failed to initialize Qdrant collection");
-
-    (store, container)
-}
-
-fn create_embedder(provider: Arc<OllamaModelProvider>) -> RealEmbedder {
-    DefaultTextEmbedder::new(provider, embedding_model(), EMBEDDING_DIM)
-}
+use support::{create_embedder, start_qdrant_store};
 
 fn input(content: &str) -> MemoryInput {
     MemoryInput::new(content.to_string(), HashMap::new())

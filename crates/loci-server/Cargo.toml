@@ -3,9 +3,16 @@ name = "loci-server"
 version.workspace = true
 edition.workspace = true
 
+[lib]
+name = "loci_server"
+path = "src/lib.rs"
+
 [[bin]]
 name = "loci-server"
 path = "src/main.rs"
+
+[features]
+testing = []
 
 [dependencies]
 loci-core = { path = "../loci-core" }
