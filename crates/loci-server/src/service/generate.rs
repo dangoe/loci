@@ -1,0 +1,135 @@
+// Copyright (c) 2026 Daniel Götten
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// This file is part of loci-server.
+
+use std::sync::Arc;
+
+use buffa::MessageField;
+use connectrpc::{ConnectError, Context};
+use futures::StreamExt as _;
+
+use loci_config::ConfigError;
+use loci_core::contextualization::{
+    ContextualizationMemoryMode, Contextualizer, ContextualizerConfig, ContextualizerSystemConfig,
+    ContextualizerSystemMode,
+};
+use loci_core::memory::Score;
+use loci_core::model_provider::text_generation::TokenUsage as CoreTokenUsage;
+
+use crate::loci::generate::v1::{
+    GenerateServiceGenerateRequestView, GenerateServiceGenerateResponse, MemoryMode, SystemMode,
+    TokenUsage,
+};
+use crate::state::AppState;
+
+pub(crate) struct GenerateServiceImpl {
+    state: Arc<AppState>,
+}
+
+impl GenerateServiceImpl {
+    pub(crate) fn new(state: Arc<AppState>) -> Self {
+        Self { state }
+    }
+}
+
+impl crate::loci::generate::v1::GenerateService for GenerateServiceImpl {
+    async fn generate(
+        &self,
+        ctx: Context,
+        request: buffa::view::OwnedView<GenerateServiceGenerateRequestView<'static>>,
+    ) -> Result<
+        (
+            std::pin::Pin<
+                Box<
+                    dyn futures::Stream<
+                            Item = Result<GenerateServiceGenerateResponse, ConnectError>,
+                        > + Send,
+                >,
+            >,
+            Context,
+        ),
+        ConnectError,
+    > {
+        let ctx_config = build_contextualizer_config(&self.state, &request)?;
+
+        let contextualizer = Contextualizer::new(
+            Arc::clone(&self.state.store),
+            Arc::clone(&self.state.llm_provider),
+            ctx_config,
+        );
+
+        let prompt = request.prompt.to_owned();
+        let stream = contextualizer
+            .contextualize(prompt)
+            .await
+            .map_err(|e| ConnectError::internal(e.to_string()))?;
+
+        let mapped = stream.map(|item| {
+            item.map(|chunk| GenerateServiceGenerateResponse {
+                text: chunk.text,
+                model: chunk.model,
+                done: chunk.done,
+                usage: chunk
+                    .usage
+                    .map(token_usage_to_proto)
+                    .map(MessageField::some)
+                    .unwrap_or_default(),
+                ..Default::default()
+            })
+            .map_err(|e| ConnectError::internal(e.to_string()))
+        });
+
+        Ok((Box::pin(mapped), ctx))
+    }
+}
+
+fn build_contextualizer_config(
+    state: &AppState,
+    request: &GenerateServiceGenerateRequestView<'_>,
+) -> Result<ContextualizerConfig, ConnectError> {
+    let model_key = &state.config.routing.text.default;
+    let model = state.config.models.text.get(model_key).ok_or_else(|| {
+        ConnectError::internal(
+            ConfigError::MissingKey {
+                section: "models.text".into(),
+                key: model_key.clone(),
+            }
+            .to_string(),
+        )
+    })?;
+
+    let min_score = Score::new(request.min_score)
+        .map_err(|_| ConnectError::invalid_argument("min_score must be in [0.0, 1.0]"))?;
+
+    Ok(ContextualizerConfig {
+        text_generation_model: model.model.clone(),
+        system: request.system.map(|sys| ContextualizerSystemConfig {
+            mode: match request.system_mode.as_known() {
+                Some(SystemMode::SYSTEM_MODE_REPLACE) => ContextualizerSystemMode::Replace,
+                _ => ContextualizerSystemMode::Append,
+            },
+            system: sys.to_owned(),
+        }),
+        memory_mode: match request.memory_mode.as_known() {
+            Some(MemoryMode::MEMORY_MODE_OFF) => ContextualizationMemoryMode::Off,
+            _ => ContextualizationMemoryMode::Auto,
+        },
+        max_memory_entries: request.max_memory_entries as usize,
+        min_score,
+        filters: request
+            .filters
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
+        tuning: None,
+    })
+}
+
+fn token_usage_to_proto(u: CoreTokenUsage) -> TokenUsage {
+    TokenUsage {
+        prompt_tokens: u.prompt_tokens,
+        completion_tokens: u.completion_tokens,
+        total_tokens: u.total_tokens,
+        ..Default::default()
+    }
+}

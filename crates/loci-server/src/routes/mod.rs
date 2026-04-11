@@ -2,15 +2,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // This file is part of loci-server.
 
-mod generate;
 mod health;
-mod rpc;
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::Router;
-use axum::routing::{get, post};
+use axum::routing::get;
+use connectrpc::Router as ConnectRouter;
 use log::info;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
@@ -19,13 +18,20 @@ use loci_config::load_config;
 
 use crate::cli::ServerArgs;
 use crate::infra::{build_llm_provider, build_store};
+use crate::loci::generate::v1::GenerateServiceExt as _;
+use crate::loci::memory::v1::MemoryServiceExt as _;
+use crate::service::generate::GenerateServiceImpl;
+use crate::service::memory::MemoryServiceImpl;
 use crate::state::AppState;
 
 pub(crate) fn build_router(state: Arc<AppState>) -> Router {
+    let connect =
+        Arc::new(MemoryServiceImpl::new(Arc::clone(&state))).register(ConnectRouter::new());
+    let connect = Arc::new(GenerateServiceImpl::new(Arc::clone(&state))).register(connect);
+
     Router::new()
         .route("/v1/health", get(health::health_handler))
-        .route("/v1/rpc", post(rpc::rpc_handler))
-        .route("/v1/generate", post(generate::generate_stream_handler))
+        .fallback_service(connect.into_axum_router())
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state)

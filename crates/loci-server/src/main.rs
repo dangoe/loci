@@ -2,11 +2,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // This file is part of loci-server.
 
+include!(concat!(env!("OUT_DIR"), "/_connectrpc.rs"));
+
 mod cli;
-mod error;
 mod infra;
 mod routes;
-mod rpc;
+mod service;
 mod state;
 
 use clap::Parser;
@@ -17,9 +18,12 @@ use crate::cli::ServerArgs;
 #[tokio::main]
 async fn main() {
     let args = ServerArgs::parse();
+
     setup_logging(args.verbose);
+
     info!("Starting loci-server");
-    if let Err(e) = crate::routes::run_server(args).await {
+
+    if let Err(e) = routes::run_server(args).await {
         error!("fatal: {e}");
         std::process::exit(1);
     }

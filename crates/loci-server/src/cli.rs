@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use clap::Parser;
 
 #[derive(Parser)]
-#[command(name = "loci-server", about = "loci REST JSON-RPC server")]
+#[command(name = "loci-server", about = "loci ConnectRPC server")]
 pub(crate) struct ServerArgs {
     /// Path to the loci configuration file.
     #[arg(long, short, env = "LOCI_CONFIG", hide_env_values = true)]

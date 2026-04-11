@@ -19,6 +19,11 @@ license = "MIT OR Apache-2.0"
 async-stream = "0.3"
 axum = { version = "0.8", features = ["macros"] }
 chrono = { version = "0.4", features = ["serde"] }
+buffa = { version = "0.3", features = ["json"] }
+buffa-types = { version = "0.3", features = ["json"] }
+connectrpc = { version = "0.3", features = ["axum"] }
+connectrpc-build = "0.3"
+prost = "0.13"
 dirs = "5"
 futures = "0.3"
 log = "0.4"
