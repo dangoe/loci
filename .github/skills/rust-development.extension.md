@@ -33,7 +33,7 @@ cargo fmt --check                                          # formatting check
 
 ## Core Domain Notes (`loci-core`)
 
-- `MemoryStore` is text-centric: `save/get/query/update/set_tier/delete/prune_expired`.
+- `MemoryStore` is text-centric: `add_entry/get_entry/query/update_entry/set_entry_tier/delete_entry/prune_expired`.
 - `MemoryEntry` stores lifecycle fields (`tier`, `seen_count`, `first_seen`, `last_seen`, `expires_at`);
   embeddings are computed in store/provider layers, not stored on `MemoryEntry`.
 - `Contextualizer` queries memory entries using `MemoryQueryMode::Use` and streams model output.

@@ -135,7 +135,7 @@ async fn prepare_expired_entry(
     store: &QdrantMemoryStore<FakeTextEmbedder>,
 ) {
     let short_lived = store
-        .save(MemoryInput {
+        .add_entry(MemoryInput {
             content: "short-lived".to_string(),
             metadata: HashMap::new(),
             tier: Some(MemoryTier::Candidate),
@@ -175,7 +175,7 @@ async fn test_candidate_promotes_when_same_fact_arrives_from_different_source() 
     let (store, _container) = start_store(embedder, Some(0.9)).await;
 
     let first = store
-        .save(input_with_metadata(
+        .add_entry(input_with_metadata(
             "fact from source a",
             HashMap::from([("source".to_string(), "https://a.example".to_string())]),
         ))
@@ -184,7 +184,7 @@ async fn test_candidate_promotes_when_same_fact_arrives_from_different_source() 
     assert_eq!(first.memory_entry.tier, MemoryTier::Candidate);
 
     let second = store
-        .save(input_with_metadata(
+        .add_entry(input_with_metadata(
             "fact from source b",
             HashMap::from([("source".to_string(), "https://b.example".to_string())]),
         ))
@@ -195,7 +195,7 @@ async fn test_candidate_promotes_when_same_fact_arrives_from_different_source() 
     assert_eq!(second.memory_entry.tier, MemoryTier::Stable);
 
     // Verify the promotion is persisted in the store.
-    let fetched = store.get(first.memory_entry.id).await.unwrap();
+    let fetched = store.get_entry(first.memory_entry.id).await.unwrap();
     assert_eq!(fetched.memory_entry.tier, MemoryTier::Stable);
 }
 
@@ -209,14 +209,14 @@ async fn test_deduplication_does_not_collapse_different_metadata() {
     let (store, _container) = start_store(embedder, Some(0.9)).await;
 
     let first = store
-        .save(input_with_metadata(
+        .add_entry(input_with_metadata(
             "same content a",
             HashMap::from([("label".to_string(), "a".to_string())]),
         ))
         .await
         .unwrap();
     let second = store
-        .save(input_with_metadata(
+        .add_entry(input_with_metadata(
             "same content b",
             HashMap::from([("label".to_string(), "b".to_string())]),
         ))
@@ -235,8 +235,8 @@ async fn test_deduplication_reuses_id_when_score_meets_threshold() {
         .with("near-duplicate", unit_vec(0));
     let (store, _container) = start_store(embedder, Some(0.9)).await;
 
-    let original = store.save(input("original")).await.unwrap();
-    let duplicate = store.save(input("near-duplicate")).await.unwrap();
+    let original = store.add_entry(input("original")).await.unwrap();
+    let duplicate = store.add_entry(input("near-duplicate")).await.unwrap();
 
     assert_eq!(duplicate.memory_entry.id, original.memory_entry.id);
     assert_eq!(duplicate.memory_entry.seen_count, 2);
@@ -251,8 +251,8 @@ async fn test_deduplication_stores_new_memory_when_score_below_threshold() {
         .with("y-axis topic", unit_vec(1));
     let (store, _container) = start_store(embedder, Some(0.9)).await;
 
-    let first = store.save(input("x-axis topic")).await.unwrap();
-    let second = store.save(input("y-axis topic")).await.unwrap();
+    let first = store.add_entry(input("x-axis topic")).await.unwrap();
+    let second = store.add_entry(input("y-axis topic")).await.unwrap();
 
     assert_ne!(second.memory_entry.id, first.memory_entry.id);
 }
@@ -266,9 +266,9 @@ async fn test_deleted_memory_is_not_returned_by_query() {
         .with("query", unit_vec(0));
     let (store, _container) = start_store(embedder, None).await;
 
-    let deleted = store.save(input("to be deleted")).await.unwrap();
-    let survivor = store.save(input("survivor")).await.unwrap();
-    store.delete(deleted.memory_entry.id).await.unwrap();
+    let deleted = store.add_entry(input("to be deleted")).await.unwrap();
+    let survivor = store.add_entry(input("survivor")).await.unwrap();
+    store.delete_entry(deleted.memory_entry.id).await.unwrap();
 
     let results = store.query(query("query", 10)).await.unwrap();
 
@@ -294,7 +294,7 @@ async fn test_get_returns_not_found_for_unknown_id() {
     let (store, _container) = start_store(embedder, None).await;
 
     let unknown_id = Uuid::new_v4();
-    let result = store.get(unknown_id).await;
+    let result = store.get_entry(unknown_id).await;
 
     assert!(matches!(result, Err(MemoryStoreError::NotFound(id)) if id == unknown_id));
 }
@@ -305,8 +305,8 @@ async fn test_get_returns_saved_entry() {
     let embedder = FakeTextEmbedder::new().with("fetch me", unit_vec(0));
     let (store, _container) = start_store(embedder, None).await;
 
-    let saved = store.save(input("fetch me")).await.unwrap();
-    let fetched = store.get(saved.memory_entry.id).await.unwrap();
+    let saved = store.add_entry(input("fetch me")).await.unwrap();
+    let fetched = store.get_entry(saved.memory_entry.id).await.unwrap();
 
     assert_eq!(fetched.memory_entry.id, saved.memory_entry.id);
     assert_eq!(fetched.memory_entry.content, "fetch me");
@@ -327,7 +327,7 @@ async fn test_metadata_is_persisted_and_restored() {
         ("language".to_string(), "en".to_string()),
     ]);
     store
-        .save(input_with_metadata("tagged content", metadata.clone()))
+        .add_entry(input_with_metadata("tagged content", metadata.clone()))
         .await
         .unwrap();
 
@@ -345,7 +345,7 @@ async fn test_neither_query_mode_increments_seen_count() {
         .with("query", unit_vec(0));
     let (store, _container) = start_store(embedder, None).await;
 
-    let saved = store.save(input("remember this")).await.unwrap();
+    let saved = store.add_entry(input("remember this")).await.unwrap();
     assert_eq!(saved.memory_entry.seen_count, 1);
 
     let _ = store
@@ -373,7 +373,7 @@ async fn test_prune_expired_memory_entries() {
     let (store, container) = start_store(embedder, None).await;
 
     let long_lived = store
-        .save(MemoryInput {
+        .add_entry(MemoryInput {
             content: "long-lived".to_string(),
             metadata: HashMap::new(),
             tier: Some(MemoryTier::Core),
@@ -401,14 +401,14 @@ async fn test_query_filters_by_metadata() {
     let (store, _container) = start_store(embedder, None).await;
 
     store
-        .save(input_with_metadata(
+        .add_entry(input_with_metadata(
             "doc en",
             HashMap::from([("lang".to_string(), "en".to_string())]),
         ))
         .await
         .unwrap();
     store
-        .save(input_with_metadata(
+        .add_entry(input_with_metadata(
             "doc de",
             HashMap::from([("lang".to_string(), "de".to_string())]),
         ))
@@ -439,8 +439,8 @@ async fn test_query_ranks_results_by_similarity() {
         .with("near x", unit_vec(0));
     let (store, _container) = start_store(embedder, None).await;
 
-    store.save(input("x-axis")).await.unwrap();
-    store.save(input("y-axis")).await.unwrap();
+    store.add_entry(input("x-axis")).await.unwrap();
+    store.add_entry(input("y-axis")).await.unwrap();
 
     // "near x" maps to the same vector as "x-axis" so it should rank first
     let results = store.query(query("near x", 2)).await.unwrap();
@@ -467,7 +467,7 @@ async fn test_query_respects_expiration() {
     for tier in vec![MemoryTier::Core, MemoryTier::Stable, MemoryTier::Candidate] {
         valid_entries.push(
             store
-                .save(MemoryInput {
+                .add_entry(MemoryInput {
                     content: tier.as_str().to_string(),
                     metadata: HashMap::new(),
                     tier: Some(tier),
@@ -500,7 +500,7 @@ async fn test_query_respects_max_results() {
     let (store, _container) = start_store(embedder, None).await;
 
     for i in 0..5 {
-        store.save(input(&format!("memory {i}"))).await.unwrap();
+        store.add_entry(input(&format!("memory {i}"))).await.unwrap();
     }
 
     let results = store.query(query("query", 3)).await.unwrap();
@@ -518,8 +518,8 @@ async fn test_query_respects_min_score() {
         .with("query", unit_vec(0));
     let (store, _container) = start_store(embedder, None).await;
 
-    store.save(input("x-axis")).await.unwrap();
-    store.save(input("y-axis")).await.unwrap();
+    store.add_entry(input("x-axis")).await.unwrap();
+    store.add_entry(input("y-axis")).await.unwrap();
 
     // weighted min_score of 0.5 should exclude the orthogonal entry
     let results = store
@@ -545,7 +545,7 @@ async fn test_saved_memory_is_returned_by_query() {
         .with("hello world query", unit_vec(0));
     let (store, _container) = start_store(embedder, None).await;
 
-    let entry = store.save(input("hello world")).await.unwrap();
+    let entry = store.add_entry(input("hello world")).await.unwrap();
 
     let results = store.query(query("hello world query", 1)).await.unwrap();
 
@@ -562,7 +562,7 @@ async fn test_save_ephemeral_returns_error() {
     let (store, _container) = start_store(embedder, None).await;
 
     let result = store
-        .save(MemoryInput {
+        .add_entry(MemoryInput {
             content: "ephemeral".to_string(),
             metadata: HashMap::new(),
             tier: Some(MemoryTier::Ephemeral),
@@ -581,9 +581,9 @@ async fn test_set_tier_promotes_to_core() {
     let embedder = FakeTextEmbedder::new().with("curate me", unit_vec(0));
     let (store, _container) = start_store(embedder, None).await;
 
-    let saved = store.save(input("curate me")).await.unwrap();
+    let saved = store.add_entry(input("curate me")).await.unwrap();
     let updated = store
-        .set_tier(saved.memory_entry.id, MemoryTier::Core)
+        .set_entry_tier(saved.memory_entry.id, MemoryTier::Core)
         .await
         .unwrap();
 
@@ -591,7 +591,7 @@ async fn test_set_tier_promotes_to_core() {
     assert_eq!(updated.memory_entry.expires_at, None);
 
     // Verify the tier change is persisted in the store.
-    let fetched = store.get(saved.memory_entry.id).await.unwrap();
+    let fetched = store.get_entry(saved.memory_entry.id).await.unwrap();
     assert_eq!(fetched.memory_entry.tier, MemoryTier::Core);
     assert_eq!(fetched.memory_entry.expires_at, None);
 }
@@ -602,9 +602,9 @@ async fn test_set_tier_to_ephemeral_returns_error() {
     let embedder = FakeTextEmbedder::new().with("content", unit_vec(0));
     let (store, _container) = start_store(embedder, None).await;
 
-    let saved = store.save(input("content")).await.unwrap();
+    let saved = store.add_entry(input("content")).await.unwrap();
     let result = store
-        .set_tier(saved.memory_entry.id, MemoryTier::Ephemeral)
+        .set_entry_tier(saved.memory_entry.id, MemoryTier::Ephemeral)
         .await;
 
     assert!(
@@ -621,9 +621,9 @@ async fn test_update_changes_content_and_returns_updated_entry() {
         .with("updated content", unit_vec(1));
     let (store, _container) = start_store(embedder, None).await;
 
-    let saved = store.save(input("original content")).await.unwrap();
+    let saved = store.add_entry(input("original content")).await.unwrap();
     let updated = store
-        .update(saved.memory_entry.id, input("updated content"))
+        .update_entry(saved.memory_entry.id, input("updated content"))
         .await
         .unwrap();
 
@@ -631,7 +631,7 @@ async fn test_update_changes_content_and_returns_updated_entry() {
     assert_eq!(updated.memory_entry.content, "updated content");
 
     // Verify the change is persisted in the store.
-    let fetched = store.get(saved.memory_entry.id).await.unwrap();
+    let fetched = store.get_entry(saved.memory_entry.id).await.unwrap();
     assert_eq!(fetched.memory_entry.content, "updated content");
 }
 
@@ -642,7 +642,7 @@ async fn test_update_returns_not_found_for_unknown_id() {
     let (store, _container) = start_store(embedder, None).await;
 
     let unknown_id = Uuid::new_v4();
-    let result = store.update(unknown_id, input("anything")).await;
+    let result = store.update_entry(unknown_id, input("anything")).await;
 
     assert!(matches!(result, Err(MemoryStoreError::NotFound(id)) if id == unknown_id));
 }
@@ -653,9 +653,9 @@ async fn test_update_to_ephemeral_returns_error() {
     let embedder = FakeTextEmbedder::new().with("content", unit_vec(0));
     let (store, _container) = start_store(embedder, None).await;
 
-    let saved = store.save(input("content")).await.unwrap();
+    let saved = store.add_entry(input("content")).await.unwrap();
     let result = store
-        .update(
+        .update_entry(
             saved.memory_entry.id,
             MemoryInput {
                 content: "content".to_string(),

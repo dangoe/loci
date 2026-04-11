@@ -59,7 +59,7 @@ impl<'a, S: CoreMemoryStore, W: Write + Send> CommandHandler<'a, MemoryCommand, 
                     }
                     None => CoreMemoryInput::new(content, pairs_to_map(metadata)),
                 };
-                let entry = self.store.save(input).await?;
+                let entry = self.store.add_entry(input).await?;
                 writeln!(
                     out,
                     "{}",
@@ -90,7 +90,7 @@ impl<'a, S: CoreMemoryStore, W: Write + Send> CommandHandler<'a, MemoryCommand, 
             }
             MemoryCommand::Get { id } => {
                 debug!("get memory entry: id={id}");
-                let entry = self.store.get(id).await?;
+                let entry = self.store.get_entry(id).await?;
                 writeln!(
                     out,
                     "{}",
@@ -114,7 +114,7 @@ impl<'a, S: CoreMemoryStore, W: Write + Send> CommandHandler<'a, MemoryCommand, 
                     );
                 }
 
-                let existing = self.store.get(id).await?;
+                let existing = self.store.get_entry(id).await?;
                 let content = content.unwrap_or(existing.memory_entry.content);
                 let metadata = if metadata.is_empty() {
                     existing.memory_entry.metadata
@@ -126,7 +126,7 @@ impl<'a, S: CoreMemoryStore, W: Write + Send> CommandHandler<'a, MemoryCommand, 
                     .unwrap_or(existing.memory_entry.tier);
 
                 let input = CoreMemoryInput::new_with_tier(content, metadata, tier);
-                let entry = self.store.update(id, input).await?;
+                let entry = self.store.update_entry(id, input).await?;
                 writeln!(
                     out,
                     "{}",
@@ -135,7 +135,7 @@ impl<'a, S: CoreMemoryStore, W: Write + Send> CommandHandler<'a, MemoryCommand, 
             }
             MemoryCommand::Delete { id } => {
                 debug!("delete memory entry: id={id}");
-                self.store.delete(id).await?;
+                self.store.delete_entry(id).await?;
                 writeln!(
                     out,
                     "{}",

@@ -59,7 +59,7 @@ The following is fully implemented and working today.
 
 | Trait                         | Purpose                                                             |
 | ----------------------------- | ------------------------------------------------------------------- |
-| `MemoryStore`                 | Save, query, update, set tier, delete, prune expired memory entries |
+| `MemoryStore`                 | Add, get, query, update, set tier, delete, prune expired memory entries |
 | `TextEmbedder`                | Embed text into a vector                                            |
 | `EmbeddingModelProvider`      | Raw embedding model provider (HTTP, model name)                     |
 | `TextGenerationModelProvider` | Raw text generation model provider                                  |

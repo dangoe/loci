@@ -349,7 +349,7 @@ impl<E: TextEmbedder> QdrantMemoryStore<E> {
 }
 
 impl<E: TextEmbedder> MemoryStore for QdrantMemoryStore<E> {
-    async fn save(&self, input: MemoryInput) -> Result<MemoryQueryResult, MemoryStoreError> {
+    async fn add_entry(&self, input: MemoryInput) -> Result<MemoryQueryResult, MemoryStoreError> {
         let tier = input.tier.unwrap_or(MemoryTier::Candidate);
         if tier == MemoryTier::Ephemeral {
             return Err(MemoryStoreError::Query(
@@ -393,7 +393,7 @@ impl<E: TextEmbedder> MemoryStore for QdrantMemoryStore<E> {
         })
     }
 
-    async fn get(&self, id: Uuid) -> Result<MemoryQueryResult, MemoryStoreError> {
+    async fn get_entry(&self, id: Uuid) -> Result<MemoryQueryResult, MemoryStoreError> {
         let memory = self.load_memory(id).await?;
         Ok(MemoryQueryResult {
             memory_entry: memory,
@@ -422,7 +422,7 @@ impl<E: TextEmbedder> MemoryStore for QdrantMemoryStore<E> {
         }
     }
 
-    async fn update(
+    async fn update_entry(
         &self,
         id: Uuid,
         input: MemoryInput,
@@ -468,7 +468,7 @@ impl<E: TextEmbedder> MemoryStore for QdrantMemoryStore<E> {
         })
     }
 
-    async fn set_tier(
+    async fn set_entry_tier(
         &self,
         id: Uuid,
         tier: MemoryTier,
@@ -496,7 +496,7 @@ impl<E: TextEmbedder> MemoryStore for QdrantMemoryStore<E> {
         })
     }
 
-    async fn delete(&self, id: Uuid) -> Result<(), MemoryStoreError> {
+    async fn delete_entry(&self, id: Uuid) -> Result<(), MemoryStoreError> {
         self.client
             .delete_points(
                 DeletePointsBuilder::new(&self.config.collection_name)

@@ -87,7 +87,7 @@ impl MockStore {
 }
 
 impl loci_core::store::MemoryStore for MockStore {
-    fn save(
+    fn add_entry(
         &self,
         _input: CoreMemoryInput,
     ) -> impl Future<Output = Result<CoreMemoryQueryResult, CoreMemoryStoreError>> + Send + '_ {
@@ -98,7 +98,7 @@ impl loci_core::store::MemoryStore for MockStore {
         async move { result }
     }
 
-    fn get(
+    fn get_entry(
         &self,
         id: Uuid,
     ) -> impl Future<Output = Result<CoreMemoryQueryResult, CoreMemoryStoreError>> + Send + '_ {
@@ -119,7 +119,7 @@ impl loci_core::store::MemoryStore for MockStore {
         async move { Ok(entries) }
     }
 
-    fn update(
+    fn update_entry(
         &self,
         id: Uuid,
         input: CoreMemoryInput,
@@ -132,7 +132,7 @@ impl loci_core::store::MemoryStore for MockStore {
         async move { result }
     }
 
-    fn set_tier(
+    fn set_entry_tier(
         &self,
         id: Uuid,
         _tier: CoreMemoryTier,
@@ -140,7 +140,7 @@ impl loci_core::store::MemoryStore for MockStore {
         async move { Err(CoreMemoryStoreError::NotFound(id)) }
     }
 
-    fn delete(
+    fn delete_entry(
         &self,
         _id: Uuid,
     ) -> impl Future<Output = Result<(), CoreMemoryStoreError>> + Send + '_ {
