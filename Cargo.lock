@@ -1362,7 +1362,7 @@ checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
 
 [[package]]
 name = "loci-cli"
-version = "0.1.0"
+version = "0.2.0-dev"
 dependencies = [
  "clap",
  "dirs",
@@ -1385,7 +1385,7 @@ dependencies = [
 
 [[package]]
 name = "loci-config"
-version = "0.1.0"
+version = "0.2.0-dev"
 dependencies = [
  "pretty_assertions",
  "rstest",
@@ -1398,7 +1398,7 @@ dependencies = [
 
 [[package]]
 name = "loci-core"
-version = "0.1.0"
+version = "0.2.0-dev"
 dependencies = [
  "async-stream",
  "chrono",
@@ -1415,7 +1415,7 @@ dependencies = [
 
 [[package]]
 name = "loci-e2e-tests"
-version = "0.1.0"
+version = "0.2.0-dev"
 dependencies = [
  "futures",
  "loci-core",
@@ -1428,7 +1428,7 @@ dependencies = [
 
 [[package]]
 name = "loci-memory-store-qdrant"
-version = "0.1.0"
+version = "0.2.0-dev"
 dependencies = [
  "chrono",
  "loci-core",
@@ -1443,7 +1443,7 @@ dependencies = [
 
 [[package]]
 name = "loci-model-provider-ollama"
-version = "0.1.0"
+version = "0.2.0-dev"
 dependencies = [
  "async-stream",
  "futures",
