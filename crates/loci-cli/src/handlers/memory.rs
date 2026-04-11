@@ -44,13 +44,13 @@ impl<'a, S: CoreMemoryStore, W: Write + Send> CommandHandler<'a, MemoryCommand, 
 {
     async fn handle(&self, command: MemoryCommand, out: &mut W) -> Result<(), Box<dyn StdError>> {
         match command {
-            MemoryCommand::Save {
+            MemoryCommand::Add {
                 content,
                 metadata,
                 tier,
             } => {
                 debug!(
-                    "save memory entry: content={content}, metadata={:?}, tier={:?}",
+                    "add memory entry: content={content}, metadata={:?}, tier={:?}",
                     metadata, tier
                 );
                 let input = match tier {
@@ -59,7 +59,7 @@ impl<'a, S: CoreMemoryStore, W: Write + Send> CommandHandler<'a, MemoryCommand, 
                     }
                     None => CoreMemoryInput::new(content, pairs_to_map(metadata)),
                 };
-                let entry = self.store.save(input).await?;
+                let entry = self.store.add_entry(input).await?;
                 writeln!(
                     out,
                     "{}",
@@ -90,7 +90,7 @@ impl<'a, S: CoreMemoryStore, W: Write + Send> CommandHandler<'a, MemoryCommand, 
             }
             MemoryCommand::Get { id } => {
                 debug!("get memory entry: id={id}");
-                let entry = self.store.get(id).await?;
+                let entry = self.store.get_entry(id).await?;
                 writeln!(
                     out,
                     "{}",
@@ -114,7 +114,7 @@ impl<'a, S: CoreMemoryStore, W: Write + Send> CommandHandler<'a, MemoryCommand, 
                     );
                 }
 
-                let existing = self.store.get(id).await?;
+                let existing = self.store.get_entry(id).await?;
                 let content = content.unwrap_or(existing.memory_entry.content);
                 let metadata = if metadata.is_empty() {
                     existing.memory_entry.metadata
@@ -126,7 +126,7 @@ impl<'a, S: CoreMemoryStore, W: Write + Send> CommandHandler<'a, MemoryCommand, 
                     .unwrap_or(existing.memory_entry.tier);
 
                 let input = CoreMemoryInput::new_with_tier(content, metadata, tier);
-                let entry = self.store.update(id, input).await?;
+                let entry = self.store.update_entry(id, input).await?;
                 writeln!(
                     out,
                     "{}",
@@ -135,7 +135,7 @@ impl<'a, S: CoreMemoryStore, W: Write + Send> CommandHandler<'a, MemoryCommand, 
             }
             MemoryCommand::Delete { id } => {
                 debug!("delete memory entry: id={id}");
-                self.store.delete(id).await?;
+                self.store.delete_entry(id).await?;
                 writeln!(
                     out,
                     "{}",
@@ -145,7 +145,7 @@ impl<'a, S: CoreMemoryStore, W: Write + Send> CommandHandler<'a, MemoryCommand, 
                 )?;
             }
             MemoryCommand::PruneExpired => {
-                debug!("clear memory");
+                debug!("prune expired memory entries");
                 self.store.prune_expired().await?;
                 writeln!(
                     out,
@@ -189,17 +189,17 @@ mod tests {
     };
 
     #[tokio::test]
-    async fn test_memory_save_outputs_json() {
+    async fn test_memory_add_outputs_json() {
         let entry = make_result("hello world", CoreMemoryTier::Candidate);
         let id = entry.memory_entry.id;
-        let store = MockStore::new().with_save(entry);
+        let store = MockStore::new().with_add(entry);
         let mut out = Vec::new();
 
         let handler = MemoryCommandHandler::new(&store);
 
         handler
             .handle(
-                MemoryCommand::Save {
+                MemoryCommand::Add {
                     content: "hello world".to_string(),
                     metadata: vec![],
                     tier: None,
@@ -216,16 +216,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_memory_save_with_tier_outputs_tier_field() {
+    async fn test_memory_add_with_tier_outputs_tier_field() {
         let entry = make_result("core fact", CoreMemoryTier::Core);
-        let store = MockStore::new().with_save(entry);
+        let store = MockStore::new().with_add(entry);
         let mut out = Vec::new();
 
         let handler = MemoryCommandHandler::new(&store);
 
         handler
             .handle(
-                MemoryCommand::Save {
+                MemoryCommand::Add {
                     content: "core fact".to_string(),
                     metadata: vec![],
                     tier: Some(MemoryTier::Core),
@@ -240,7 +240,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_memory_save_propagates_store_error() {
+    async fn test_memory_add_propagates_store_error() {
         let store = MockStore::new(); // save_entry = None → Connection error
         let mut out = Vec::new();
 
@@ -248,7 +248,7 @@ mod tests {
 
         let result = handler
             .handle(
-                MemoryCommand::Save {
+                MemoryCommand::Add {
                     content: "x".to_string(),
                     metadata: vec![],
                     tier: None,
@@ -557,17 +557,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_memory_save_with_metadata_outputs_metadata_in_json() {
+    async fn test_memory_add_with_metadata_outputs_metadata_in_json() {
         let mut meta = HashMap::new();
         meta.insert("source".to_string(), "wiki".to_string());
         let entry = make_result_with_metadata("some fact", meta);
-        let store = MockStore::new().with_save(entry);
+        let store = MockStore::new().with_add(entry);
         let mut out = Vec::new();
 
         let handler = MemoryCommandHandler::new(&store);
         handler
             .handle(
-                MemoryCommand::Save {
+                MemoryCommand::Add {
                     content: "some fact".to_string(),
                     metadata: vec![("source".to_string(), "wiki".to_string())],
                     tier: None,

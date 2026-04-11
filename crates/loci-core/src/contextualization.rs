@@ -355,7 +355,7 @@ mod tests {
     }
 
     impl MemoryStore for MockStore {
-        fn save(
+        fn add_entry(
             &self,
             input: MemoryInput,
         ) -> impl Future<Output = Result<MemoryQueryResult, MemoryStoreError>> + Send + '_ {
@@ -366,7 +366,7 @@ mod tests {
             async move { Ok(entry) }
         }
 
-        fn get(
+        fn get_entry(
             &self,
             id: Uuid,
         ) -> impl Future<Output = Result<MemoryQueryResult, MemoryStoreError>> + Send + '_ {
@@ -382,7 +382,7 @@ mod tests {
             async move { Ok(entries) }
         }
 
-        fn update(
+        fn update_entry(
             &self,
             id: Uuid,
             _input: MemoryInput,
@@ -390,7 +390,7 @@ mod tests {
             async move { Err(MemoryStoreError::NotFound(id)) }
         }
 
-        fn set_tier(
+        fn set_entry_tier(
             &self,
             id: Uuid,
             _tier: MemoryTier,
@@ -398,7 +398,7 @@ mod tests {
             async move { Err(MemoryStoreError::NotFound(id)) }
         }
 
-        fn delete(
+        fn delete_entry(
             &self,
             _id: Uuid,
         ) -> impl Future<Output = Result<(), MemoryStoreError>> + Send + '_ {
@@ -413,14 +413,14 @@ mod tests {
     struct FailingStore;
 
     impl MemoryStore for FailingStore {
-        fn save(
+        fn add_entry(
             &self,
             _input: MemoryInput,
         ) -> impl Future<Output = Result<MemoryQueryResult, MemoryStoreError>> + Send + '_ {
             async move { Err(MemoryStoreError::Connection("always fails".to_string())) }
         }
 
-        fn get(
+        fn get_entry(
             &self,
             _id: Uuid,
         ) -> impl Future<Output = Result<MemoryQueryResult, MemoryStoreError>> + Send + '_ {
@@ -435,7 +435,7 @@ mod tests {
             async move { Err(MemoryStoreError::Connection("always fails".to_string())) }
         }
 
-        fn update(
+        fn update_entry(
             &self,
             id: Uuid,
             _input: MemoryInput,
@@ -443,7 +443,7 @@ mod tests {
             async move { Err(MemoryStoreError::NotFound(id)) }
         }
 
-        fn set_tier(
+        fn set_entry_tier(
             &self,
             id: Uuid,
             _tier: MemoryTier,
@@ -451,7 +451,7 @@ mod tests {
             async move { Err(MemoryStoreError::NotFound(id)) }
         }
 
-        fn delete(
+        fn delete_entry(
             &self,
             _id: Uuid,
         ) -> impl Future<Output = Result<(), MemoryStoreError>> + Send + '_ {

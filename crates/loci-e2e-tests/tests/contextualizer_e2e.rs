@@ -78,7 +78,7 @@ fn input(content: &str) -> MemoryInput {
 
 #[tokio::test]
 #[cfg_attr(not(feature = "e2e"), ignore)]
-async fn test_save_and_query_with_real_embeddings() {
+async fn test_add_entry_and_query_with_real_embeddings() {
     ensure_ollama_available().await;
 
     let provider = Arc::new(ollama_provider());
@@ -87,7 +87,7 @@ async fn test_save_and_query_with_real_embeddings() {
 
     // Save a memory
     store
-        .save(input("The user's favorite color is blue"))
+        .add_entry(input("The user's favorite color is blue"))
         .await
         .expect("save should succeed");
 
@@ -128,7 +128,7 @@ async fn test_contextualizer_injects_relevant_memory() {
 
     // Save a memory the model should reference
     store
-        .save(input("The user's name is Alice"))
+        .add_entry(input("The user's name is Alice"))
         .await
         .expect("save should succeed");
 
@@ -201,12 +201,12 @@ async fn test_deduplication_with_real_embeddings() {
     let (store, _container) = start_qdrant_store(embedder, Some(0.9)).await;
 
     let first = store
-        .save(input("Paris is the capital of France"))
+        .add_entry(input("Paris is the capital of France"))
         .await
         .expect("first save should succeed");
 
     let second = store
-        .save(input("Paris is the capital of France"))
+        .add_entry(input("Paris is the capital of France"))
         .await
         .expect("second save should succeed");
 
