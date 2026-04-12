@@ -39,10 +39,17 @@ async fn test_add_and_get_entry_via_server() {
         .await
         .expect("add_entry should succeed");
 
-    let entry = add_resp.view().entry.as_option().expect("response should contain entry");
+    let entry = add_resp
+        .view()
+        .entry
+        .as_option()
+        .expect("response should contain entry");
     let id = entry.id.to_string();
     assert!(!id.is_empty(), "entry should have a non-empty id");
-    assert_eq!(entry.content, "The user's favorite programming language is Rust");
+    assert_eq!(
+        entry.content,
+        "The user's favorite programming language is Rust"
+    );
 
     let get_resp = client
         .get_entry(MemoryServiceGetEntryRequest {
@@ -52,9 +59,16 @@ async fn test_add_and_get_entry_via_server() {
         .await
         .expect("get_entry should succeed");
 
-    let fetched = get_resp.view().entry.as_option().expect("response should contain entry");
+    let fetched = get_resp
+        .view()
+        .entry
+        .as_option()
+        .expect("response should contain entry");
     assert_eq!(fetched.id, id);
-    assert_eq!(fetched.content, "The user's favorite programming language is Rust");
+    assert_eq!(
+        fetched.content,
+        "The user's favorite programming language is Rust"
+    );
 }
 
 #[tokio::test]
@@ -91,7 +105,10 @@ async fn test_add_and_query_entry_via_server() {
         .expect("query should succeed");
 
     let entries = &query_resp.view().entries;
-    assert!(!entries.is_empty(), "query should return at least one result");
+    assert!(
+        !entries.is_empty(),
+        "query should return at least one result"
+    );
     assert!(
         entries[0].content.contains("Bob"),
         "top result should contain 'Bob', got: {:?}",

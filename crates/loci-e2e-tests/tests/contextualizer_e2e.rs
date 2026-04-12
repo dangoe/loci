@@ -13,9 +13,7 @@ use loci_core::contextualization::{
 };
 use loci_core::memory::{MemoryInput, MemoryQuery, MemoryQueryMode, Score};
 use loci_core::store::MemoryStore;
-use loci_model_provider_ollama::testing::{
-    ensure_ollama_available, ollama_provider, text_model,
-};
+use loci_model_provider_ollama::testing::{ensure_ollama_available, ollama_provider, text_model};
 
 use support::{create_embedder, start_qdrant_store};
 

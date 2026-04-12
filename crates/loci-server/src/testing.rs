@@ -13,9 +13,9 @@ use std::sync::Arc;
 use connectrpc::client::{ClientConfig, HttpClient};
 
 use loci_config::{
-    AppConfig, EmbeddingModelConfig, MemoryConfig, MemorySection, ModelsConfig,
-    ModelProviderConfig, ModelProviderKind, RoutingConfig, EmbeddingRoutingConfig,
-    MemoryRoutingConfig, StoreConfig, TextModelConfig, TextRoutingConfig,
+    AppConfig, EmbeddingModelConfig, EmbeddingRoutingConfig, MemoryConfig, MemoryRoutingConfig,
+    MemorySection, ModelProviderConfig, ModelProviderKind, ModelsConfig, RoutingConfig,
+    StoreConfig, TextModelConfig, TextRoutingConfig,
 };
 
 use crate::infra::{build_llm_provider, build_store};

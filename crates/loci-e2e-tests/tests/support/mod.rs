@@ -50,7 +50,10 @@ pub async fn start_qdrant_container() -> (ContainerAsync<GenericImage>, String) 
         .expect("Docker must be available to run E2E tests");
 
     let host = container.get_host().await.unwrap();
-    let port = container.get_host_port_ipv4(QDRANT_GRPC_PORT).await.unwrap();
+    let port = container
+        .get_host_port_ipv4(QDRANT_GRPC_PORT)
+        .await
+        .unwrap();
     let url = format!("http://{host}:{port}");
 
     (container, url)
@@ -66,7 +69,10 @@ pub fn create_embedder(provider: Arc<OllamaModelProvider>) -> RealEmbedder {
 pub async fn start_qdrant_store(
     embedder: RealEmbedder,
     similarity_threshold: Option<f64>,
-) -> (QdrantMemoryStore<RealEmbedder>, ContainerAsync<GenericImage>) {
+) -> (
+    QdrantMemoryStore<RealEmbedder>,
+    ContainerAsync<GenericImage>,
+) {
     let (container, url) = start_qdrant_container().await;
 
     let config = QdrantConfig {
