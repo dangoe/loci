@@ -4,3 +4,5 @@
 
 pub mod config;
 pub mod store;
+#[cfg(any(feature = "testing", test))]
+pub mod testing;

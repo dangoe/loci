@@ -154,7 +154,7 @@ pub fn build_ollama_provider(
 
 #[cfg(test)]
 mod tests {
-    use crate::fixture::minimal_ollama_config;
+    use crate::testing::minimal_ollama_config;
     use loci_config::{ModelProviderConfig, ModelProviderKind};
 
     use super::*;

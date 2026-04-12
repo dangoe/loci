@@ -1,26 +1,44 @@
 // Copyright (c) 2026 Daniel Götten
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// This file is part of loci-memory-store-qdrant.
+// This file is part of loci-server.
+
+#![cfg(feature = "testing")]
 
 mod common;
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use buffa::EnumValue;
+use connectrpc::ErrorCode;
+use pretty_assertions::assert_eq;
+use uuid::Uuid;
+
+use loci_core::memory::{MemoryQueryMode, MemoryTier};
+use loci_core::model_provider::text_generation::{TextGenerationResponse, TokenUsage};
+use loci_server::loci::generate::v1::{GenerateServiceGenerateRequest, MemoryMode, SystemMode};
+
+use common::{
+    EntryBehavior, MockStore, MockTextGenerationModelProvider, ProviderBehavior, QueryBehavior,
+    TestServer, generate_error, make_result, mock_config,
+};
+
 #[tokio::test]
-#[cfg_attr(not(feature = "integration"), ignore)]
 async fn test_generate_streams_chunks_and_uses_configured_defaults() {
     let memory = make_result(
         Uuid::new_v4(),
         "Use concise explanations",
-        CoreMemoryTier::Stable,
+        MemoryTier::Stable,
         0.84,
     );
-    let store = Arc::new(MockMemoryStore::new(
-        EntryBehavior::Ok(memory.clone()),
-        EntryBehavior::Ok(memory.clone()),
-        QueryBehavior::Ok(vec![memory]),
-        UnitBehavior::Ok,
-    ));
-    let provider = Arc::new(MockTextGenerationProvider::new(ProviderBehavior::Stream(
-        vec![
+    let store = Arc::new(
+        MockStore::new()
+            .with_add_behavior(EntryBehavior::Ok(memory.clone()))
+            .with_get_behavior(EntryBehavior::Ok(memory.clone()))
+            .with_query_behavior(QueryBehavior::Ok(vec![memory])),
+    );
+    let provider = Arc::new(MockTextGenerationModelProvider::new(
+        ProviderBehavior::Stream(vec![
             TextGenerationResponse {
                 text: "Hello".to_string(),
                 model: "resolved-model".to_string(),
@@ -36,8 +54,8 @@ async fn test_generate_streams_chunks_and_uses_configured_defaults() {
                     total_tokens: Some(5),
                 }),
             ),
-        ],
-    )));
+        ]),
+    ));
     let server =
         TestServer::start_with_components(mock_config(), Arc::clone(&store), Arc::clone(&provider))
             .await;
@@ -104,22 +122,21 @@ async fn test_generate_streams_chunks_and_uses_configured_defaults() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "integration"), ignore)]
 async fn test_generate_respects_memory_and_system_modes() {
-    let memory = make_result(Uuid::new_v4(), "unused memory", CoreMemoryTier::Core, 0.77);
-    let store = Arc::new(MockMemoryStore::new(
-        EntryBehavior::Ok(memory.clone()),
-        EntryBehavior::Ok(memory.clone()),
-        QueryBehavior::Ok(vec![memory]),
-        UnitBehavior::Ok,
-    ));
-    let provider = Arc::new(MockTextGenerationProvider::new(ProviderBehavior::Stream(
-        vec![TextGenerationResponse::done(
+    let memory = make_result(Uuid::new_v4(), "unused memory", MemoryTier::Core, 0.77);
+    let store = Arc::new(
+        MockStore::new()
+            .with_add_behavior(EntryBehavior::Ok(memory.clone()))
+            .with_get_behavior(EntryBehavior::Ok(memory.clone()))
+            .with_query_behavior(QueryBehavior::Ok(vec![memory])),
+    );
+    let provider = Arc::new(MockTextGenerationModelProvider::new(
+        ProviderBehavior::Stream(vec![TextGenerationResponse::done(
             "ok".to_string(),
             "resolved-model".to_string(),
             None,
-        )],
-    )));
+        )]),
+    ));
     let server =
         TestServer::start_with_components(mock_config(), Arc::clone(&store), Arc::clone(&provider))
             .await;
@@ -156,22 +173,21 @@ async fn test_generate_respects_memory_and_system_modes() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "integration"), ignore)]
 async fn test_generate_rejects_invalid_min_score_before_calling_dependencies() {
-    let result = make_result(Uuid::new_v4(), "unused", CoreMemoryTier::Candidate, 0.42);
-    let store = Arc::new(MockMemoryStore::new(
-        EntryBehavior::Ok(result.clone()),
-        EntryBehavior::Ok(result.clone()),
-        QueryBehavior::Ok(vec![result]),
-        UnitBehavior::Ok,
-    ));
-    let provider = Arc::new(MockTextGenerationProvider::new(ProviderBehavior::Stream(
-        vec![TextGenerationResponse::done(
+    let result = make_result(Uuid::new_v4(), "unused", MemoryTier::Candidate, 0.42);
+    let store = Arc::new(
+        MockStore::new()
+            .with_add_behavior(EntryBehavior::Ok(result.clone()))
+            .with_get_behavior(EntryBehavior::Ok(result.clone()))
+            .with_query_behavior(QueryBehavior::Ok(vec![result])),
+    );
+    let provider = Arc::new(MockTextGenerationModelProvider::new(
+        ProviderBehavior::Stream(vec![TextGenerationResponse::done(
             "unused".to_string(),
             "resolved-model".to_string(),
             None,
-        )],
-    )));
+        )]),
+    ));
     let server =
         TestServer::start_with_components(mock_config(), Arc::clone(&store), Arc::clone(&provider))
             .await;
@@ -199,22 +215,21 @@ async fn test_generate_rejects_invalid_min_score_before_calling_dependencies() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "integration"), ignore)]
 async fn test_generate_returns_internal_error_when_default_model_is_missing() {
-    let result = make_result(Uuid::new_v4(), "unused", CoreMemoryTier::Candidate, 0.42);
-    let store = Arc::new(MockMemoryStore::new(
-        EntryBehavior::Ok(result.clone()),
-        EntryBehavior::Ok(result.clone()),
-        QueryBehavior::Ok(vec![result]),
-        UnitBehavior::Ok,
-    ));
-    let provider = Arc::new(MockTextGenerationProvider::new(ProviderBehavior::Stream(
-        vec![TextGenerationResponse::done(
+    let result = make_result(Uuid::new_v4(), "unused", MemoryTier::Candidate, 0.42);
+    let store = Arc::new(
+        MockStore::new()
+            .with_add_behavior(EntryBehavior::Ok(result.clone()))
+            .with_get_behavior(EntryBehavior::Ok(result.clone()))
+            .with_query_behavior(QueryBehavior::Ok(vec![result])),
+    );
+    let provider = Arc::new(MockTextGenerationModelProvider::new(
+        ProviderBehavior::Stream(vec![TextGenerationResponse::done(
             "unused".to_string(),
             "resolved-model".to_string(),
             None,
-        )],
-    )));
+        )]),
+    ));
     let mut config = mock_config();
     config.routing.text.default = "missing-model".to_string();
     let server =

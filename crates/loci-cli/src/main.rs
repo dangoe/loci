@@ -10,10 +10,10 @@
 
 mod cli;
 mod commands;
-#[cfg(test)]
-mod fixture;
 mod handlers;
 mod infra;
+#[cfg(test)]
+mod testing;
 
 use std::path::PathBuf;
 use std::sync::Arc;

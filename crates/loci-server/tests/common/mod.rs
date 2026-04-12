@@ -1,71 +1,42 @@
 // Copyright (c) 2026 Daniel Götten
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// This file is part of loci-memory-store-qdrant.
+// This file is part of loci-server.
 
-/// Builds a minimal [`AppConfig`] suitable for tests.
-///
-/// Points text and embedding models at the given Ollama instance, and the
-/// memory store at the given Qdrant gRPC URL.
-pub fn minimal_app_config(
-    qdrant_url: &str,
-    ollama_url: &str,
-    text_model: &str,
-    embedding_model: &str,
-    embedding_dim: usize,
-) -> AppConfig {
-    AppConfig {
-        providers: HashMap::from([(
-            "ollama".to_string(),
-            ModelProviderConfig {
-                kind: ModelProviderKind::Ollama,
-                endpoint: ollama_url.to_string(),
-                api_key: None,
-            },
-        )]),
-        models: ModelsConfig {
-            text: HashMap::from([(
-                "default".to_string(),
-                TextModelConfig {
-                    provider: "ollama".to_string(),
-                    model: text_model.to_string(),
-                    tuning: None,
-                },
-            )]),
-            embedding: HashMap::from([(
-                "default".to_string(),
-                EmbeddingModelConfig {
-                    provider: "ollama".to_string(),
-                    model: embedding_model.to_string(),
-                    dimension: embedding_dim,
-                },
-            )]),
-        },
-        memory: MemorySection {
-            backends: HashMap::from([(
-                "qdrant".to_string(),
-                StoreConfig::Qdrant {
-                    url: qdrant_url.to_string(),
-                    collection: "memory_entries".to_string(),
-                    api_key: None,
-                },
-            )]),
-            config: MemoryConfig {
-                backend: "qdrant".to_string(),
-                similarity_threshold: None,
-                promotion_source_threshold: 2,
-            },
-        },
-        routing: RoutingConfig {
-            text: TextRoutingConfig {
-                default: "default".to_string(),
-                fallback: vec![],
-            },
-            embedding: EmbeddingRoutingConfig {
-                default: "default".to_string(),
-            },
-            memory: MemoryRoutingConfig {
-                default: "qdrant".to_string(),
-            },
-        },
+//! Shared test infrastructure re-exported from upstream crates.
+
+// Each test binary gets its own copy of this module; items not needed by a
+// particular binary show up as dead_code warnings even though they are used
+// by other binaries.
+#![allow(dead_code, unused_imports)]
+
+use std::sync::Arc;
+
+use connectrpc::{ConnectError, ErrorCode};
+use loci_server::loci::generate::v1::GenerateServiceGenerateRequest;
+
+pub use loci_core::testing::{
+    EntryBehavior, MockStore, MockStoreErrorKind, MockTextGenerationModelProvider,
+    ProviderBehavior, QueryBehavior, UnitBehavior, make_result,
+};
+pub use loci_server::testing::{TestServer, mock_config};
+
+/// Sends a generate request and extracts the trailing error from the stream.
+pub async fn generate_error(
+    server: &TestServer,
+    request: GenerateServiceGenerateRequest,
+) -> ConnectError {
+    match server.generate_client().generate(request).await {
+        Err(error) => error,
+        Ok(mut stream) => {
+            let message = stream
+                .message()
+                .await
+                .expect("stream should decode the terminal frame");
+            assert!(message.is_none());
+            stream
+                .error()
+                .cloned()
+                .expect("stream should surface a trailing connect error")
+        }
     }
 }

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // This file is part of loci-model-provider-ollama.
 
-#![cfg(feature = "e2e")]
+#![cfg(feature = "testing")]
 
 use futures::StreamExt as _;
 use loci_core::model_provider::{
@@ -25,7 +25,6 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "e2e"), ignore)]
 async fn test_embed_returns_vectors_with_correct_count() {
     ensure_ollama_available().await;
 
@@ -48,7 +47,6 @@ async fn test_embed_returns_vectors_with_correct_count() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "e2e"), ignore)]
 async fn test_embed_similar_texts_have_high_cosine_similarity() {
     ensure_ollama_available().await;
 
@@ -72,7 +70,6 @@ async fn test_embed_similar_texts_have_high_cosine_similarity() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "e2e"), ignore)]
 async fn test_embed_dissimilar_texts_have_low_cosine_similarity() {
     ensure_ollama_available().await;
 
@@ -96,7 +93,6 @@ async fn test_embed_dissimilar_texts_have_low_cosine_similarity() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "e2e"), ignore)]
 async fn test_embed_nonexistent_model_returns_error() {
     ensure_ollama_available().await;
 
@@ -109,7 +105,6 @@ async fn test_embed_nonexistent_model_returns_error() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "e2e"), ignore)]
 async fn test_generate_returns_nonempty_response() {
     ensure_ollama_available().await;
 
@@ -130,7 +125,6 @@ async fn test_generate_returns_nonempty_response() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "e2e"), ignore)]
 async fn test_generate_stream_yields_chunks_ending_with_done() {
     ensure_ollama_available().await;
 
@@ -164,7 +158,6 @@ async fn test_generate_stream_yields_chunks_ending_with_done() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "e2e"), ignore)]
 async fn test_generate_with_system_prompt() {
     ensure_ollama_available().await;
 
@@ -187,7 +180,6 @@ async fn test_generate_with_system_prompt() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "e2e"), ignore)]
 async fn test_generate_respects_temperature_zero() {
     ensure_ollama_available().await;
 
@@ -216,7 +208,6 @@ async fn test_generate_respects_temperature_zero() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "e2e"), ignore)]
 async fn test_generate_nonexistent_model_returns_error() {
     ensure_ollama_available().await;
 

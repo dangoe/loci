@@ -199,7 +199,6 @@ mod tests {
             GenerateArgs, GenerateCommand, GenerateDebugFlags, GenerateMemoryMode,
             GenerateSystemMode,
         },
-        fixture,
         handlers::{
             CommandHandler,
             generate::{
@@ -207,6 +206,7 @@ mod tests {
                 stream_text_generation,
             },
         },
+        testing,
     };
     use loci_core::testing::{MockStore, MockTextGenerationModelProvider};
 
@@ -491,8 +491,8 @@ mod tests {
     #[tokio::test]
     async fn test_generate_handle_streams_response() {
         let store = MockStore::new().with_query(vec![]);
-        let provider = MockTextGenerationModelProvider::new().with_chunks(vec!["hello", " world"]);
-        let config = fixture::minimal_ollama_config();
+        let provider = MockTextGenerationModelProvider::with_chunks(vec!["hello", " world"]);
+        let config = testing::minimal_ollama_config();
         let mut out = Vec::new();
 
         let handler = GenerateCommandHandler::new(Arc::new(store), Arc::new(provider), &config);
@@ -512,8 +512,8 @@ mod tests {
     #[tokio::test]
     async fn test_generate_handle_missing_model_key_returns_err() {
         let store = MockStore::new();
-        let provider = MockTextGenerationModelProvider::new();
-        let mut config = fixture::minimal_ollama_config();
+        let provider = MockTextGenerationModelProvider::ok();
+        let mut config = testing::minimal_ollama_config();
         config.routing.text.default = "nonexistent".to_string();
         let mut out = Vec::new();
 
@@ -536,8 +536,8 @@ mod tests {
     #[tokio::test]
     async fn test_generate_handle_invalid_min_score_returns_err() {
         let store = MockStore::new();
-        let provider = MockTextGenerationModelProvider::new();
-        let config = fixture::minimal_ollama_config();
+        let provider = MockTextGenerationModelProvider::ok();
+        let config = testing::minimal_ollama_config();
         let mut out = Vec::new();
 
         let mut args = default_generate_args("hi");
@@ -561,8 +561,8 @@ mod tests {
     #[tokio::test]
     async fn test_generate_handle_debug_memory_flag_writes_response_header() {
         let store = MockStore::new().with_query(vec![]);
-        let provider = MockTextGenerationModelProvider::new().with_chunks(vec!["debug output"]);
-        let config = fixture::minimal_ollama_config();
+        let provider = MockTextGenerationModelProvider::with_chunks(vec!["debug output"]);
+        let config = testing::minimal_ollama_config();
         let mut out = Vec::new();
 
         let mut args = default_generate_args("debug prompt");
@@ -588,8 +588,8 @@ mod tests {
     #[tokio::test]
     async fn test_generate_handle_memory_mode_off_succeeds_without_store_entries() {
         let store = MockStore::new(); // query_entries empty — would fail if queried and result expected
-        let provider = MockTextGenerationModelProvider::new().with_chunks(vec!["ok"]);
-        let config = fixture::minimal_ollama_config();
+        let provider = MockTextGenerationModelProvider::with_chunks(vec!["ok"]);
+        let config = testing::minimal_ollama_config();
         let mut out = Vec::new();
 
         let mut args = default_generate_args("silent prompt");
@@ -608,8 +608,8 @@ mod tests {
     #[tokio::test]
     async fn test_generate_handle_system_mode_append_succeeds() {
         let store = MockStore::new().with_query(vec![]);
-        let provider = MockTextGenerationModelProvider::new();
-        let config = fixture::minimal_ollama_config();
+        let provider = MockTextGenerationModelProvider::ok();
+        let config = testing::minimal_ollama_config();
         let mut out = Vec::new();
 
         let mut args = default_generate_args("prompt");
@@ -628,8 +628,8 @@ mod tests {
     #[tokio::test]
     async fn test_generate_handle_system_mode_replace_succeeds() {
         let store = MockStore::new().with_query(vec![]);
-        let provider = MockTextGenerationModelProvider::new();
-        let config = fixture::minimal_ollama_config();
+        let provider = MockTextGenerationModelProvider::ok();
+        let config = testing::minimal_ollama_config();
         let mut out = Vec::new();
 
         let mut args = default_generate_args("prompt");

@@ -12,7 +12,7 @@ name = "loci-server"
 path = "src/main.rs"
 
 [features]
-testing = []
+testing = ["loci-core/testing"]
 
 [dependencies]
 loci-core = { path = "../loci-core" }
@@ -43,5 +43,9 @@ http-body = "1.0.1"
 connectrpc-build.workspace = true
 
 [dev-dependencies]
+loci-core = { path = "../loci-core", features = ["testing"] }
+loci-server = { path = ".", features = ["testing"] }
+chrono.workspace = true
+futures.workspace = true
 pretty_assertions.workspace = true
 rstest.workspace = true

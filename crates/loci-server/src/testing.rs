@@ -94,6 +94,18 @@ impl TestServer {
     }
 }
 
+/// Builds a minimal [`AppConfig`] with dummy URLs for tests that use mock
+/// stores and providers (no real infrastructure needed).
+pub fn mock_config() -> AppConfig {
+    minimal_app_config(
+        "http://unused-qdrant",
+        "http://unused-ollama",
+        "test-text-model",
+        "test-embedding-model",
+        384,
+    )
+}
+
 /// Builds a minimal [`AppConfig`] suitable for tests.
 ///
 /// Points text and embedding models at the given Ollama instance, and the

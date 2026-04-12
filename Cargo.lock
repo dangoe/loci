@@ -1654,6 +1654,7 @@ dependencies = [
  "loci-core",
  "loci-memory-store-qdrant",
  "loci-model-provider-ollama",
+ "loci-server",
  "log",
  "pretty_assertions",
  "rstest",
