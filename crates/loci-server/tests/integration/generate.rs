@@ -1,0 +1,241 @@
+// Copyright (c) 2026 Daniel Götten
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// This file is part of loci-memory-store-qdrant.
+
+mod common;
+
+#[tokio::test]
+#[cfg_attr(not(feature = "integration"), ignore)]
+async fn test_generate_streams_chunks_and_uses_configured_defaults() {
+    let memory = make_result(
+        Uuid::new_v4(),
+        "Use concise explanations",
+        CoreMemoryTier::Stable,
+        0.84,
+    );
+    let store = Arc::new(MockMemoryStore::new(
+        EntryBehavior::Ok(memory.clone()),
+        EntryBehavior::Ok(memory.clone()),
+        QueryBehavior::Ok(vec![memory]),
+        UnitBehavior::Ok,
+    ));
+    let provider = Arc::new(MockTextGenerationProvider::new(ProviderBehavior::Stream(
+        vec![
+            TextGenerationResponse {
+                text: "Hello".to_string(),
+                model: "resolved-model".to_string(),
+                usage: None,
+                done: false,
+            },
+            TextGenerationResponse::done(
+                " world".to_string(),
+                "resolved-model".to_string(),
+                Some(TokenUsage {
+                    prompt_tokens: Some(3),
+                    completion_tokens: Some(2),
+                    total_tokens: Some(5),
+                }),
+            ),
+        ],
+    )));
+    let server =
+        TestServer::start_with_components(mock_config(), Arc::clone(&store), Arc::clone(&provider))
+            .await;
+
+    let mut stream = server
+        .generate_client()
+        .generate(GenerateServiceGenerateRequest {
+            prompt: "How should I answer".to_string(),
+            max_memory_entries: 4,
+            min_score: 0.33,
+            filters: HashMap::from([("topic".to_string(), "style".to_string())]),
+            ..Default::default()
+        })
+        .await
+        .expect("generate should succeed");
+
+    let first = stream
+        .message()
+        .await
+        .expect("first stream message should decode")
+        .expect("stream should yield first chunk");
+    let second = stream
+        .message()
+        .await
+        .expect("second stream message should decode")
+        .expect("stream should yield second chunk");
+    let end = stream.message().await.expect("stream should end cleanly");
+
+    assert_eq!(first.text, "Hello");
+    assert_eq!(first.model, "resolved-model");
+    assert!(!first.done);
+    assert_eq!(second.text, " world");
+    assert!(second.done);
+    let usage = second
+        .usage
+        .as_option()
+        .expect("final chunk should include usage");
+    assert_eq!(usage.prompt_tokens, Some(3));
+    assert_eq!(usage.completion_tokens, Some(2));
+    assert_eq!(usage.total_tokens, Some(5));
+    assert!(end.is_none());
+
+    let query = store
+        .snapshot()
+        .query
+        .expect("generate should query memory");
+    assert_eq!(query.topic, "How should I answer");
+    assert_eq!(query.max_results, 4);
+    assert_eq!(query.min_score.value(), 0.33);
+    assert_eq!(query.filters.get("topic"), Some(&"style".to_string()));
+    assert_eq!(query.mode, MemoryQueryMode::Use);
+
+    let request = provider
+        .snapshot()
+        .last_request
+        .expect("provider should capture request");
+    assert_eq!(request.model, "test-text-model");
+    assert_eq!(request.prompt, "How should I answer");
+    let system = request
+        .system
+        .expect("contextualizer should attach a system prompt");
+    assert!(system.contains("Relevant memory entries"));
+    assert!(system.contains("Use concise explanations"));
+}
+
+#[tokio::test]
+#[cfg_attr(not(feature = "integration"), ignore)]
+async fn test_generate_respects_memory_and_system_modes() {
+    let memory = make_result(Uuid::new_v4(), "unused memory", CoreMemoryTier::Core, 0.77);
+    let store = Arc::new(MockMemoryStore::new(
+        EntryBehavior::Ok(memory.clone()),
+        EntryBehavior::Ok(memory.clone()),
+        QueryBehavior::Ok(vec![memory]),
+        UnitBehavior::Ok,
+    ));
+    let provider = Arc::new(MockTextGenerationProvider::new(ProviderBehavior::Stream(
+        vec![TextGenerationResponse::done(
+            "ok".to_string(),
+            "resolved-model".to_string(),
+            None,
+        )],
+    )));
+    let server =
+        TestServer::start_with_components(mock_config(), Arc::clone(&store), Arc::clone(&provider))
+            .await;
+
+    let mut stream = server
+        .generate_client()
+        .generate(GenerateServiceGenerateRequest {
+            prompt: "No memory".to_string(),
+            memory_mode: EnumValue::from(MemoryMode::MEMORY_MODE_OFF),
+            system: Some("Answer with context: {{memory}}".to_string()),
+            system_mode: EnumValue::from(SystemMode::SYSTEM_MODE_REPLACE),
+            ..Default::default()
+        })
+        .await
+        .expect("generate should succeed");
+
+    let chunk = stream
+        .message()
+        .await
+        .expect("stream message should decode")
+        .expect("stream should yield a chunk");
+    assert_eq!(chunk.text, "ok");
+    assert_eq!(store.snapshot().query_calls, 0);
+
+    let request = provider
+        .snapshot()
+        .last_request
+        .expect("provider should capture request");
+    let system = request
+        .system
+        .expect("request should include system prompt");
+    assert!(system.contains("Answer with context:"));
+    assert!(system.contains("None. Answer from general knowledge."));
+}
+
+#[tokio::test]
+#[cfg_attr(not(feature = "integration"), ignore)]
+async fn test_generate_rejects_invalid_min_score_before_calling_dependencies() {
+    let result = make_result(Uuid::new_v4(), "unused", CoreMemoryTier::Candidate, 0.42);
+    let store = Arc::new(MockMemoryStore::new(
+        EntryBehavior::Ok(result.clone()),
+        EntryBehavior::Ok(result.clone()),
+        QueryBehavior::Ok(vec![result]),
+        UnitBehavior::Ok,
+    ));
+    let provider = Arc::new(MockTextGenerationProvider::new(ProviderBehavior::Stream(
+        vec![TextGenerationResponse::done(
+            "unused".to_string(),
+            "resolved-model".to_string(),
+            None,
+        )],
+    )));
+    let server =
+        TestServer::start_with_components(mock_config(), Arc::clone(&store), Arc::clone(&provider))
+            .await;
+
+    let error = generate_error(
+        &server,
+        GenerateServiceGenerateRequest {
+            prompt: "bad score".to_string(),
+            min_score: 1.5,
+            ..Default::default()
+        },
+    )
+    .await;
+
+    assert_eq!(error.code, ErrorCode::InvalidArgument);
+    assert_eq!(
+        error
+            .message
+            .as_deref()
+            .expect("error should include a message"),
+        "min_score must be in [0.0, 1.0]"
+    );
+    assert_eq!(store.snapshot().query_calls, 0);
+    assert!(provider.snapshot().last_request.is_none());
+}
+
+#[tokio::test]
+#[cfg_attr(not(feature = "integration"), ignore)]
+async fn test_generate_returns_internal_error_when_default_model_is_missing() {
+    let result = make_result(Uuid::new_v4(), "unused", CoreMemoryTier::Candidate, 0.42);
+    let store = Arc::new(MockMemoryStore::new(
+        EntryBehavior::Ok(result.clone()),
+        EntryBehavior::Ok(result.clone()),
+        QueryBehavior::Ok(vec![result]),
+        UnitBehavior::Ok,
+    ));
+    let provider = Arc::new(MockTextGenerationProvider::new(ProviderBehavior::Stream(
+        vec![TextGenerationResponse::done(
+            "unused".to_string(),
+            "resolved-model".to_string(),
+            None,
+        )],
+    )));
+    let mut config = mock_config();
+    config.routing.text.default = "missing-model".to_string();
+    let server =
+        TestServer::start_with_components(config, Arc::clone(&store), Arc::clone(&provider)).await;
+
+    let error = generate_error(
+        &server,
+        GenerateServiceGenerateRequest {
+            prompt: "missing model".to_string(),
+            ..Default::default()
+        },
+    )
+    .await;
+
+    assert_eq!(error.code, ErrorCode::Internal);
+    let message = error
+        .message
+        .as_deref()
+        .expect("error should include a message");
+    assert!(message.contains("missing-model"));
+    assert!(message.contains("[models.text]"));
+    assert_eq!(store.snapshot().query_calls, 0);
+    assert!(provider.snapshot().last_request.is_none());
+}

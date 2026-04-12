@@ -185,8 +185,9 @@ mod tests {
     use crate::{
         commands::memory::MemoryCommand,
         handlers::memory::{MemoryCommandHandler, pairs_to_map},
-        mock::MockStore,
     };
+
+    use loci_core::testing::MockStore;
 
     #[tokio::test]
     async fn test_memory_add_outputs_json() {

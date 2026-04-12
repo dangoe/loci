@@ -14,8 +14,6 @@ mod commands;
 mod fixture;
 mod handlers;
 mod infra;
-#[cfg(test)]
-mod mock;
 
 use std::path::PathBuf;
 use std::sync::Arc;

@@ -3,6 +3,9 @@ name = "loci-core"
 version.workspace = true
 edition.workspace = true
 
+[features]
+testing = []
+
 [dependencies]
 async-stream.workspace = true
 chrono.workspace = true

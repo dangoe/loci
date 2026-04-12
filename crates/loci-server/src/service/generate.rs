@@ -2,11 +2,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // This file is part of loci-server.
 
+use std::pin::Pin;
 use std::sync::Arc;
 
 use buffa::MessageField;
+use buffa::view::OwnedView;
 use connectrpc::{ConnectError, Context};
-use futures::StreamExt as _;
+use futures::{Stream, StreamExt as _};
 
 use loci_config::ConfigError;
 use loci_core::contextualization::{
@@ -14,7 +16,10 @@ use loci_core::contextualization::{
     ContextualizerSystemMode,
 };
 use loci_core::memory::Score;
-use loci_core::model_provider::text_generation::TokenUsage as CoreTokenUsage;
+use loci_core::model_provider::text_generation::{
+    TextGenerationModelProvider, TokenUsage as CoreTokenUsage,
+};
+use loci_core::store::MemoryStore;
 
 use crate::loci::generate::v1::{
     GenerateServiceGenerateRequestView, GenerateServiceGenerateResponse, MemoryMode, SystemMode,
@@ -22,34 +27,38 @@ use crate::loci::generate::v1::{
 };
 use crate::state::AppState;
 
-pub(crate) struct GenerateServiceImpl {
-    state: Arc<AppState>,
+pub(crate) struct GenerateServiceImpl<M, E>
+where
+    M: MemoryStore,
+    E: TextGenerationModelProvider + 'static,
+{
+    state: Arc<AppState<M, E>>,
 }
 
-impl GenerateServiceImpl {
-    pub(crate) fn new(state: Arc<AppState>) -> Self {
+impl<M, E> GenerateServiceImpl<M, E>
+where
+    M: MemoryStore,
+    E: TextGenerationModelProvider + 'static,
+{
+    pub(crate) fn new(state: Arc<AppState<M, E>>) -> Self {
         Self { state }
     }
 }
 
-impl crate::loci::generate::v1::GenerateService for GenerateServiceImpl {
+type GenerateStream =
+    Pin<Box<dyn Stream<Item = Result<GenerateServiceGenerateResponse, ConnectError>> + Send>>;
+
+impl<M, E> crate::loci::generate::v1::GenerateService for GenerateServiceImpl<M, E>
+where
+    M: MemoryStore + 'static,
+    E: TextGenerationModelProvider + 'static,
+{
+    #[allow(clippy::result_large_err)]
     async fn generate(
         &self,
         ctx: Context,
-        request: buffa::view::OwnedView<GenerateServiceGenerateRequestView<'static>>,
-    ) -> Result<
-        (
-            std::pin::Pin<
-                Box<
-                    dyn futures::Stream<
-                            Item = Result<GenerateServiceGenerateResponse, ConnectError>,
-                        > + Send,
-                >,
-            >,
-            Context,
-        ),
-        ConnectError,
-    > {
+        request: OwnedView<GenerateServiceGenerateRequestView<'static>>,
+    ) -> Result<(GenerateStream, Context), ConnectError> {
         let ctx_config = build_contextualizer_config(&self.state, &request)?;
 
         let contextualizer = Contextualizer::new(
@@ -83,10 +92,15 @@ impl crate::loci::generate::v1::GenerateService for GenerateServiceImpl {
     }
 }
 
-fn build_contextualizer_config(
-    state: &AppState,
+#[allow(clippy::result_large_err)]
+fn build_contextualizer_config<M, E>(
+    state: &AppState<M, E>,
     request: &GenerateServiceGenerateRequestView<'_>,
-) -> Result<ContextualizerConfig, ConnectError> {
+) -> Result<ContextualizerConfig, ConnectError>
+where
+    M: MemoryStore,
+    E: TextGenerationModelProvider + 'static,
+{
     let model_key = &state.config.routing.text.default;
     let model = state.config.models.text.get(model_key).ok_or_else(|| {
         ConnectError::internal(
@@ -125,11 +139,11 @@ fn build_contextualizer_config(
     })
 }
 
-fn token_usage_to_proto(u: CoreTokenUsage) -> TokenUsage {
+fn token_usage_to_proto(usage: CoreTokenUsage) -> TokenUsage {
     TokenUsage {
-        prompt_tokens: u.prompt_tokens,
-        completion_tokens: u.completion_tokens,
-        total_tokens: u.total_tokens,
+        prompt_tokens: usage.prompt_tokens,
+        completion_tokens: usage.completion_tokens,
+        total_tokens: usage.total_tokens,
         ..Default::default()
     }
 }

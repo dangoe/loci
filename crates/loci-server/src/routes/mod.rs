@@ -15,6 +15,8 @@ use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
 use loci_config::load_config;
+use loci_core::model_provider::text_generation::TextGenerationModelProvider;
+use loci_core::store::MemoryStore;
 
 use crate::cli::ServerArgs;
 use crate::infra::{build_llm_provider, build_store};
@@ -24,7 +26,11 @@ use crate::service::generate::GenerateServiceImpl;
 use crate::service::memory::MemoryServiceImpl;
 use crate::state::AppState;
 
-pub(crate) fn build_router(state: Arc<AppState>) -> Router {
+pub(crate) fn build_router<M, E>(state: Arc<AppState<M, E>>) -> Router
+where
+    M: MemoryStore + 'static,
+    E: TextGenerationModelProvider + 'static,
+{
     let connect =
         Arc::new(MemoryServiceImpl::new(Arc::clone(&state))).register(ConnectRouter::new());
     let connect = Arc::new(GenerateServiceImpl::new(Arc::clone(&state))).register(connect);
@@ -76,6 +82,8 @@ fn resolve_config_path(cli_value: Option<PathBuf>) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use pretty_assertions::assert_eq;
+
     use super::*;
 
     #[test]

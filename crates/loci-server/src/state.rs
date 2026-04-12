@@ -5,13 +5,16 @@
 use std::sync::Arc;
 
 use loci_config::AppConfig;
-use loci_core::embedding::DefaultTextEmbedder;
-use loci_memory_store_qdrant::store::QdrantMemoryStore;
-use loci_model_provider_ollama::provider::OllamaModelProvider;
+use loci_core::model_provider::text_generation::TextGenerationModelProvider;
+use loci_core::store::MemoryStore;
 
 /// Shared application state injected into every axum handler.
-pub(crate) struct AppState {
-    pub store: Arc<QdrantMemoryStore<DefaultTextEmbedder<OllamaModelProvider>>>,
-    pub llm_provider: Arc<OllamaModelProvider>,
+pub(crate) struct AppState<M, E>
+where
+    M: MemoryStore,
+    E: TextGenerationModelProvider + 'static,
+{
+    pub store: Arc<M>,
+    pub llm_provider: Arc<E>,
     pub config: Arc<AppConfig>,
 }

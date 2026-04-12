@@ -1,28 +1,23 @@
 // Copyright (c) 2026 Daniel Götten
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// This file is part of loci-server.
+// This file is part of loci-memory-store-qdrant.
 
-//! Test utilities for spinning up an in-process loci server.
-//!
-//! Available only when the `testing` feature is enabled.
-
-use std::collections::HashMap;
-use std::net::SocketAddr;
-use std::sync::Arc;
+use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
 use connectrpc::client::{ClientConfig, HttpClient};
-
 use loci_config::{
     AppConfig, EmbeddingModelConfig, EmbeddingRoutingConfig, MemoryConfig, MemoryRoutingConfig,
     MemorySection, ModelProviderConfig, ModelProviderKind, ModelsConfig, RoutingConfig,
     StoreConfig, TextModelConfig, TextRoutingConfig,
 };
+use loci_core::{model_provider::text_generation::TextGenerationModelProvider, store::MemoryStore};
 
-use crate::infra::{build_llm_provider, build_store};
-use crate::loci::generate::v1::GenerateServiceClient;
-use crate::loci::memory::v1::MemoryServiceClient;
-use crate::routes::build_router;
-use crate::state::AppState;
+use crate::{
+    infra::{build_llm_provider, build_store},
+    loci::{generate::v1::GenerateServiceClient, memory::v1::MemoryServiceClient},
+    routes::build_router,
+    state::AppState,
+};
 
 /// A test server bound to a random local port.
 ///
@@ -39,14 +34,25 @@ impl TestServer {
     ///
     /// Panics if the store or provider cannot be initialised.
     pub async fn start(config: AppConfig) -> Self {
-        let store = Arc::new(
-            build_store(&config)
-                .await
-                .expect("TestServer: failed to build store"),
-        );
-        let llm_provider = Arc::new(
-            build_llm_provider(&config).expect("TestServer: failed to build llm provider"),
-        );
+        let store = build_store(&config)
+            .await
+            .expect("TestServer: failed to build store");
+        let llm_provider =
+            build_llm_provider(&config).expect("TestServer: failed to build llm provider");
+
+        Self::start_with_components(config, Arc::new(store), Arc::new(llm_provider)).await
+    }
+
+    /// Start the server using explicit dependencies.
+    pub async fn start_with_components<M, E>(
+        config: AppConfig,
+        store: Arc<M>,
+        llm_provider: Arc<E>,
+    ) -> Self
+    where
+        M: MemoryStore + 'static,
+        E: TextGenerationModelProvider + 'static,
+    {
         let state = Arc::new(AppState {
             store,
             llm_provider,

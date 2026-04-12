@@ -9,8 +9,7 @@ pub(crate) mod infra;
 pub(crate) mod routes;
 pub(crate) mod service;
 pub(crate) mod state;
-
-#[cfg(feature = "testing")]
+#[cfg(any(feature = "testing", test))]
 pub mod testing;
 
 pub use cli::ServerArgs;

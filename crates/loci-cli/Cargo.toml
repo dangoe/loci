@@ -27,6 +27,7 @@ systemd-journal-logger = { version = "2.2", optional = true }
 log.workspace = true
 
 [dev-dependencies]
+loci-core = { path = "../loci-core", features = ["testing"] }
 pretty_assertions.workspace = true
 rstest.workspace = true
 tempfile = "3"

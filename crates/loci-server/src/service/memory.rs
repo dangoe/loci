@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use buffa::view::OwnedView;
 use buffa::{EnumValue, MessageField};
 use buffa_types::google::protobuf::Timestamp;
 use chrono::{DateTime, Utc};
@@ -16,6 +17,7 @@ use loci_core::memory::{
     MemoryInput, MemoryQuery, MemoryQueryMode, MemoryQueryResult, MemoryTier as CoreMemoryTier,
     Score,
 };
+use loci_core::model_provider::text_generation::TextGenerationModelProvider;
 use loci_core::store::MemoryStore;
 
 use crate::loci::memory::v1::{
@@ -29,21 +31,33 @@ use crate::loci::memory::v1::{
 };
 use crate::state::AppState;
 
-pub(crate) struct MemoryServiceImpl {
-    state: Arc<AppState>,
+pub(crate) struct MemoryServiceImpl<M, E>
+where
+    M: MemoryStore,
+    E: TextGenerationModelProvider + 'static,
+{
+    state: Arc<AppState<M, E>>,
 }
 
-impl MemoryServiceImpl {
-    pub(crate) fn new(state: Arc<AppState>) -> Self {
+impl<M, E> MemoryServiceImpl<M, E>
+where
+    M: MemoryStore,
+    E: TextGenerationModelProvider + 'static,
+{
+    pub(crate) fn new(state: Arc<AppState<M, E>>) -> Self {
         Self { state }
     }
 }
 
-impl crate::loci::memory::v1::MemoryService for MemoryServiceImpl {
+impl<M, E> crate::loci::memory::v1::MemoryService for MemoryServiceImpl<M, E>
+where
+    M: MemoryStore + 'static,
+    E: TextGenerationModelProvider + 'static,
+{
     async fn add_entry(
         &self,
         ctx: Context,
-        request: buffa::view::OwnedView<MemoryServiceAddEntryRequestView<'static>>,
+        request: OwnedView<MemoryServiceAddEntryRequestView<'static>>,
     ) -> Result<(MemoryServiceAddEntryResponse, Context), ConnectError> {
         let tier = proto_tier_to_core(request.tier.as_known());
         let metadata = map_view_to_hashmap(&request.metadata);
@@ -62,7 +76,7 @@ impl crate::loci::memory::v1::MemoryService for MemoryServiceImpl {
     async fn get_entry(
         &self,
         ctx: Context,
-        request: buffa::view::OwnedView<MemoryServiceGetEntryRequestView<'static>>,
+        request: OwnedView<MemoryServiceGetEntryRequestView<'static>>,
     ) -> Result<(MemoryServiceGetEntryResponse, Context), ConnectError> {
         let id = parse_uuid(request.id)?;
         let result = self.state.store.get_entry(id).await.map_err(store_err)?;
@@ -78,7 +92,7 @@ impl crate::loci::memory::v1::MemoryService for MemoryServiceImpl {
     async fn query(
         &self,
         ctx: Context,
-        request: buffa::view::OwnedView<MemoryServiceQueryRequestView<'static>>,
+        request: OwnedView<MemoryServiceQueryRequestView<'static>>,
     ) -> Result<(MemoryServiceQueryResponse, Context), ConnectError> {
         let min_score = Score::new(request.min_score)
             .map_err(|_| ConnectError::invalid_argument("min_score must be in [0.0, 1.0]"))?;
@@ -102,7 +116,7 @@ impl crate::loci::memory::v1::MemoryService for MemoryServiceImpl {
     async fn update_entry(
         &self,
         ctx: Context,
-        request: buffa::view::OwnedView<MemoryServiceUpdateEntryRequestView<'static>>,
+        request: OwnedView<MemoryServiceUpdateEntryRequestView<'static>>,
     ) -> Result<(MemoryServiceUpdateEntryResponse, Context), ConnectError> {
         let id = parse_uuid(request.id)?;
         let tier = proto_tier_to_core(request.tier.as_known());
@@ -129,7 +143,7 @@ impl crate::loci::memory::v1::MemoryService for MemoryServiceImpl {
     async fn set_entry_tier(
         &self,
         ctx: Context,
-        request: buffa::view::OwnedView<MemoryServiceSetEntryTierRequestView<'static>>,
+        request: OwnedView<MemoryServiceSetEntryTierRequestView<'static>>,
     ) -> Result<(MemoryServiceSetEntryTierResponse, Context), ConnectError> {
         let id = parse_uuid(request.id)?;
         let tier = proto_tier_to_core(request.tier.as_known());
@@ -151,7 +165,7 @@ impl crate::loci::memory::v1::MemoryService for MemoryServiceImpl {
     async fn delete_entry(
         &self,
         ctx: Context,
-        request: buffa::view::OwnedView<MemoryServiceDeleteEntryRequestView<'static>>,
+        request: OwnedView<MemoryServiceDeleteEntryRequestView<'static>>,
     ) -> Result<(MemoryServiceDeleteEntryResponse, Context), ConnectError> {
         let id = parse_uuid(request.id)?;
         self.state.store.delete_entry(id).await.map_err(store_err)?;
@@ -167,7 +181,7 @@ impl crate::loci::memory::v1::MemoryService for MemoryServiceImpl {
     async fn prune_expired(
         &self,
         ctx: Context,
-        _request: buffa::view::OwnedView<MemoryServicePruneExpiredRequestView<'static>>,
+        _request: OwnedView<MemoryServicePruneExpiredRequestView<'static>>,
     ) -> Result<(MemoryServicePruneExpiredResponse, Context), ConnectError> {
         self.state.store.prune_expired().await.map_err(store_err)?;
         Ok((
@@ -180,8 +194,10 @@ impl crate::loci::memory::v1::MemoryService for MemoryServiceImpl {
     }
 }
 
-fn parse_uuid(s: &str) -> Result<Uuid, ConnectError> {
-    Uuid::parse_str(s).map_err(|_| ConnectError::invalid_argument(format!("invalid id: {s}")))
+#[allow(clippy::result_large_err)]
+fn parse_uuid(string: &str) -> Result<Uuid, ConnectError> {
+    Uuid::parse_str(string)
+        .map_err(|_| ConnectError::invalid_argument(format!("invalid id: {string}")))
 }
 
 fn store_err(e: MemoryStoreError) -> ConnectError {
@@ -211,10 +227,10 @@ fn core_tier_to_proto(tier: CoreMemoryTier) -> MemoryTier {
     }
 }
 
-fn datetime_to_timestamp(dt: DateTime<Utc>) -> Timestamp {
+fn datetime_to_timestamp(date_time: DateTime<Utc>) -> Timestamp {
     Timestamp {
-        seconds: dt.timestamp(),
-        nanos: dt.timestamp_subsec_nanos() as i32,
+        seconds: date_time.timestamp(),
+        nanos: date_time.timestamp_subsec_nanos() as i32,
         ..Default::default()
     }
 }

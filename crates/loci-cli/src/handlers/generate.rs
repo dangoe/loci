@@ -207,8 +207,8 @@ mod tests {
                 stream_text_generation,
             },
         },
-        mock::{MockStore, MockTextGenerationModelProvider},
     };
+    use loci_core::testing::{MockStore, MockTextGenerationModelProvider};
 
     fn default_generate_args(prompt: &str) -> GenerateArgs {
         GenerateArgs {

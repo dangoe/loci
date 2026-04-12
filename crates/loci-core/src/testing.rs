@@ -1,23 +1,20 @@
 // Copyright (c) 2026 Daniel Götten
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// This file is part of loci-cli.
+// This file is part of loci-core.
 
 use std::sync::{Arc, Mutex};
 
-use futures::stream;
-use loci_core::{
-    error::MemoryStoreError as CoreMemoryStoreError,
-    memory::{
-        MemoryInput as CoreMemoryInput, MemoryQuery as CoreMemoryQuery,
-        MemoryQueryResult as CoreMemoryQueryResult, MemoryTier as CoreMemoryTier,
-    },
-    model_provider::{
-        common::ModelProviderResult,
-        text_generation::{
-            TextGenerationModelProvider, TextGenerationRequest, TextGenerationResponse,
-        },
-    },
+use crate::error::MemoryStoreError as CoreMemoryStoreError;
+use crate::memory::{
+    MemoryInput as CoreMemoryInput, MemoryQuery as CoreMemoryQuery,
+    MemoryQueryResult as CoreMemoryQueryResult, MemoryTier as CoreMemoryTier,
 };
+use crate::model_provider::{
+    common::ModelProviderResult,
+    text_generation::{TextGenerationModelProvider, TextGenerationRequest, TextGenerationResponse},
+};
+use crate::store::MemoryStore;
+use futures::stream;
 use uuid::Uuid;
 
 /// A configurable in-memory store for unit tests.
@@ -86,7 +83,7 @@ impl MockStore {
     }
 }
 
-impl loci_core::store::MemoryStore for MockStore {
+impl MemoryStore for MockStore {
     fn add_entry(
         &self,
         _input: CoreMemoryInput,
