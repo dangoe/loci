@@ -3,14 +3,99 @@
 // This file is part of loci-cli.
 
 use std::collections::HashMap;
+use std::error::Error as StdError;
+use std::path::Path;
+use std::sync::Arc;
 
 use loci_config::{
     AppConfig, EmbeddingModelConfig, EmbeddingRoutingConfig, MemoryConfig, MemoryRoutingConfig,
     MemorySection, ModelProviderConfig, ModelProviderKind, ModelsConfig, RoutingConfig,
     StoreConfig, TextModelConfig, TextRoutingConfig,
 };
+use loci_core::model_provider::text_generation::TextGenerationModelProvider;
+use loci_core::store::MemoryStore;
 
-/// Builds a minimal `AppConfig` wired to a single Ollama provider.
+use crate::commands::config::ConfigCommand;
+use crate::commands::generate::{GenerateArgs, GenerateCommand};
+use crate::commands::memory::MemoryCommand;
+use crate::handlers::CommandHandler;
+use crate::handlers::config::ConfigCommandHandler;
+use crate::handlers::generate::GenerateCommandHandler;
+use crate::handlers::memory::MemoryCommandHandler;
+
+/// A test harness that dispatches CLI commands to handlers with injected
+/// dependencies.
+///
+/// Analogous to `TestServer` in `loci-server`, but runs entirely in-process
+/// without network I/O.
+pub struct TestCli<S: MemoryStore, T: TextGenerationModelProvider> {
+    store: Arc<S>,
+    provider: Arc<T>,
+    config: AppConfig,
+}
+
+impl<S: MemoryStore + 'static, T: TextGenerationModelProvider + 'static> TestCli<S, T> {
+    /// Creates a new test CLI with the given mock store and provider.
+    pub fn new(store: S, provider: T) -> Self {
+        Self {
+            store: Arc::new(store),
+            provider: Arc::new(provider),
+            config: mock_config(),
+        }
+    }
+
+    /// Overrides the config used by the generate handler.
+    pub fn with_config(mut self, config: AppConfig) -> Self {
+        self.config = config;
+        self
+    }
+
+    /// Executes a memory sub-command and returns stdout as a string.
+    pub async fn memory(&self, cmd: MemoryCommand) -> Result<String, Box<dyn StdError>> {
+        let mut out = Vec::new();
+        let handler = MemoryCommandHandler::new(&*self.store);
+        handler.handle(cmd, &mut out).await?;
+        Ok(String::from_utf8(out)?)
+    }
+
+    /// Executes the generate command and returns stdout as a string.
+    pub async fn generate(&self, args: GenerateArgs) -> Result<String, Box<dyn StdError>> {
+        let mut out = Vec::new();
+        let handler = GenerateCommandHandler::new(
+            Arc::clone(&self.store),
+            Arc::clone(&self.provider),
+            &self.config,
+        );
+        handler
+            .handle(GenerateCommand::Execute(args), &mut out)
+            .await?;
+        Ok(String::from_utf8(out)?)
+    }
+
+    /// Executes a config sub-command and returns stdout as a string.
+    pub async fn config(
+        &self,
+        path: &Path,
+        cmd: ConfigCommand,
+    ) -> Result<String, Box<dyn StdError>> {
+        let mut out = Vec::new();
+        let handler = ConfigCommandHandler::new(path);
+        handler.handle(cmd, &mut out).await?;
+        Ok(String::from_utf8(out)?)
+    }
+
+    /// Returns a reference to the underlying store for snapshot assertions.
+    pub fn store(&self) -> &S {
+        &self.store
+    }
+
+    /// Returns a reference to the underlying provider for snapshot assertions.
+    pub fn provider(&self) -> &T {
+        &self.provider
+    }
+}
+
+/// Builds a minimal [`AppConfig`] wired to a single Ollama provider.
 pub fn minimal_ollama_config() -> AppConfig {
     AppConfig {
         providers: HashMap::from([(
@@ -44,6 +129,66 @@ pub fn minimal_ollama_config() -> AppConfig {
                 "qdrant".to_string(),
                 StoreConfig::Qdrant {
                     url: "http://localhost:6333".to_string(),
+                    collection: "memory_entries".to_string(),
+                    api_key: None,
+                },
+            )]),
+            config: MemoryConfig {
+                backend: "qdrant".to_string(),
+                similarity_threshold: None,
+                promotion_source_threshold: 2,
+            },
+        },
+        routing: RoutingConfig {
+            text: TextRoutingConfig {
+                default: "default".to_string(),
+                fallback: vec![],
+            },
+            embedding: EmbeddingRoutingConfig {
+                default: "default".to_string(),
+            },
+            memory: MemoryRoutingConfig {
+                default: "qdrant".to_string(),
+            },
+        },
+    }
+}
+
+/// Builds a minimal [`AppConfig`] with dummy URLs for tests that use mock
+/// stores and providers (no real infrastructure needed).
+pub fn mock_config() -> AppConfig {
+    AppConfig {
+        providers: HashMap::from([(
+            "ollama".to_string(),
+            ModelProviderConfig {
+                kind: ModelProviderKind::Ollama,
+                endpoint: "http://unused-ollama".to_string(),
+                api_key: None,
+            },
+        )]),
+        models: ModelsConfig {
+            text: HashMap::from([(
+                "default".to_string(),
+                TextModelConfig {
+                    provider: "ollama".to_string(),
+                    model: "test-text-model".to_string(),
+                    tuning: None,
+                },
+            )]),
+            embedding: HashMap::from([(
+                "default".to_string(),
+                EmbeddingModelConfig {
+                    provider: "ollama".to_string(),
+                    model: "test-embedding-model".to_string(),
+                    dimension: 384,
+                },
+            )]),
+        },
+        memory: MemorySection {
+            backends: HashMap::from([(
+                "qdrant".to_string(),
+                StoreConfig::Qdrant {
+                    url: "http://unused-qdrant".to_string(),
                     collection: "memory_entries".to_string(),
                     api_key: None,
                 },

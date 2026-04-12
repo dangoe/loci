@@ -67,6 +67,8 @@ pub struct MockStoreState {
     pub delete_id: Option<Uuid>,
     pub update_id: Option<Uuid>,
     pub update_input: Option<MemoryInput>,
+    pub set_tier_id: Option<Uuid>,
+    pub set_tier_tier: Option<MemoryTier>,
     pub query: Option<MemoryQuery>,
     pub query_calls: usize,
 }
@@ -95,6 +97,7 @@ pub struct MockStore {
     get_behavior: EntryBehavior,
     query_behavior: QueryBehavior,
     update_behavior: EntryBehavior,
+    set_tier_behavior: EntryBehavior,
     delete_behavior: UnitBehavior,
     prune_behavior: UnitBehavior,
 }
@@ -118,6 +121,7 @@ impl MockStore {
             get_behavior: EntryBehavior::Err(MockStoreErrorKind::NotFound(Uuid::nil())),
             query_behavior: QueryBehavior::Ok(vec![]),
             update_behavior: EntryBehavior::Err(MockStoreErrorKind::NotFound(Uuid::nil())),
+            set_tier_behavior: EntryBehavior::Err(MockStoreErrorKind::NotFound(Uuid::nil())),
             delete_behavior: UnitBehavior::Ok,
             prune_behavior: UnitBehavior::Ok,
         }
@@ -157,6 +161,12 @@ impl MockStore {
         self
     }
 
+    /// Configures `set_entry_tier` to return the given result.
+    pub fn with_set_tier(mut self, result: MemoryQueryResult) -> Self {
+        self.set_tier_behavior = EntryBehavior::Ok(result);
+        self
+    }
+
     // -- Behavior builders (full control) -----------------------------------
 
     /// Configures the behavior of `add_entry`.
@@ -180,6 +190,12 @@ impl MockStore {
     /// Configures the behavior of `update_entry`.
     pub fn with_update_behavior(mut self, behavior: EntryBehavior) -> Self {
         self.update_behavior = behavior;
+        self
+    }
+
+    /// Configures the behavior of `set_entry_tier`.
+    pub fn with_set_tier_behavior(mut self, behavior: EntryBehavior) -> Self {
+        self.set_tier_behavior = behavior;
         self
     }
 
@@ -267,9 +283,18 @@ impl MemoryStore for MockStore {
     async fn set_entry_tier(
         &self,
         id: Uuid,
-        _tier: MemoryTier,
+        tier: MemoryTier,
     ) -> Result<MemoryQueryResult, MemoryStoreError> {
-        Err(MemoryStoreError::NotFound(id))
+        let mut state = self.state.lock().expect("mock store mutex poisoned");
+        state.set_tier_id = Some(id);
+        state.set_tier_tier = Some(tier);
+        drop(state);
+
+        let behavior = self.set_tier_behavior.clone();
+        match behavior {
+            EntryBehavior::Ok(result) => Ok(result),
+            EntryBehavior::Err(error) => Err(error.into_memory_store_error()),
+        }
     }
 
     fn delete_entry(

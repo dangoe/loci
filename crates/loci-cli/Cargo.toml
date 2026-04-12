@@ -3,12 +3,17 @@ name = "loci-cli"
 version.workspace = true
 edition.workspace = true
 
+[lib]
+name = "loci_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "loci"
 path = "src/main.rs"
 
 [features]
 systemd-journal-logger = ["dep:systemd-journal-logger"]
+testing = ["loci-core/testing"]
 
 [dependencies]
 loci-core = { path = "../loci-core" }
@@ -27,7 +32,9 @@ systemd-journal-logger = { version = "2.2", optional = true }
 log.workspace = true
 
 [dev-dependencies]
+loci-cli = { path = ".", features = ["testing"] }
 loci-core = { path = "../loci-core", features = ["testing"] }
 pretty_assertions.workspace = true
 rstest.workspace = true
+serde_json.workspace = true
 tempfile = "3"

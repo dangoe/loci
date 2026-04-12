@@ -1546,6 +1546,7 @@ dependencies = [
  "dirs",
  "env_logger",
  "futures",
+ "loci-cli",
  "loci-config",
  "loci-core",
  "loci-memory-store-qdrant",

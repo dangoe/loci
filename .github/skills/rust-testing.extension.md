@@ -10,6 +10,7 @@ cargo test -p loci-core                      # run tests for a single crate
 cargo test -p loci-core <name>               # run tests matching substring
 cargo test -p loci-config                    # config parser/loader tests
 cargo test -p loci-server --features testing # server integration tests with mocks
+cargo test -p loci-cli --features testing    # CLI integration tests with mocks
 cargo test -p loci-memory-store-qdrant --features integration -- --test-threads=1
 cargo test -- --nocapture                    # show println! output
 cargo test -- --test-threads=1               # serialize tests when needed
@@ -35,6 +36,7 @@ Each crate that defines traits provides reusable mocks via a feature-gated `test
 | **loci-memory-store-qdrant** | `start_qdrant_container()`, `start_store()`, `QDRANT_GRPC_PORT` | `testing` |
 | **loci-model-provider-ollama** | `base_url()`, `text_model()`, `embedding_model()`, `ollama_provider()`, `ensure_ollama_available()` | `testing` |
 | **loci-server** | `TestServer`, `minimal_app_config()`, `mock_config()` | `testing` |
+| **loci-cli** | `TestCli`, `minimal_ollama_config()`, `mock_config()` | `testing` |
 
 ## Integration Tests
 

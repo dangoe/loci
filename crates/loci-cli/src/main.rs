@@ -8,12 +8,7 @@
 //! read from a TOML config file (default: `~/.config/loci/config.toml`).
 //! The CLI itself only exposes operational flags and sub-commands.
 
-mod cli;
-mod commands;
-mod handlers;
 mod infra;
-#[cfg(test)]
-mod testing;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -24,14 +19,14 @@ use systemd_journal_logger::JournalLog;
 use clap::Parser;
 use log::{LevelFilter, error, info};
 
+use loci_cli::cli::Cli;
+use loci_cli::commands::{Command, GenerateCommand};
+use loci_cli::handlers::CommandHandler;
+use loci_cli::handlers::config::ConfigCommandHandler;
+use loci_cli::handlers::generate::GenerateCommandHandler;
+use loci_cli::handlers::memory::MemoryCommandHandler;
 use loci_config::load_config;
 
-use crate::cli::Cli;
-use crate::commands::{Command, GenerateCommand};
-use crate::handlers::CommandHandler;
-use crate::handlers::config::ConfigCommandHandler;
-use crate::handlers::generate::GenerateCommandHandler;
-use crate::handlers::memory::MemoryCommandHandler;
 use crate::infra::{build_llm_provider, build_store};
 
 #[tokio::main]
