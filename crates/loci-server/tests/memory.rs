@@ -341,9 +341,10 @@ async fn test_memory_query_rejects_invalid_min_score_before_calling_store() {
 #[tokio::test]
 async fn test_memory_delete_entry_translates_not_found_errors() {
     let missing_id = Uuid::new_v4();
-    let store = Arc::new(MockStore::new().with_delete_behavior(UnitBehavior::Err(
-        MockStoreErrorKind::NotFound(missing_id),
-    )));
+    let store = Arc::new(
+        MockStore::new()
+            .with_delete_behavior(UnitBehavior::Err(MockStoreErrorKind::NotFound(missing_id))),
+    );
     let server = TestServer::start_with_components(mock_config(), store, default_provider()).await;
 
     let error = server
@@ -368,9 +369,10 @@ async fn test_memory_delete_entry_translates_not_found_errors() {
 #[tokio::test]
 async fn test_memory_update_entry_translates_not_found_errors() {
     let missing_id = Uuid::new_v4();
-    let store = Arc::new(MockStore::new().with_update_behavior(EntryBehavior::Err(
-        MockStoreErrorKind::NotFound(missing_id),
-    )));
+    let store = Arc::new(
+        MockStore::new()
+            .with_update_behavior(EntryBehavior::Err(MockStoreErrorKind::NotFound(missing_id))),
+    );
     let server = TestServer::start_with_components(mock_config(), store, default_provider()).await;
 
     let error = server
@@ -396,9 +398,10 @@ async fn test_memory_update_entry_translates_not_found_errors() {
 #[tokio::test]
 async fn test_memory_set_entry_tier_translates_not_found_errors() {
     let missing_id = Uuid::new_v4();
-    let store = Arc::new(MockStore::new().with_set_tier_behavior(EntryBehavior::Err(
-        MockStoreErrorKind::NotFound(missing_id),
-    )));
+    let store = Arc::new(
+        MockStore::new()
+            .with_set_tier_behavior(EntryBehavior::Err(MockStoreErrorKind::NotFound(missing_id))),
+    );
     let server = TestServer::start_with_components(mock_config(), store, default_provider()).await;
 
     let error = server
