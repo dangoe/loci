@@ -11,13 +11,40 @@ use crate::{
     memory::{MemoryInput, MemoryQuery, MemoryQueryResult, MemoryTier},
 };
 
+/// Result of adding multiple memory entries, including both successful and failed entries.
+pub struct AddEntriesResult {
+    pub added: Vec<MemoryQueryResult>,
+    pub failed: Vec<(MemoryInput, MemoryStoreError)>,
+}
+
 /// Persistent storage and semantic retrieval of [`crate::Memory`] entries.
 pub trait MemoryStore: Send + Sync {
     /// Saves a new memory entry and returns the saved entry with assigned ID and timestamps.
     fn add_entry(
         &self,
         input: MemoryInput,
-    ) -> impl Future<Output = Result<MemoryQueryResult, MemoryStoreError>> + Send + '_;
+    ) -> impl Future<Output = Result<MemoryQueryResult, MemoryStoreError>> + Send + '_ {
+        async move {
+            let result = self.add_entries(vec![input]).await;
+            if let Some(added) = result.added.into_iter().next() {
+                Ok(added)
+            } else {
+                let msg = result
+                    .failed
+                    .into_iter()
+                    .next()
+                    .map(|(_, e)| e.to_string())
+                    .unwrap_or_default();
+                Err(MemoryStoreError::GenericSave(msg))
+            }
+        }
+    }
+
+    /// Saves multiple new memory entries and returns the saved entries with assigned IDs and timestamps.
+    fn add_entries(
+        &self,
+        inputs: Vec<MemoryInput>,
+    ) -> impl Future<Output = AddEntriesResult> + Send + '_;
 
     /// Retrieves a memory entry by its unique ID.
     fn get_entry(

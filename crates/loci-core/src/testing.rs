@@ -21,7 +21,7 @@ use crate::model_provider::{
     common::ModelProviderResult,
     text_generation::{TextGenerationModelProvider, TextGenerationRequest, TextGenerationResponse},
 };
-use crate::store::MemoryStore;
+use crate::store::{AddEntriesResult, MemoryStore};
 
 /// Describes an error a [`MockStore`] operation should return.
 #[derive(Debug, Clone)]
@@ -46,10 +46,18 @@ pub enum EntryBehavior {
     Err(MockStoreErrorKind),
 }
 
+/// Configures the outcome of a [`MockStore`] operation that returns a batch of entries.
+#[derive(Debug, Clone)]
+pub enum AddEntriesBehavior {
+    Ok(Vec<MemoryQueryResult>),
+    Err(MockStoreErrorKind),
+}
+
 /// Configures the outcome of a [`MockStore::query`] call.
 #[derive(Debug, Clone)]
 pub enum QueryBehavior {
     Ok(Vec<MemoryQueryResult>),
+    Err(MockStoreErrorKind),
 }
 
 /// Configures the outcome of a [`MockStore`] operation that returns `()`.
@@ -62,7 +70,7 @@ pub enum UnitBehavior {
 /// Captured state from a [`MockStore`] after one or more operations.
 #[derive(Debug, Clone, Default)]
 pub struct MockStoreState {
-    pub add_input: Option<MemoryInput>,
+    pub add_inputs: Option<Vec<MemoryInput>>,
     pub get_id: Option<Uuid>,
     pub delete_id: Option<Uuid>,
     pub update_id: Option<Uuid>,
@@ -93,7 +101,7 @@ pub struct MockStoreState {
 /// ```
 pub struct MockStore {
     state: Mutex<MockStoreState>,
-    add_behavior: EntryBehavior,
+    add_entries_behavior: AddEntriesBehavior,
     get_behavior: EntryBehavior,
     query_behavior: QueryBehavior,
     update_behavior: EntryBehavior,
@@ -115,7 +123,7 @@ impl MockStore {
     pub fn new() -> Self {
         Self {
             state: Mutex::new(MockStoreState::default()),
-            add_behavior: EntryBehavior::Err(MockStoreErrorKind::Connection(
+            add_entries_behavior: AddEntriesBehavior::Err(MockStoreErrorKind::Connection(
                 "mock: not configured".into(),
             )),
             get_behavior: EntryBehavior::Err(MockStoreErrorKind::NotFound(Uuid::nil())),
@@ -139,7 +147,7 @@ impl MockStore {
 
     /// Configures `add_entry` to return the given result.
     pub fn with_add(mut self, result: MemoryQueryResult) -> Self {
-        self.add_behavior = EntryBehavior::Ok(result);
+        self.add_entries_behavior = AddEntriesBehavior::Ok(vec![result]);
         self
     }
 
@@ -169,9 +177,9 @@ impl MockStore {
 
     // -- Behavior builders (full control) -----------------------------------
 
-    /// Configures the behavior of `add_entry`.
-    pub fn with_add_behavior(mut self, behavior: EntryBehavior) -> Self {
-        self.add_behavior = behavior;
+    /// Configures the behavior of `add_entries`.
+    pub fn with_add_entries_behavior(mut self, behavior: AddEntriesBehavior) -> Self {
+        self.add_entries_behavior = behavior;
         self
     }
 
@@ -213,19 +221,28 @@ impl MockStore {
 }
 
 impl MemoryStore for MockStore {
-    fn add_entry(
+    fn add_entries(
         &self,
-        input: MemoryInput,
-    ) -> impl Future<Output = Result<MemoryQueryResult, MemoryStoreError>> + Send + '_ {
+        inputs: Vec<MemoryInput>,
+    ) -> impl Future<Output = AddEntriesResult> + Send + '_ {
         self.state
             .lock()
             .expect("mock store mutex poisoned")
-            .add_input = Some(input);
-        let behavior = self.add_behavior.clone();
+            .add_inputs = Some(inputs.clone());
+        let behavior = self.add_entries_behavior.clone();
         async move {
             match behavior {
-                EntryBehavior::Ok(result) => Ok(result),
-                EntryBehavior::Err(error) => Err(error.into_memory_store_error()),
+                AddEntriesBehavior::Ok(entries) => AddEntriesResult {
+                    added: entries,
+                    failed: Vec::new(),
+                },
+                AddEntriesBehavior::Err(error) => AddEntriesResult {
+                    added: Vec::new(),
+                    failed: inputs
+                        .iter()
+                        .map(|input| (input.clone(), error.clone().into_memory_store_error()))
+                        .collect(),
+                },
             }
         }
     }
@@ -257,6 +274,7 @@ impl MemoryStore for MockStore {
         async move {
             match behavior {
                 QueryBehavior::Ok(results) => Ok(results),
+                QueryBehavior::Err(error) => Err(error.into_memory_store_error()),
             }
         }
     }

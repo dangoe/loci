@@ -330,14 +330,9 @@ mod tests {
     use futures::StreamExt as _;
     use pretty_assertions::assert_eq;
     use serde_json::json;
-    use uuid::Uuid;
 
     use crate::{
-        error::MemoryStoreError,
-        memory::{
-            MemoryEntry, MemoryInput, MemoryQuery, MemoryQueryMode, MemoryQueryResult, MemoryTier,
-            Score,
-        },
+        memory::{MemoryEntry, MemoryQuery, MemoryQueryMode, MemoryQueryResult, Score},
         model_provider::{
             common::ModelProviderResult,
             error::ModelProviderError,
@@ -350,118 +345,11 @@ mod tests {
 
     use super::*;
 
-    struct MockStore {
-        entries: Vec<MemoryQueryResult>,
-    }
+    use crate::testing::{AddEntriesBehavior, MockStore, MockStoreErrorKind, QueryBehavior};
 
-    impl MemoryStore for MockStore {
-        fn add_entry(
-            &self,
-            input: MemoryInput,
-        ) -> impl Future<Output = Result<MemoryQueryResult, MemoryStoreError>> + Send + '_ {
-            let entry = MemoryQueryResult {
-                memory_entry: MemoryEntry::new(input.content, input.metadata),
-                score: Score::ZERO,
-            };
-            async move { Ok(entry) }
-        }
-
-        fn get_entry(
-            &self,
-            id: Uuid,
-        ) -> impl Future<Output = Result<MemoryQueryResult, MemoryStoreError>> + Send + '_ {
-            async move { Err(MemoryStoreError::NotFound(id)) }
-        }
-
-        fn query(
-            &self,
-            _query: MemoryQuery,
-        ) -> impl Future<Output = Result<Vec<MemoryQueryResult>, MemoryStoreError>> + Send + '_
-        {
-            let entries = self.entries.clone();
-            async move { Ok(entries) }
-        }
-
-        fn update_entry(
-            &self,
-            id: Uuid,
-            _input: MemoryInput,
-        ) -> impl Future<Output = Result<MemoryQueryResult, MemoryStoreError>> + Send + '_ {
-            async move { Err(MemoryStoreError::NotFound(id)) }
-        }
-
-        fn set_entry_tier(
-            &self,
-            id: Uuid,
-            _tier: MemoryTier,
-        ) -> impl Future<Output = Result<MemoryQueryResult, MemoryStoreError>> + Send + '_ {
-            async move { Err(MemoryStoreError::NotFound(id)) }
-        }
-
-        fn delete_entry(
-            &self,
-            _id: Uuid,
-        ) -> impl Future<Output = Result<(), MemoryStoreError>> + Send + '_ {
-            async move { Ok(()) }
-        }
-
-        fn prune_expired(&self) -> impl Future<Output = Result<(), MemoryStoreError>> + Send + '_ {
-            async move { Ok(()) }
-        }
-    }
-
-    struct FailingStore;
-
-    impl MemoryStore for FailingStore {
-        fn add_entry(
-            &self,
-            _input: MemoryInput,
-        ) -> impl Future<Output = Result<MemoryQueryResult, MemoryStoreError>> + Send + '_ {
-            async move { Err(MemoryStoreError::Connection("always fails".to_string())) }
-        }
-
-        fn get_entry(
-            &self,
-            _id: Uuid,
-        ) -> impl Future<Output = Result<MemoryQueryResult, MemoryStoreError>> + Send + '_ {
-            async move { Err(MemoryStoreError::Connection("always fails".to_string())) }
-        }
-
-        fn query(
-            &self,
-            _query: MemoryQuery,
-        ) -> impl Future<Output = Result<Vec<MemoryQueryResult>, MemoryStoreError>> + Send + '_
-        {
-            async move { Err(MemoryStoreError::Connection("always fails".to_string())) }
-        }
-
-        fn update_entry(
-            &self,
-            id: Uuid,
-            _input: MemoryInput,
-        ) -> impl Future<Output = Result<MemoryQueryResult, MemoryStoreError>> + Send + '_ {
-            async move { Err(MemoryStoreError::NotFound(id)) }
-        }
-
-        fn set_entry_tier(
-            &self,
-            id: Uuid,
-            _tier: MemoryTier,
-        ) -> impl Future<Output = Result<MemoryQueryResult, MemoryStoreError>> + Send + '_ {
-            async move { Err(MemoryStoreError::NotFound(id)) }
-        }
-
-        fn delete_entry(
-            &self,
-            _id: Uuid,
-        ) -> impl Future<Output = Result<(), MemoryStoreError>> + Send + '_ {
-            async move { Ok(()) }
-        }
-
-        fn prune_expired(&self) -> impl Future<Output = Result<(), MemoryStoreError>> + Send + '_ {
-            async move { Ok(()) }
-        }
-    }
+    // Removed test-local `FailingStore`. Tests now use the configurable `MockStore`
+    // from the `testing` module and set error behaviors (e.g. `QueryBehavior::Err`)
+    // where needed to simulate failing stores.
 
     struct MockTextGenerationProvider {
         reply: String,
@@ -504,12 +392,11 @@ mod tests {
         entries: Vec<MemoryQueryResult>,
         reply: &str,
     ) -> (MockStore, MockTextGenerationProvider) {
-        (
-            MockStore { entries },
-            MockTextGenerationProvider {
-                reply: reply.to_string(),
-            },
-        )
+        let store = MockStore::new().with_add_entries_behavior(AddEntriesBehavior::Ok(entries));
+        let provider = MockTextGenerationProvider {
+            reply: reply.to_string(),
+        };
+        (store, provider)
     }
 
     fn make_entry(content: &str) -> MemoryQueryResult {
@@ -547,7 +434,7 @@ mod tests {
             mode: ContextualizerSystemMode::Replace,
             system: "Custom system prompt.\n{{memory}}\nEnd of prompt.".to_string(),
         });
-        let store = MockStore { entries: vec![] };
+        let store = MockStore::new().with_add_entries_behavior(AddEntriesBehavior::Ok(vec![]));
         let provider = MockTextGenerationProvider {
             reply: "reply".to_string(),
         };
@@ -578,7 +465,7 @@ mod tests {
             mode: ContextualizerSystemMode::Replace,
             system: "Custom system prompt without placeholder.".to_string(),
         });
-        let store = MockStore { entries: vec![] };
+        let store = MockStore::new().with_add_entries_behavior(AddEntriesBehavior::Ok(vec![]));
         let provider = MockTextGenerationProvider {
             reply: "reply".to_string(),
         };
@@ -651,7 +538,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_contextualize_propagates_store_error() {
-        let store = FailingStore;
+        let store = MockStore::new().with_query_behavior(QueryBehavior::Err(
+            MockStoreErrorKind::Connection("always fails".to_string()),
+        ));
         let provider = MockTextGenerationProvider {
             reply: "".to_string(),
         };
@@ -667,7 +556,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_contextualize_propagates_text_generation_error() {
-        let store = MockStore { entries: vec![] };
+        let store = MockStore::new().with_add_entries_behavior(AddEntriesBehavior::Ok(vec![]));
         let provider = FailingTextGenerationProvider;
         let ctx = Contextualizer::new(Arc::new(store), Arc::new(provider), default_config());
         let items: Vec<_> = ctx.contextualize("prompt").await.unwrap().collect().await;
@@ -682,7 +571,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_contextualize_applies_tuning_from_config() {
-        let store = MockStore { entries: vec![] };
+        let store = MockStore::new().with_add_entries_behavior(AddEntriesBehavior::Ok(vec![]));
         let provider = Arc::new(CapturingTextGenerationProvider::default());
         let mut extra = HashMap::new();
         extra.insert("seed".to_string(), json!(42));
@@ -756,7 +645,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_contextualize_with_debug_propagates_store_error() {
-        let store = FailingStore;
+        let store = MockStore::new().with_query_behavior(QueryBehavior::Err(
+            MockStoreErrorKind::Connection("always fails".to_string()),
+        ));
         let provider = MockTextGenerationProvider {
             reply: "".to_string(),
         };
@@ -792,7 +683,9 @@ mod tests {
         // Use a failing store to ensure that if the contextualizer attempted to
         // query memory, it would error. With memory mode set to Off it should not
         // query the store and should successfully return the model response.
-        let store = FailingStore;
+        let store = MockStore::new().with_query_behavior(QueryBehavior::Err(
+            MockStoreErrorKind::Connection("always fails".to_string()),
+        ));
         let provider = MockTextGenerationProvider {
             reply: "ok".to_string(),
         };

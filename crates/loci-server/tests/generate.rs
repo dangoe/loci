@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use buffa::EnumValue;
 use connectrpc::ErrorCode;
+use loci_core::testing::AddEntriesBehavior;
 use pretty_assertions::assert_eq;
 use uuid::Uuid;
 
@@ -33,7 +34,7 @@ async fn test_generate_streams_chunks_and_uses_configured_defaults() {
     );
     let store = Arc::new(
         MockStore::new()
-            .with_add_behavior(EntryBehavior::Ok(memory.clone()))
+            .with_add_entries_behavior(AddEntriesBehavior::Ok(vec![memory.clone()]))
             .with_get_behavior(EntryBehavior::Ok(memory.clone()))
             .with_query_behavior(QueryBehavior::Ok(vec![memory])),
     );
@@ -126,7 +127,7 @@ async fn test_generate_respects_memory_and_system_modes() {
     let memory = make_result(Uuid::new_v4(), "unused memory", MemoryTier::Core, 0.77);
     let store = Arc::new(
         MockStore::new()
-            .with_add_behavior(EntryBehavior::Ok(memory.clone()))
+            .with_add_entries_behavior(AddEntriesBehavior::Ok(vec![memory.clone()]))
             .with_get_behavior(EntryBehavior::Ok(memory.clone()))
             .with_query_behavior(QueryBehavior::Ok(vec![memory])),
     );
@@ -177,7 +178,7 @@ async fn test_generate_rejects_invalid_min_score_before_calling_dependencies() {
     let result = make_result(Uuid::new_v4(), "unused", MemoryTier::Candidate, 0.42);
     let store = Arc::new(
         MockStore::new()
-            .with_add_behavior(EntryBehavior::Ok(result.clone()))
+            .with_add_entries_behavior(AddEntriesBehavior::Ok(vec![result.clone()]))
             .with_get_behavior(EntryBehavior::Ok(result.clone()))
             .with_query_behavior(QueryBehavior::Ok(vec![result])),
     );
@@ -219,7 +220,7 @@ async fn test_generate_returns_internal_error_when_default_model_is_missing() {
     let result = make_result(Uuid::new_v4(), "unused", MemoryTier::Candidate, 0.42);
     let store = Arc::new(
         MockStore::new()
-            .with_add_behavior(EntryBehavior::Ok(result.clone()))
+            .with_add_entries_behavior(AddEntriesBehavior::Ok(vec![result.clone()]))
             .with_get_behavior(EntryBehavior::Ok(result.clone()))
             .with_query_behavior(QueryBehavior::Ok(vec![result])),
     );

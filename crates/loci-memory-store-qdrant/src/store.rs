@@ -10,7 +10,7 @@ use loci_core::error::MemoryStoreError;
 use loci_core::memory::{
     MemoryEntry, MemoryInput, MemoryQuery, MemoryQueryMode, MemoryQueryResult, MemoryTier, Score,
 };
-use loci_core::store::MemoryStore;
+use loci_core::store::{AddEntriesResult, MemoryStore};
 use qdrant_client::Payload;
 use qdrant_client::Qdrant;
 use qdrant_client::qdrant::{Condition, Filter, Range};
@@ -349,48 +349,84 @@ impl<E: TextEmbedder> QdrantMemoryStore<E> {
 }
 
 impl<E: TextEmbedder> MemoryStore for QdrantMemoryStore<E> {
-    async fn add_entry(&self, input: MemoryInput) -> Result<MemoryQueryResult, MemoryStoreError> {
-        let tier = input.tier.unwrap_or(MemoryTier::Candidate);
-        if tier == MemoryTier::Ephemeral {
-            return Err(MemoryStoreError::Query(
-                "ephemeral memory entries are request-scoped and cannot be persisted".to_string(),
-            ));
+    async fn add_entries(&self, inputs: Vec<MemoryInput>) -> AddEntriesResult {
+        let mut added: Vec<MemoryQueryResult> = Vec::new();
+        let mut failed: Vec<(MemoryInput, MemoryStoreError)> = Vec::new();
+
+        for input in inputs.into_iter() {
+            let orig_input = input.clone();
+
+            let tier = input.tier.unwrap_or(MemoryTier::Candidate);
+            if tier == MemoryTier::Ephemeral {
+                failed.push((
+                    orig_input,
+                    MemoryStoreError::Query(
+                        "ephemeral memory entries are request-scoped and cannot be persisted"
+                            .to_string(),
+                    ),
+                ));
+                continue;
+            }
+
+            let memory = MemoryEntry::new_with_tier(input.content, input.metadata, tier);
+
+            let embedding = match self.embedder.embed(&memory.content).await {
+                Ok(e) => e,
+                Err(e) => {
+                    failed.push((orig_input, MemoryStoreError::Embedding(e)));
+                    continue;
+                }
+            };
+
+            if let Some(threshold) = self.config.similarity_threshold {
+                match self
+                    .search_for_dedup(&embedding, threshold, &memory.metadata)
+                    .await
+                {
+                    Ok(Some(mut existing)) => {
+                        self.maybe_promote_from_source(
+                            &mut existing.memory_entry,
+                            &memory.metadata,
+                        );
+                        existing.memory_entry.last_seen = Utc::now();
+                        existing.memory_entry.seen_count =
+                            existing.memory_entry.seen_count.saturating_add(1);
+
+                        if let Err(e) = self.do_upsert(&existing.memory_entry, &embedding).await {
+                            failed.push((orig_input, e));
+                            continue;
+                        }
+
+                        log::debug!(
+                            "deduplication: reusing memory {} (score {:.4})",
+                            existing.memory_entry.id,
+                            existing.score.value()
+                        );
+                        added.push(existing);
+                        continue;
+                    }
+                    Ok(None) => {
+                        // No dedupe candidate found — proceed to upsert new memory.
+                    }
+                    Err(e) => {
+                        failed.push((orig_input, e));
+                        continue;
+                    }
+                }
+            }
+
+            if let Err(e) = self.do_upsert(&memory, &embedding).await {
+                failed.push((orig_input, e));
+                continue;
+            }
+
+            added.push(MemoryQueryResult {
+                memory_entry: memory,
+                score: Score::MAX,
+            });
         }
 
-        let memory = MemoryEntry::new_with_tier(input.content, input.metadata, tier);
-        let embedding = self
-            .embedder
-            .embed(&memory.content)
-            .await
-            .map_err(MemoryStoreError::Embedding)?;
-
-        if let Some(threshold) = self.config.similarity_threshold
-            && let Some(mut existing) = self
-                .search_for_dedup(&embedding, threshold, &memory.metadata)
-                .await?
-        {
-            self.maybe_promote_from_source(&mut existing.memory_entry, &memory.metadata);
-            existing.memory_entry.last_seen = Utc::now();
-            existing.memory_entry.seen_count = existing.memory_entry.seen_count.saturating_add(1);
-
-            // Reuse the already-computed embedding: the existing entry's content is
-            // unchanged and within the similarity threshold, so the new content's
-            // embedding is a close-enough vector for the upsert.
-            self.do_upsert(&existing.memory_entry, &embedding).await?;
-
-            log::debug!(
-                "deduplication: reusing memory {} (score {:.4})",
-                existing.memory_entry.id,
-                existing.score.value()
-            );
-            return Ok(existing);
-        }
-
-        self.do_upsert(&memory, &embedding).await?;
-        Ok(MemoryQueryResult {
-            memory_entry: memory,
-            score: Score::MAX,
-        })
+        AddEntriesResult { added, failed }
     }
 
     async fn get_entry(&self, id: Uuid) -> Result<MemoryQueryResult, MemoryStoreError> {

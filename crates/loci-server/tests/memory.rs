@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use buffa::EnumValue;
 use connectrpc::ErrorCode;
+use loci_core::testing::AddEntriesBehavior;
 use pretty_assertions::assert_eq;
 use rstest::rstest;
 use uuid::Uuid;
@@ -71,9 +72,10 @@ async fn test_memory_add_entry_uses_real_server_and_preserves_request_mapping() 
     );
     assert_eq!(entry.score, 0.73);
 
-    let captured = store.snapshot();
+    let captured = store.snapshot().add_inputs.unwrap_or_default();
     let input = captured
-        .add_input
+        .iter()
+        .next()
         .expect("store should capture add_entry input");
     assert_eq!(input.content, "remember this");
     assert_eq!(input.metadata.get("kind"), Some(&"fact".to_string()));
@@ -126,7 +128,9 @@ async fn test_memory_get_entry_translates_not_found_errors() {
     let missing_id = Uuid::new_v4();
     let store = Arc::new(
         MockStore::new()
-            .with_add_behavior(EntryBehavior::Err(MockStoreErrorKind::NotFound(missing_id)))
+            .with_add_entries_behavior(AddEntriesBehavior::Err(MockStoreErrorKind::NotFound(
+                missing_id,
+            )))
             .with_get_behavior(EntryBehavior::Err(MockStoreErrorKind::NotFound(missing_id))),
     );
     let server = TestServer::start_with_components(mock_config(), store, default_provider()).await;

@@ -38,11 +38,16 @@ impl std::error::Error for ContextualizerError {
 /// Errors produced by a [`MemoryStore`][crate::store::MemoryStore] implementation.
 #[derive(Debug)]
 pub enum MemoryStoreError {
+    /// An error occurred while connecting to the store.
     Connection(String),
+    /// An error occurred while querying the store.
     Query(String),
+    /// An error occurred while embedding a memory.
     Embedding(EmbeddingError),
     /// No memory with the given ID exists in the store.
     NotFound(Uuid),
+    /// An error occurred while saving a memory to the store.
+    GenericSave(String),
 }
 
 impl fmt::Display for MemoryStoreError {
@@ -52,6 +57,7 @@ impl fmt::Display for MemoryStoreError {
             Self::Query(msg) => write!(f, "query error: {msg}"),
             Self::Embedding(e) => write!(f, "embedding error: {e}"),
             Self::NotFound(id) => write!(f, "memory not found: {id}"),
+            Self::GenericSave(msg) => write!(f, "generic save error: {msg}"),
         }
     }
 }
