@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [features]
+integration = ["testing"]
 testing = []
 
 [dependencies]

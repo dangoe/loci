@@ -484,8 +484,8 @@ async fn test_add_entry_ephemeral_returns_error() {
         .await;
 
     assert!(
-        matches!(result, Err(MemoryStoreError::Query(_))),
-        "saving an ephemeral entry must return a Query error"
+        matches!(result, Err(MemoryStoreError::GenericSave(_))),
+        "saving an ephemeral entry must return a GenericSave error"
     );
 }
 

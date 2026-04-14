@@ -11,13 +11,55 @@ use crate::{
     memory::{MemoryInput, MemoryQuery, MemoryQueryResult, MemoryTier},
 };
 
+/// Per-item failure information for `add_entries`.
+pub struct PerEntryFailure {
+    /// Index into the original inputs vector.
+    pub index: usize,
+    /// The error that occurred while adding this entry.
+    pub error: MemoryStoreError,
+}
+
+/// Result of adding multiple memory entries, including both successful and failed entries.
+pub struct AddEntriesResult {
+    /// Successfully added entries.
+    pub added: Vec<MemoryQueryResult>,
+    /// Failures with indexes pointing into the original input slice.
+    pub failures: Vec<PerEntryFailure>,
+}
+
 /// Persistent storage and semantic retrieval of [`crate::Memory`] entries.
 pub trait MemoryStore: Send + Sync {
     /// Saves a new memory entry and returns the saved entry with assigned ID and timestamps.
     fn add_entry(
         &self,
         input: MemoryInput,
-    ) -> impl Future<Output = Result<MemoryQueryResult, MemoryStoreError>> + Send + '_;
+    ) -> impl Future<Output = Result<MemoryQueryResult, MemoryStoreError>> + Send + '_ {
+        async move {
+            let result = self.add_entries(vec![input]).await;
+            match result {
+                Err(e) => Err(e),
+                Ok(add_result) => {
+                    if let Some(added) = add_result.added.into_iter().next() {
+                        Ok(added)
+                    } else {
+                        let msg = add_result
+                            .failures
+                            .into_iter()
+                            .next()
+                            .map(|f| f.error.to_string())
+                            .unwrap_or_default();
+                        Err(MemoryStoreError::GenericSave(msg))
+                    }
+                }
+            }
+        }
+    }
+
+    /// Saves multiple new memory entries and returns the saved entries with assigned IDs and timestamps.
+    fn add_entries(
+        &self,
+        inputs: Vec<MemoryInput>,
+    ) -> impl Future<Output = Result<AddEntriesResult, MemoryStoreError>> + Send + '_;
 
     /// Retrieves a memory entry by its unique ID.
     fn get_entry(
