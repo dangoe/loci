@@ -260,7 +260,7 @@ async fn test_neither_query_mode_increments_seen_count() {
     let saved = store.add_entry(input("remember this")).await.unwrap();
     assert_eq!(saved.memory_entry.seen_count, 1);
 
-    let _ = store
+    let after_use = store
         .query(MemoryQuery {
             topic: "query".to_string(),
             max_results: 1,
@@ -270,9 +270,16 @@ async fn test_neither_query_mode_increments_seen_count() {
         })
         .await
         .unwrap();
+    assert_eq!(
+        after_use[0].memory_entry.seen_count, 1,
+        "Use mode should not increment seen_count"
+    );
 
-    let looked_up = store.query(query("query", 1)).await.unwrap();
-    assert_eq!(looked_up[0].memory_entry.seen_count, 1);
+    let after_lookup = store.query(query("query", 1)).await.unwrap();
+    assert_eq!(
+        after_lookup[0].memory_entry.seen_count, 1,
+        "Lookup mode should not increment seen_count"
+    );
 }
 
 #[tokio::test]

@@ -136,7 +136,12 @@ async fn test_memory_prune_expired_outputs_success() {
         .await
         .expect("prune should succeed");
 
-    assert!(!output.is_empty(), "prune should produce some output");
+    let v: serde_json::Value = serde_json::from_str(&output).expect("output should be valid JSON");
+    assert_eq!(
+        v["expired pruned"].as_bool().unwrap(),
+        true,
+        "prune output should confirm pruning succeeded"
+    );
 }
 
 #[tokio::test]

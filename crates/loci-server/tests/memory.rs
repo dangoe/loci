@@ -307,6 +307,121 @@ async fn test_memory_prune_expired_returns_success() {
 }
 
 #[tokio::test]
+async fn test_memory_query_rejects_invalid_min_score_before_calling_store() {
+    let store = Arc::new(MockStore::new());
+    let server =
+        TestServer::start_with_components(mock_config(), Arc::clone(&store), default_provider())
+            .await;
+
+    let error = server
+        .memory_client()
+        .query(MemoryServiceQueryRequest {
+            topic: "test".to_string(),
+            min_score: 1.5,
+            ..Default::default()
+        })
+        .await
+        .expect_err("query should reject invalid min_score");
+
+    assert_eq!(error.code, ErrorCode::InvalidArgument);
+    assert_eq!(
+        error
+            .message
+            .as_deref()
+            .expect("error should include a message"),
+        "min_score must be in [0.0, 1.0]"
+    );
+    assert_eq!(
+        store.snapshot().query_calls,
+        0,
+        "store should not be queried when min_score is invalid"
+    );
+}
+
+#[tokio::test]
+async fn test_memory_delete_entry_translates_not_found_errors() {
+    let missing_id = Uuid::new_v4();
+    let store = Arc::new(MockStore::new().with_delete_behavior(UnitBehavior::Err(
+        MockStoreErrorKind::NotFound(missing_id),
+    )));
+    let server = TestServer::start_with_components(mock_config(), store, default_provider()).await;
+
+    let error = server
+        .memory_client()
+        .delete_entry(MemoryServiceDeleteEntryRequest {
+            id: missing_id.to_string(),
+            ..Default::default()
+        })
+        .await
+        .expect_err("delete_entry should return not found");
+
+    assert_eq!(error.code, ErrorCode::NotFound);
+    assert_eq!(
+        error
+            .message
+            .as_deref()
+            .expect("error should include a message"),
+        format!("memory entry not found: {missing_id}")
+    );
+}
+
+#[tokio::test]
+async fn test_memory_update_entry_translates_not_found_errors() {
+    let missing_id = Uuid::new_v4();
+    let store = Arc::new(MockStore::new().with_update_behavior(EntryBehavior::Err(
+        MockStoreErrorKind::NotFound(missing_id),
+    )));
+    let server = TestServer::start_with_components(mock_config(), store, default_provider()).await;
+
+    let error = server
+        .memory_client()
+        .update_entry(MemoryServiceUpdateEntryRequest {
+            id: missing_id.to_string(),
+            content: "new content".to_string(),
+            ..Default::default()
+        })
+        .await
+        .expect_err("update_entry should return not found");
+
+    assert_eq!(error.code, ErrorCode::NotFound);
+    assert_eq!(
+        error
+            .message
+            .as_deref()
+            .expect("error should include a message"),
+        format!("memory entry not found: {missing_id}")
+    );
+}
+
+#[tokio::test]
+async fn test_memory_set_entry_tier_translates_not_found_errors() {
+    let missing_id = Uuid::new_v4();
+    let store = Arc::new(MockStore::new().with_set_tier_behavior(EntryBehavior::Err(
+        MockStoreErrorKind::NotFound(missing_id),
+    )));
+    let server = TestServer::start_with_components(mock_config(), store, default_provider()).await;
+
+    let error = server
+        .memory_client()
+        .set_entry_tier(MemoryServiceSetEntryTierRequest {
+            id: missing_id.to_string(),
+            tier: EnumValue::from(ProtoMemoryTier::MEMORY_TIER_CORE),
+            ..Default::default()
+        })
+        .await
+        .expect_err("set_entry_tier should return not found");
+
+    assert_eq!(error.code, ErrorCode::NotFound);
+    assert_eq!(
+        error
+            .message
+            .as_deref()
+            .expect("error should include a message"),
+        format!("memory entry not found: {missing_id}")
+    );
+}
+
+#[tokio::test]
 async fn test_memory_prune_expired_translates_store_errors() {
     let store = Arc::new(MockStore::new().with_prune_behavior(UnitBehavior::Err(
         MockStoreErrorKind::Connection("db unavailable".to_string()),

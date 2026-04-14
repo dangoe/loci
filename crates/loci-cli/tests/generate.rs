@@ -6,6 +6,8 @@
 
 mod common;
 
+use loci_core::memory::MemoryQueryMode;
+
 use loci_cli::commands::generate::{GenerateArgs, GenerateMemoryMode, GenerateSystemMode};
 
 use common::{MockStore, MockTextGenerationModelProvider, TestCli};
@@ -37,6 +39,17 @@ async fn test_generate_streams_response_to_stdout() {
 
     assert!(output.contains("hello"), "got: {output:?}");
     assert!(output.contains(" world"), "got: {output:?}");
+
+    let query = cli
+        .store()
+        .snapshot()
+        .query
+        .expect("generate should query the store");
+    assert_eq!(
+        query.mode,
+        MemoryQueryMode::Use,
+        "generate should query with Use mode to update access counters"
+    );
 }
 
 #[tokio::test]
