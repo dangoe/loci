@@ -4,7 +4,8 @@ version.workspace = true
 edition.workspace = true
 
 [features]
-integration = []
+integration = ["testing"]
+testing = ["dep:testcontainers"]
 background-delete = ["dep:tokio"]
 
 [dependencies]
@@ -14,9 +15,11 @@ chrono.workspace = true
 log.workspace = true
 qdrant-client = "1.17"
 serde_json.workspace = true
+testcontainers = { version = "0.27", features = ["http_wait_plain"], optional = true }
 uuid.workspace = true
 
 [dev-dependencies]
+loci-core = { path = "../loci-core", features = ["testing"] }
 pretty_assertions.workspace = true
 testcontainers = { version = "0.27", features = ["http_wait_plain"] }
 tokio.workspace = true

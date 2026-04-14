@@ -8,16 +8,10 @@
 //! read from a TOML config file (default: `~/.config/loci/config.toml`).
 //! The CLI itself only exposes operational flags and sub-commands.
 
-mod cli;
-mod commands;
-#[cfg(test)]
-mod fixture;
-mod handlers;
 mod infra;
-#[cfg(test)]
-mod mock;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[cfg(feature = "systemd-journal-logger")]
 use systemd_journal_logger::JournalLog;
@@ -25,14 +19,14 @@ use systemd_journal_logger::JournalLog;
 use clap::Parser;
 use log::{LevelFilter, error, info};
 
+use loci_cli::cli::Cli;
+use loci_cli::commands::{Command, GenerateCommand};
+use loci_cli::handlers::CommandHandler;
+use loci_cli::handlers::config::ConfigCommandHandler;
+use loci_cli::handlers::generate::GenerateCommandHandler;
+use loci_cli::handlers::memory::MemoryCommandHandler;
 use loci_config::load_config;
 
-use crate::cli::Cli;
-use crate::commands::{Command, GenerateCommand};
-use crate::handlers::CommandHandler;
-use crate::handlers::config::ConfigCommandHandler;
-use crate::handlers::generate::GenerateCommandHandler;
-use crate::handlers::memory::MemoryCommandHandler;
 use crate::infra::{build_llm_provider, build_store};
 
 #[tokio::main]
@@ -69,9 +63,10 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             handler.handle(command, &mut std::io::stdout()).await
         }
         Command::Generate { args } => {
-            let store = build_store(&config).await?;
-            let llm_provider = build_llm_provider(&config)?;
-            let handler = GenerateCommandHandler::new(&store, &llm_provider, &config);
+            let store = Arc::new(build_store(&config).await?);
+            let llm_provider = Arc::new(build_llm_provider(&config)?);
+            let handler =
+                GenerateCommandHandler::new(Arc::clone(&store), Arc::clone(&llm_provider), &config);
             handler
                 .handle(GenerateCommand::Execute(args), &mut std::io::stdout())
                 .await

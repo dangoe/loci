@@ -1,18 +1,17 @@
 [package]
-name = "loci-cli"
+name = "loci-server"
 version.workspace = true
 edition.workspace = true
 
 [lib]
-name = "loci_cli"
+name = "loci_server"
 path = "src/lib.rs"
 
 [[bin]]
-name = "loci"
+name = "loci-server"
 path = "src/main.rs"
 
 [features]
-systemd-journal-logger = ["dep:systemd-journal-logger"]
 testing = ["loci-core/testing"]
 
 [dependencies]
@@ -20,21 +19,33 @@ loci-core = { path = "../loci-core" }
 loci-config = { path = "../loci-config" }
 loci-memory-store-qdrant = { path = "../loci-memory-store-qdrant", features = ["background-delete"] }
 loci-model-provider-ollama = { path = "../loci-model-provider-ollama" }
+
+async-stream.workspace = true
+axum.workspace = true
+buffa.workspace = true
+buffa-types.workspace = true
+chrono.workspace = true
 clap = { version = "4", features = ["derive", "env"] }
+connectrpc.workspace = true
 dirs.workspace = true
+env_logger = "0.11"
 futures.workspace = true
+log.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tower-http.workspace = true
 uuid.workspace = true
-env_logger = "0.11.10"
-systemd-journal-logger = { version = "2.2", optional = true }
-log.workspace = true
+http-body = "1.0.1"
+
+[build-dependencies]
+connectrpc-build.workspace = true
 
 [dev-dependencies]
-loci-cli = { path = ".", features = ["testing"] }
 loci-core = { path = "../loci-core", features = ["testing"] }
+loci-server = { path = ".", features = ["testing"] }
+chrono.workspace = true
+futures.workspace = true
 pretty_assertions.workspace = true
 rstest.workspace = true
-serde_json.workspace = true
-tempfile = "3"

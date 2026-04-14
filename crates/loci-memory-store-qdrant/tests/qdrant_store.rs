@@ -2,114 +2,32 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // This file is part of loci-memory-store-qdrant.
 
+#![cfg(feature = "integration")]
+
 use std::collections::HashMap;
-use std::future::Future;
 
 use chrono::{Duration, Utc};
-use loci_core::embedding::{Embedding, TextEmbedder};
-use loci_core::error::{EmbeddingError, MemoryStoreError};
+use loci_core::error::MemoryStoreError;
 use loci_core::memory::{
     MemoryInput, MemoryQuery, MemoryQueryMode, MemoryQueryResult, MemoryTier, Score,
 };
 use loci_core::store::MemoryStore;
-use loci_memory_store_qdrant::config::QdrantConfig;
+use loci_core::testing::MockTextEmbedder;
 use loci_memory_store_qdrant::store::QdrantMemoryStore;
+use loci_memory_store_qdrant::testing::{QDRANT_GRPC_PORT, start_store};
 use pretty_assertions::assert_eq;
 use qdrant_client::qdrant::{PointsIdsList, SetPayloadPointsBuilder};
 use qdrant_client::{Payload, Qdrant};
-use testcontainers::core::wait::HttpWaitStrategy;
-use testcontainers::core::{ContainerPort, IntoContainerPort, WaitFor};
-use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, GenericImage};
 use uuid::Uuid;
 
 const DIM: usize = 4;
-/// Qdrant gRPC port used by the client
-const QDRANT_PORT: u16 = 6334;
-
-/// Maps specific strings to predetermined unit vectors for predictable cosine similarity.
-/// Any unmapped text returns the zero vector.
-struct FakeTextEmbedder {
-    mappings: HashMap<String, Vec<f32>>,
-}
-
-impl FakeTextEmbedder {
-    fn new() -> Self {
-        Self {
-            mappings: HashMap::new(),
-        }
-    }
-
-    fn with(mut self, text: &str, values: Vec<f32>) -> Self {
-        self.mappings.insert(text.to_string(), values);
-        self
-    }
-}
-
-impl TextEmbedder for FakeTextEmbedder {
-    fn embedding_dimension(&self) -> usize {
-        DIM
-    }
-
-    fn embed(
-        &self,
-        text: &str,
-    ) -> impl Future<Output = Result<Embedding, EmbeddingError>> + Send + '_ {
-        let values = self
-            .mappings
-            .get(text)
-            .cloned()
-            .unwrap_or_else(|| vec![0.0; DIM]);
-        async move { Ok(Embedding::new(values)) }
-    }
-}
 
 /// Unit vector along the given axis.
 fn unit_vec(index: usize) -> Vec<f32> {
     let mut v = vec![0.0_f32; DIM];
     v[index] = 1.0;
     v
-}
-
-async fn start_store(
-    embedder: FakeTextEmbedder,
-    similarity_threshold: Option<f64>,
-) -> (
-    QdrantMemoryStore<FakeTextEmbedder>,
-    ContainerAsync<GenericImage>,
-) {
-    let image = GenericImage::new("qdrant/qdrant", "latest")
-        .with_exposed_port(QDRANT_PORT.tcp())
-        .with_wait_for(WaitFor::http(
-            HttpWaitStrategy::new("/healthz")
-                .with_port(ContainerPort::Tcp(6333))
-                .with_expected_status_code(200u16),
-        ));
-
-    let container: ContainerAsync<GenericImage> = image
-        .start()
-        .await
-        .expect("Docker must be available to run Qdrant integration tests");
-
-    let host = container.get_host().await.unwrap();
-    let port = container.get_host_port_ipv4(QDRANT_PORT).await.unwrap();
-
-    let url = format!("http://{host}:{port}");
-
-    let config = QdrantConfig {
-        collection_name: "memory_entries".to_string(),
-        similarity_threshold,
-        promotion_source_threshold: 2,
-    };
-
-    let store =
-        QdrantMemoryStore::new(&url, config, embedder).expect("failed to create Qdrant client");
-    store
-        .initialize()
-        .await
-        .expect("failed to initialize Qdrant collection");
-
-    (store, container)
 }
 
 fn input(content: &str) -> MemoryInput {
@@ -132,7 +50,7 @@ fn query(topic: &str, max_results: usize) -> MemoryQuery {
 
 async fn prepare_expired_entry(
     container: &ContainerAsync<GenericImage>,
-    store: &QdrantMemoryStore<FakeTextEmbedder>,
+    store: &QdrantMemoryStore<MockTextEmbedder>,
 ) {
     let short_lived = store
         .add_entry(MemoryInput {
@@ -144,7 +62,10 @@ async fn prepare_expired_entry(
         .unwrap();
 
     let host = container.get_host().await.unwrap();
-    let port = container.get_host_port_ipv4(QDRANT_PORT).await.unwrap();
+    let port = container
+        .get_host_port_ipv4(QDRANT_GRPC_PORT)
+        .await
+        .unwrap();
     let url = format!("http://{host}:{port}");
     let client = Qdrant::from_url(&url).build().unwrap();
 
@@ -167,9 +88,8 @@ fn extract_ids(results: &[MemoryQueryResult]) -> Vec<Uuid> {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "integration"), ignore)]
 async fn test_candidate_promotes_when_same_fact_arrives_from_different_source() {
-    let embedder = FakeTextEmbedder::new()
+    let embedder = MockTextEmbedder::new(DIM)
         .with("fact from source a", unit_vec(0))
         .with("fact from source b", unit_vec(0));
     let (store, _container) = start_store(embedder, Some(0.9)).await;
@@ -200,10 +120,9 @@ async fn test_candidate_promotes_when_same_fact_arrives_from_different_source() 
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "integration"), ignore)]
 async fn test_deduplication_does_not_collapse_different_metadata() {
     // Same embedding but different non-source metadata -> must produce two distinct entries
-    let embedder = FakeTextEmbedder::new()
+    let embedder = MockTextEmbedder::new(DIM)
         .with("same content a", unit_vec(0))
         .with("same content b", unit_vec(0));
     let (store, _container) = start_store(embedder, Some(0.9)).await;
@@ -227,10 +146,9 @@ async fn test_deduplication_does_not_collapse_different_metadata() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "integration"), ignore)]
 async fn test_deduplication_reuses_id_when_score_meets_threshold() {
     // Both "original" and "near-duplicate" map to the same vector -> cosine = 1.0 >= 0.9
-    let embedder = FakeTextEmbedder::new()
+    let embedder = MockTextEmbedder::new(DIM)
         .with("original", unit_vec(0))
         .with("near-duplicate", unit_vec(0));
     let (store, _container) = start_store(embedder, Some(0.9)).await;
@@ -243,10 +161,9 @@ async fn test_deduplication_reuses_id_when_score_meets_threshold() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "integration"), ignore)]
 async fn test_deduplication_stores_new_memory_when_score_below_threshold() {
     // Orthogonal vectors -> cosine ~= 0 < 0.9 -> stored separately
-    let embedder = FakeTextEmbedder::new()
+    let embedder = MockTextEmbedder::new(DIM)
         .with("x-axis topic", unit_vec(0))
         .with("y-axis topic", unit_vec(1));
     let (store, _container) = start_store(embedder, Some(0.9)).await;
@@ -258,9 +175,8 @@ async fn test_deduplication_stores_new_memory_when_score_below_threshold() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "integration"), ignore)]
 async fn test_deleted_memory_is_not_returned_by_query() {
-    let embedder = FakeTextEmbedder::new()
+    let embedder = MockTextEmbedder::new(DIM)
         .with("to be deleted", unit_vec(0))
         .with("survivor", unit_vec(0))
         .with("query", unit_vec(0));
@@ -288,9 +204,8 @@ async fn test_deleted_memory_is_not_returned_by_query() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "integration"), ignore)]
 async fn test_get_entry_returns_not_found_for_unknown_id() {
-    let embedder = FakeTextEmbedder::new();
+    let embedder = MockTextEmbedder::new(DIM);
     let (store, _container) = start_store(embedder, None).await;
 
     let unknown_id = Uuid::new_v4();
@@ -300,9 +215,8 @@ async fn test_get_entry_returns_not_found_for_unknown_id() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "integration"), ignore)]
 async fn test_get_entry_returns_added_entry() {
-    let embedder = FakeTextEmbedder::new().with("fetch me", unit_vec(0));
+    let embedder = MockTextEmbedder::new(DIM).with("fetch me", unit_vec(0));
     let (store, _container) = start_store(embedder, None).await;
 
     let saved = store.add_entry(input("fetch me")).await.unwrap();
@@ -315,9 +229,8 @@ async fn test_get_entry_returns_added_entry() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "integration"), ignore)]
 async fn test_metadata_is_persisted_and_restored() {
-    let embedder = FakeTextEmbedder::new()
+    let embedder = MockTextEmbedder::new(DIM)
         .with("tagged content", unit_vec(0))
         .with("tagged content query", unit_vec(0));
     let (store, _container) = start_store(embedder, None).await;
@@ -338,9 +251,8 @@ async fn test_metadata_is_persisted_and_restored() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "integration"), ignore)]
 async fn test_neither_query_mode_increments_seen_count() {
-    let embedder = FakeTextEmbedder::new()
+    let embedder = MockTextEmbedder::new(DIM)
         .with("remember this", unit_vec(0))
         .with("query", unit_vec(0));
     let (store, _container) = start_store(embedder, None).await;
@@ -348,7 +260,7 @@ async fn test_neither_query_mode_increments_seen_count() {
     let saved = store.add_entry(input("remember this")).await.unwrap();
     assert_eq!(saved.memory_entry.seen_count, 1);
 
-    let _ = store
+    let after_use = store
         .query(MemoryQuery {
             topic: "query".to_string(),
             max_results: 1,
@@ -358,15 +270,21 @@ async fn test_neither_query_mode_increments_seen_count() {
         })
         .await
         .unwrap();
+    assert_eq!(
+        after_use[0].memory_entry.seen_count, 1,
+        "Use mode should not increment seen_count"
+    );
 
-    let looked_up = store.query(query("query", 1)).await.unwrap();
-    assert_eq!(looked_up[0].memory_entry.seen_count, 1);
+    let after_lookup = store.query(query("query", 1)).await.unwrap();
+    assert_eq!(
+        after_lookup[0].memory_entry.seen_count, 1,
+        "Lookup mode should not increment seen_count"
+    );
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "integration"), ignore)]
 async fn test_prune_expired_memory_entries() {
-    let embedder = FakeTextEmbedder::new()
+    let embedder = MockTextEmbedder::new(DIM)
         .with("short-lived", unit_vec(0))
         .with("long-lived", unit_vec(0))
         .with("query", unit_vec(0));
@@ -392,9 +310,8 @@ async fn test_prune_expired_memory_entries() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "integration"), ignore)]
 async fn test_query_filters_by_metadata() {
-    let embedder = FakeTextEmbedder::new()
+    let embedder = MockTextEmbedder::new(DIM)
         .with("doc en", unit_vec(0))
         .with("doc de", unit_vec(0))
         .with("topic", unit_vec(0));
@@ -431,9 +348,8 @@ async fn test_query_filters_by_metadata() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "integration"), ignore)]
 async fn test_query_ranks_results_by_similarity() {
-    let embedder = FakeTextEmbedder::new()
+    let embedder = MockTextEmbedder::new(DIM)
         .with("x-axis", unit_vec(0))
         .with("y-axis", unit_vec(1))
         .with("near x", unit_vec(0));
@@ -452,9 +368,8 @@ async fn test_query_ranks_results_by_similarity() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "integration"), ignore)]
 async fn test_query_respects_expiration() {
-    let embedder = FakeTextEmbedder::new()
+    let embedder = MockTextEmbedder::new(DIM)
         .with("short-lived", unit_vec(0))
         .with("core", unit_vec(0))
         .with("stable", unit_vec(0))
@@ -491,9 +406,8 @@ async fn test_query_respects_expiration() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "integration"), ignore)]
 async fn test_query_respects_max_results() {
-    let mut embedder = FakeTextEmbedder::new().with("query", unit_vec(0));
+    let mut embedder = MockTextEmbedder::new(DIM).with("query", unit_vec(0));
     for i in 0..5 {
         embedder = embedder.with(&format!("memory {i}"), unit_vec(i % DIM));
     }
@@ -512,10 +426,9 @@ async fn test_query_respects_max_results() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "integration"), ignore)]
 async fn test_query_respects_min_score() {
     // x-axis and y-axis are orthogonal -> cosine = 0
-    let embedder = FakeTextEmbedder::new()
+    let embedder = MockTextEmbedder::new(DIM)
         .with("x-axis", unit_vec(0))
         .with("y-axis", unit_vec(1))
         .with("query", unit_vec(0));
@@ -541,9 +454,8 @@ async fn test_query_respects_min_score() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "integration"), ignore)]
 async fn test_added_memory_is_returned_by_query() {
-    let embedder = FakeTextEmbedder::new()
+    let embedder = MockTextEmbedder::new(DIM)
         .with("hello world", unit_vec(0))
         .with("hello world query", unit_vec(0));
     let (store, _container) = start_store(embedder, None).await;
@@ -559,9 +471,8 @@ async fn test_added_memory_is_returned_by_query() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "integration"), ignore)]
 async fn test_add_entry_ephemeral_returns_error() {
-    let embedder = FakeTextEmbedder::new();
+    let embedder = MockTextEmbedder::new(DIM);
     let (store, _container) = start_store(embedder, None).await;
 
     let result = store
@@ -579,9 +490,8 @@ async fn test_add_entry_ephemeral_returns_error() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "integration"), ignore)]
 async fn test_set_entry_tier_promotes_to_core() {
-    let embedder = FakeTextEmbedder::new().with("curate me", unit_vec(0));
+    let embedder = MockTextEmbedder::new(DIM).with("curate me", unit_vec(0));
     let (store, _container) = start_store(embedder, None).await;
 
     let saved = store.add_entry(input("curate me")).await.unwrap();
@@ -600,9 +510,8 @@ async fn test_set_entry_tier_promotes_to_core() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "integration"), ignore)]
 async fn test_set_entry_tier_to_ephemeral_returns_error() {
-    let embedder = FakeTextEmbedder::new().with("content", unit_vec(0));
+    let embedder = MockTextEmbedder::new(DIM).with("content", unit_vec(0));
     let (store, _container) = start_store(embedder, None).await;
 
     let saved = store.add_entry(input("content")).await.unwrap();
@@ -617,9 +526,8 @@ async fn test_set_entry_tier_to_ephemeral_returns_error() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "integration"), ignore)]
 async fn test_update_entry_changes_content_and_returns_updated_entry() {
-    let embedder = FakeTextEmbedder::new()
+    let embedder = MockTextEmbedder::new(DIM)
         .with("original content", unit_vec(0))
         .with("updated content", unit_vec(1));
     let (store, _container) = start_store(embedder, None).await;
@@ -639,9 +547,8 @@ async fn test_update_entry_changes_content_and_returns_updated_entry() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "integration"), ignore)]
 async fn test_update_entry_returns_not_found_for_unknown_id() {
-    let embedder = FakeTextEmbedder::new().with("anything", unit_vec(0));
+    let embedder = MockTextEmbedder::new(DIM).with("anything", unit_vec(0));
     let (store, _container) = start_store(embedder, None).await;
 
     let unknown_id = Uuid::new_v4();
@@ -651,9 +558,8 @@ async fn test_update_entry_returns_not_found_for_unknown_id() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "integration"), ignore)]
 async fn test_update_entry_to_ephemeral_returns_error() {
-    let embedder = FakeTextEmbedder::new().with("content", unit_vec(0));
+    let embedder = MockTextEmbedder::new(DIM).with("content", unit_vec(0));
     let (store, _container) = start_store(embedder, None).await;
 
     let saved = store.add_entry(input("content")).await.unwrap();

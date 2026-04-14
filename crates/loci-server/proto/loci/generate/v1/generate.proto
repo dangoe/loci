@@ -1,0 +1,42 @@
+syntax = "proto3";
+
+package loci.generate.v1;
+
+enum SystemMode {
+  SYSTEM_MODE_UNSPECIFIED = 0;
+  SYSTEM_MODE_APPEND = 1;
+  SYSTEM_MODE_REPLACE = 2;
+}
+
+enum MemoryMode {
+  MEMORY_MODE_UNSPECIFIED = 0;
+  MEMORY_MODE_AUTO = 1;
+  MEMORY_MODE_OFF = 2;
+}
+
+message GenerateServiceGenerateRequest {
+  string prompt = 1;
+  optional string system = 2;
+  SystemMode system_mode = 3;
+  uint32 max_memory_entries = 4;
+  double min_score = 5;
+  MemoryMode memory_mode = 6;
+  map<string, string> filters = 7;
+}
+
+message TokenUsage {
+  optional uint32 prompt_tokens = 1;
+  optional uint32 completion_tokens = 2;
+  optional uint32 total_tokens = 3;
+}
+
+message GenerateServiceGenerateResponse {
+  string text = 1;
+  string model = 2;
+  bool done = 3;
+  optional TokenUsage usage = 4;
+}
+
+service GenerateService {
+  rpc Generate(GenerateServiceGenerateRequest) returns (stream GenerateServiceGenerateResponse);
+}

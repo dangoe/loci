@@ -165,16 +165,13 @@ fn pairs_to_map(pairs: Vec<(String, String)>) -> HashMap<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-    use std::sync::{Arc, Mutex};
-
     use pretty_assertions::assert_eq;
     use rstest::rstest;
+    use std::collections::HashMap;
 
     use loci_core::memory::{
-        MemoryEntry as CoreMemoryEntry, MemoryInput as CoreMemoryInput,
-        MemoryQueryResult as CoreMemoryQueryResult, MemoryTier as CoreMemoryTier,
-        Score as CoreScore,
+        MemoryEntry as CoreMemoryEntry, MemoryQueryResult as CoreMemoryQueryResult,
+        MemoryTier as CoreMemoryTier, Score as CoreScore,
     };
     use serde_json::Value;
     use uuid::Uuid;
@@ -185,8 +182,9 @@ mod tests {
     use crate::{
         commands::memory::MemoryCommand,
         handlers::memory::{MemoryCommandHandler, pairs_to_map},
-        mock::MockStore,
     };
+
+    use loci_core::testing::MockStore;
 
     #[tokio::test]
     async fn test_memory_add_outputs_json() {
@@ -424,17 +422,7 @@ mod tests {
         let original_meta = HashMap::from([("source".to_string(), "original-source".to_string())]);
         let existing = make_result_with_metadata("original", original_meta.clone());
         let updated = make_result_with_metadata("updated", original_meta.clone());
-        let captured = Arc::new(Mutex::new(None::<CoreMemoryInput>));
-        let store = MockStore {
-            save_entry: None,
-            get_entry: Some(existing),
-            query_entries: vec![],
-            update_entry: Some(updated),
-            captured_update_input: captured.clone(),
-            captured_query: Arc::new(Mutex::new(None)),
-            delete_error: false,
-            prune_error: false,
-        };
+        let store = MockStore::new().with_get(existing).with_update(updated);
         let mut out = Vec::new();
 
         let handler = MemoryCommandHandler::new(&store);
@@ -452,7 +440,7 @@ mod tests {
             .await
             .unwrap();
 
-        let input = captured.lock().unwrap().take().unwrap();
+        let input = store.snapshot().update_input.unwrap();
         assert_eq!(
             input.metadata.get("source").unwrap(),
             "original-source",
@@ -626,7 +614,7 @@ mod tests {
             .await
             .unwrap();
 
-        let captured = store.captured_query.lock().unwrap().take().unwrap();
+        let captured = store.snapshot().query.unwrap();
         assert_eq!(captured.filters.get("lang").unwrap(), "rust");
         assert_eq!(captured.filters.get("env").unwrap(), "prod");
     }
@@ -640,17 +628,7 @@ mod tests {
             "original",
             HashMap::from([("new_key".to_string(), "new_val".to_string())]),
         );
-        let captured = Arc::new(Mutex::new(None::<CoreMemoryInput>));
-        let store = MockStore {
-            save_entry: None,
-            get_entry: Some(existing),
-            query_entries: vec![],
-            update_entry: Some(updated),
-            captured_update_input: captured.clone(),
-            captured_query: Arc::new(Mutex::new(None)),
-            delete_error: false,
-            prune_error: false,
-        };
+        let store = MockStore::new().with_get(existing).with_update(updated);
         let mut out = Vec::new();
 
         let handler = MemoryCommandHandler::new(&store);
@@ -667,7 +645,7 @@ mod tests {
             .await
             .unwrap();
 
-        let input = captured.lock().unwrap().take().unwrap();
+        let input = store.snapshot().update_input.unwrap();
         assert!(
             !input.metadata.contains_key("old_key"),
             "old metadata should be replaced when --meta is provided"
@@ -720,7 +698,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_memory_delete_propagates_store_error() {
-        let store = MockStore::new().with_delete_error();
+        let store = MockStore::new().with_delete_behavior(loci_core::testing::UnitBehavior::Err(
+            loci_core::testing::MockStoreErrorKind::Connection("mock: delete error".into()),
+        ));
         let mut out = Vec::new();
 
         let handler = MemoryCommandHandler::new(&store);
@@ -733,7 +713,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_memory_prune_expired_propagates_store_error() {
-        let store = MockStore::new().with_prune_error();
+        let store = MockStore::new().with_prune_behavior(loci_core::testing::UnitBehavior::Err(
+            loci_core::testing::MockStoreErrorKind::Connection("mock: prune error".into()),
+        ));
         let mut out = Vec::new();
 
         let handler = MemoryCommandHandler::new(&store);

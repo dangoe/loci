@@ -4,5 +4,5 @@
 
 pub mod provider;
 
-#[cfg(feature = "e2e")]
+#[cfg(any(feature = "testing", test))]
 pub mod testing;

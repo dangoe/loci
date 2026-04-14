@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // This file is part of loci-cli.
 
+use std::sync::Arc;
 use std::{error::Error as StdError, io::Write};
 
 use loci_config::{
@@ -42,14 +43,24 @@ impl From<GenerateMemoryMode> for CoreContextualizationMemoryMode {
     }
 }
 
-pub struct GenerateCommandHandler<'a, S: CoreMemoryStore, T: CoreTextGenerationModelProvider> {
-    store: &'a S,
-    text_generation_model_provider: &'a T,
+pub struct GenerateCommandHandler<
+    'a,
+    S: CoreMemoryStore,
+    T: CoreTextGenerationModelProvider + 'static,
+> {
+    store: Arc<S>,
+    text_generation_model_provider: Arc<T>,
     config: &'a AppConfig,
 }
 
-impl<'a, S: CoreMemoryStore, T: CoreTextGenerationModelProvider> GenerateCommandHandler<'a, S, T> {
-    pub fn new(store: &'a S, text_generation_model_provider: &'a T, config: &'a AppConfig) -> Self {
+impl<'a, S: CoreMemoryStore, T: CoreTextGenerationModelProvider + 'static>
+    GenerateCommandHandler<'a, S, T>
+{
+    pub fn new(
+        store: Arc<S>,
+        text_generation_model_provider: Arc<T>,
+        config: &'a AppConfig,
+    ) -> Self {
         Self {
             store,
             text_generation_model_provider,
@@ -58,7 +69,7 @@ impl<'a, S: CoreMemoryStore, T: CoreTextGenerationModelProvider> GenerateCommand
     }
 }
 
-impl<'a, S: CoreMemoryStore, T: CoreTextGenerationModelProvider, W: Write + Send>
+impl<'a, S: CoreMemoryStore, T: CoreTextGenerationModelProvider + 'static, W: Write + Send>
     CommandHandler<'a, GenerateCommand, W> for GenerateCommandHandler<'a, S, T>
 {
     async fn handle(&self, command: GenerateCommand, out: &mut W) -> Result<(), Box<dyn StdError>> {
@@ -94,8 +105,11 @@ impl<'a, S: CoreMemoryStore, T: CoreTextGenerationModelProvider, W: Write + Send
             tuning: model.tuning.as_ref().map(model_tuning_to_contextualizer),
         };
 
-        let contextualizer =
-            CoreContextualizer::new(self.store, self.text_generation_model_provider, ctx_config);
+        let contextualizer = CoreContextualizer::new(
+            Arc::clone(&self.store),
+            Arc::clone(&self.text_generation_model_provider),
+            ctx_config,
+        );
 
         if command.debug_flags.contains(&GenerateDebugFlags::Memory) {
             let (debug_info, stream) = contextualizer
@@ -175,6 +189,7 @@ async fn stream_text_generation<W: std::io::Write>(
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::sync::Arc;
 
     use pretty_assertions::assert_eq;
     use rstest::rstest;
@@ -184,7 +199,6 @@ mod tests {
             GenerateArgs, GenerateCommand, GenerateDebugFlags, GenerateMemoryMode,
             GenerateSystemMode,
         },
-        fixture,
         handlers::{
             CommandHandler,
             generate::{
@@ -192,8 +206,9 @@ mod tests {
                 stream_text_generation,
             },
         },
-        mock::{MockStore, MockTextGenerationModelProvider},
+        testing,
     };
+    use loci_core::testing::{MockStore, MockTextGenerationModelProvider};
 
     fn default_generate_args(prompt: &str) -> GenerateArgs {
         GenerateArgs {
@@ -476,11 +491,11 @@ mod tests {
     #[tokio::test]
     async fn test_generate_handle_streams_response() {
         let store = MockStore::new().with_query(vec![]);
-        let provider = MockTextGenerationModelProvider::new().with_chunks(vec!["hello", " world"]);
-        let config = fixture::minimal_ollama_config();
+        let provider = MockTextGenerationModelProvider::with_chunks(vec!["hello", " world"]);
+        let config = testing::minimal_ollama_config();
         let mut out = Vec::new();
 
-        let handler = GenerateCommandHandler::new(&store, &provider, &config);
+        let handler = GenerateCommandHandler::new(Arc::new(store), Arc::new(provider), &config);
         handler
             .handle(
                 GenerateCommand::Execute(default_generate_args("test prompt")),
@@ -497,12 +512,12 @@ mod tests {
     #[tokio::test]
     async fn test_generate_handle_missing_model_key_returns_err() {
         let store = MockStore::new();
-        let provider = MockTextGenerationModelProvider::new();
-        let mut config = fixture::minimal_ollama_config();
+        let provider = MockTextGenerationModelProvider::ok();
+        let mut config = testing::minimal_ollama_config();
         config.routing.text.default = "nonexistent".to_string();
         let mut out = Vec::new();
 
-        let handler = GenerateCommandHandler::new(&store, &provider, &config);
+        let handler = GenerateCommandHandler::new(Arc::new(store), Arc::new(provider), &config);
         let result = handler
             .handle(
                 GenerateCommand::Execute(default_generate_args("hi")),
@@ -521,14 +536,14 @@ mod tests {
     #[tokio::test]
     async fn test_generate_handle_invalid_min_score_returns_err() {
         let store = MockStore::new();
-        let provider = MockTextGenerationModelProvider::new();
-        let config = fixture::minimal_ollama_config();
+        let provider = MockTextGenerationModelProvider::ok();
+        let config = testing::minimal_ollama_config();
         let mut out = Vec::new();
 
         let mut args = default_generate_args("hi");
         args.min_score = 1.5; // outside [0.0, 1.0]
 
-        let handler = GenerateCommandHandler::new(&store, &provider, &config);
+        let handler = GenerateCommandHandler::new(Arc::new(store), Arc::new(provider), &config);
         let result = handler
             .handle(GenerateCommand::Execute(args), &mut out)
             .await;
@@ -546,14 +561,14 @@ mod tests {
     #[tokio::test]
     async fn test_generate_handle_debug_memory_flag_writes_response_header() {
         let store = MockStore::new().with_query(vec![]);
-        let provider = MockTextGenerationModelProvider::new().with_chunks(vec!["debug output"]);
-        let config = fixture::minimal_ollama_config();
+        let provider = MockTextGenerationModelProvider::with_chunks(vec!["debug output"]);
+        let config = testing::minimal_ollama_config();
         let mut out = Vec::new();
 
         let mut args = default_generate_args("debug prompt");
         args.debug_flags = vec![GenerateDebugFlags::Memory];
 
-        let handler = GenerateCommandHandler::new(&store, &provider, &config);
+        let handler = GenerateCommandHandler::new(Arc::new(store), Arc::new(provider), &config);
         handler
             .handle(GenerateCommand::Execute(args), &mut out)
             .await
@@ -573,14 +588,14 @@ mod tests {
     #[tokio::test]
     async fn test_generate_handle_memory_mode_off_succeeds_without_store_entries() {
         let store = MockStore::new(); // query_entries empty — would fail if queried and result expected
-        let provider = MockTextGenerationModelProvider::new().with_chunks(vec!["ok"]);
-        let config = fixture::minimal_ollama_config();
+        let provider = MockTextGenerationModelProvider::with_chunks(vec!["ok"]);
+        let config = testing::minimal_ollama_config();
         let mut out = Vec::new();
 
         let mut args = default_generate_args("silent prompt");
         args.memory_mode = GenerateMemoryMode::Off;
 
-        let handler = GenerateCommandHandler::new(&store, &provider, &config);
+        let handler = GenerateCommandHandler::new(Arc::new(store), Arc::new(provider), &config);
         handler
             .handle(GenerateCommand::Execute(args), &mut out)
             .await
@@ -593,15 +608,15 @@ mod tests {
     #[tokio::test]
     async fn test_generate_handle_system_mode_append_succeeds() {
         let store = MockStore::new().with_query(vec![]);
-        let provider = MockTextGenerationModelProvider::new();
-        let config = fixture::minimal_ollama_config();
+        let provider = MockTextGenerationModelProvider::ok();
+        let config = testing::minimal_ollama_config();
         let mut out = Vec::new();
 
         let mut args = default_generate_args("prompt");
         args.system = Some("be brief".to_string());
         args.system_mode = GenerateSystemMode::Append;
 
-        let handler = GenerateCommandHandler::new(&store, &provider, &config);
+        let handler = GenerateCommandHandler::new(Arc::new(store), Arc::new(provider), &config);
         handler
             .handle(GenerateCommand::Execute(args), &mut out)
             .await
@@ -613,15 +628,15 @@ mod tests {
     #[tokio::test]
     async fn test_generate_handle_system_mode_replace_succeeds() {
         let store = MockStore::new().with_query(vec![]);
-        let provider = MockTextGenerationModelProvider::new();
-        let config = fixture::minimal_ollama_config();
+        let provider = MockTextGenerationModelProvider::ok();
+        let config = testing::minimal_ollama_config();
         let mut out = Vec::new();
 
         let mut args = default_generate_args("prompt");
         args.system = Some("you are a pirate".to_string());
         args.system_mode = GenerateSystemMode::Replace;
 
-        let handler = GenerateCommandHandler::new(&store, &provider, &config);
+        let handler = GenerateCommandHandler::new(Arc::new(store), Arc::new(provider), &config);
         handler
             .handle(GenerateCommand::Execute(args), &mut out)
             .await

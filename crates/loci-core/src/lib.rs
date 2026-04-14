@@ -8,3 +8,5 @@ pub mod error;
 pub mod memory;
 pub mod model_provider;
 pub mod store;
+#[cfg(any(feature = "testing", test))]
+pub mod testing;
