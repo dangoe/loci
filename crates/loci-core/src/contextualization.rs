@@ -392,7 +392,9 @@ mod tests {
         entries: Vec<MemoryQueryResult>,
         reply: &str,
     ) -> (MockStore, MockTextGenerationProvider) {
-        let store = MockStore::new().with_add_entries_behavior(AddEntriesBehavior::Ok(entries));
+        let store = MockStore::new()
+            .with_add_entries_behavior(AddEntriesBehavior::Ok(entries.clone()))
+            .with_query_behavior(QueryBehavior::Ok(entries.clone()));
         let provider = MockTextGenerationProvider {
             reply: reply.to_string(),
         };

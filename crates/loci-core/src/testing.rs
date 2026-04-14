@@ -46,10 +46,11 @@ pub enum EntryBehavior {
     Err(MockStoreErrorKind),
 }
 
-/// Configures the outcome of a [`MockStore`] operation that returns a batch of entries.
+/// Configures the outcome of a [`MockStore::add_entries`] call.
 #[derive(Debug, Clone)]
 pub enum AddEntriesBehavior {
     Ok(Vec<MemoryQueryResult>),
+    /// Indicates a global operation-level failure (e.g., connection error).
     Err(MockStoreErrorKind),
 }
 
@@ -224,7 +225,7 @@ impl MemoryStore for MockStore {
     fn add_entries(
         &self,
         inputs: Vec<MemoryInput>,
-    ) -> impl Future<Output = AddEntriesResult> + Send + '_ {
+    ) -> impl Future<Output = Result<AddEntriesResult, MemoryStoreError>> + Send + '_ {
         self.state
             .lock()
             .expect("mock store mutex poisoned")
@@ -232,17 +233,11 @@ impl MemoryStore for MockStore {
         let behavior = self.add_entries_behavior.clone();
         async move {
             match behavior {
-                AddEntriesBehavior::Ok(entries) => AddEntriesResult {
+                AddEntriesBehavior::Ok(entries) => Ok(AddEntriesResult {
                     added: entries,
-                    failed: Vec::new(),
-                },
-                AddEntriesBehavior::Err(error) => AddEntriesResult {
-                    added: Vec::new(),
-                    failed: inputs
-                        .iter()
-                        .map(|input| (input.clone(), error.clone().into_memory_store_error()))
-                        .collect(),
-                },
+                    failures: Vec::new(),
+                }),
+                AddEntriesBehavior::Err(error) => Err(error.into_memory_store_error()),
             }
         }
     }

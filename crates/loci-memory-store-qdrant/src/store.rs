@@ -10,7 +10,7 @@ use loci_core::error::MemoryStoreError;
 use loci_core::memory::{
     MemoryEntry, MemoryInput, MemoryQuery, MemoryQueryMode, MemoryQueryResult, MemoryTier, Score,
 };
-use loci_core::store::{AddEntriesResult, MemoryStore};
+use loci_core::store::{AddEntriesResult, MemoryStore, PerEntryFailure};
 use qdrant_client::Payload;
 use qdrant_client::Qdrant;
 use qdrant_client::qdrant::{Condition, Filter, Range};
@@ -349,22 +349,23 @@ impl<E: TextEmbedder> QdrantMemoryStore<E> {
 }
 
 impl<E: TextEmbedder> MemoryStore for QdrantMemoryStore<E> {
-    async fn add_entries(&self, inputs: Vec<MemoryInput>) -> AddEntriesResult {
+    async fn add_entries(
+        &self,
+        inputs: Vec<MemoryInput>,
+    ) -> Result<AddEntriesResult, MemoryStoreError> {
         let mut added: Vec<MemoryQueryResult> = Vec::new();
-        let mut failed: Vec<(MemoryInput, MemoryStoreError)> = Vec::new();
+        let mut failures: Vec<PerEntryFailure> = Vec::new();
 
-        for input in inputs.into_iter() {
-            let orig_input = input.clone();
-
+        for (idx, input) in inputs.into_iter().enumerate() {
             let tier = input.tier.unwrap_or(MemoryTier::Candidate);
             if tier == MemoryTier::Ephemeral {
-                failed.push((
-                    orig_input,
-                    MemoryStoreError::Query(
+                failures.push(PerEntryFailure {
+                    index: idx,
+                    error: MemoryStoreError::Query(
                         "ephemeral memory entries are request-scoped and cannot be persisted"
                             .to_string(),
                     ),
-                ));
+                });
                 continue;
             }
 
@@ -373,7 +374,10 @@ impl<E: TextEmbedder> MemoryStore for QdrantMemoryStore<E> {
             let embedding = match self.embedder.embed(&memory.content).await {
                 Ok(e) => e,
                 Err(e) => {
-                    failed.push((orig_input, MemoryStoreError::Embedding(e)));
+                    failures.push(PerEntryFailure {
+                        index: idx,
+                        error: MemoryStoreError::Embedding(e),
+                    });
                     continue;
                 }
             };
@@ -393,7 +397,10 @@ impl<E: TextEmbedder> MemoryStore for QdrantMemoryStore<E> {
                             existing.memory_entry.seen_count.saturating_add(1);
 
                         if let Err(e) = self.do_upsert(&existing.memory_entry, &embedding).await {
-                            failed.push((orig_input, e));
+                            failures.push(PerEntryFailure {
+                                index: idx,
+                                error: e,
+                            });
                             continue;
                         }
 
@@ -409,14 +416,20 @@ impl<E: TextEmbedder> MemoryStore for QdrantMemoryStore<E> {
                         // No dedupe candidate found — proceed to upsert new memory.
                     }
                     Err(e) => {
-                        failed.push((orig_input, e));
+                        failures.push(PerEntryFailure {
+                            index: idx,
+                            error: e,
+                        });
                         continue;
                     }
                 }
             }
 
             if let Err(e) = self.do_upsert(&memory, &embedding).await {
-                failed.push((orig_input, e));
+                failures.push(PerEntryFailure {
+                    index: idx,
+                    error: e,
+                });
                 continue;
             }
 
@@ -426,7 +439,7 @@ impl<E: TextEmbedder> MemoryStore for QdrantMemoryStore<E> {
             });
         }
 
-        AddEntriesResult { added, failed }
+        Ok(AddEntriesResult { added, failures })
     }
 
     async fn get_entry(&self, id: Uuid) -> Result<MemoryQueryResult, MemoryStoreError> {
