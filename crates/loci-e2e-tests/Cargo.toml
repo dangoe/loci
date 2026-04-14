@@ -7,6 +7,18 @@ publish = false
 [features]
 e2e = []
 
+[[test]]
+name = "contextualizer_e2e"
+path = "tests/contextualizer_e2e.rs"
+
+[[test]]
+name = "memory_extraction_e2e"
+path = "tests/memory_extraction_e2e.rs"
+
+[[test]]
+name = "server_e2e"
+path = "tests/server_e2e.rs"
+
 [dev-dependencies]
 futures.workspace = true
 loci-core = { path = "../loci-core", features = ["testing"] }

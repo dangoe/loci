@@ -6,6 +6,7 @@ pub mod contextualization;
 pub mod embedding;
 pub mod error;
 pub mod memory;
+pub mod memory_extraction;
 pub mod model_provider;
 pub mod store;
 #[cfg(any(feature = "testing", test))]

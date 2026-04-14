@@ -35,6 +35,36 @@ impl std::error::Error for ContextualizerError {
     }
 }
 
+#[derive(Debug)]
+pub enum MemoryExtractionError {
+    /// The memory store returned an error while persisting extracted entries.
+    MemoryStore(MemoryStoreError),
+    /// The model provider call failed during extraction.
+    ModelProvider(ModelProviderError),
+    /// The model's response could not be parsed into memory entries.
+    Parse(String),
+}
+
+impl fmt::Display for MemoryExtractionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MemoryStore(e) => write!(f, "memory store error: {e}"),
+            Self::ModelProvider(e) => write!(f, "model provider error: {e}"),
+            Self::Parse(msg) => write!(f, "parse error: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for MemoryExtractionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::MemoryStore(e) => Some(e),
+            Self::ModelProvider(e) => Some(e),
+            Self::Parse(_) => None,
+        }
+    }
+}
+
 /// Errors produced by a [`MemoryStore`][crate::store::MemoryStore] implementation.
 #[derive(Debug)]
 pub enum MemoryStoreError {
