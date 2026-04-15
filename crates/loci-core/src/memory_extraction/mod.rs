@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // This file is part of loci-core.
 
+pub mod chunking;
 pub mod llm;
 
+pub use chunking::{ChunkingMemoryExtractionStrategy, ChunkingParams};
 pub use llm::{LlmMemoryExtractionStrategy, LlmMemoryExtractionStrategyParams};
 
 use std::{future::Future, marker::PhantomData, sync::Arc};

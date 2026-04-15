@@ -13,6 +13,7 @@ use crate::{
 use super::MemoryExtractionStrategy;
 
 /// Parameters shared by all LLM-based memory extraction strategies.
+#[derive(Clone)]
 pub struct LlmMemoryExtractionStrategyParams {
     /// Optional instructions appended to the extraction prompt to guide or
     /// constrain what the model should extract.

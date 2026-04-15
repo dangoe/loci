@@ -132,28 +132,26 @@ mod tests {
     struct EmptyResponseProvider;
 
     impl EmbeddingModelProvider for EmptyResponseProvider {
-        fn embed(
+        async fn embed(
             &self,
             req: EmbeddingRequest,
-        ) -> impl Future<Output = ModelProviderResult<EmbeddingResponse>> + Send + '_ {
-            async move {
-                Ok(EmbeddingResponse {
-                    embeddings: vec![], // empty — should trigger EmptyResponse error
-                    model: req.model.clone(),
-                    usage: None,
-                })
-            }
+        ) -> ModelProviderResult<EmbeddingResponse> {
+            Ok(EmbeddingResponse {
+                embeddings: vec![], // empty — should trigger EmptyResponse error
+                model: req.model.clone(),
+                usage: None,
+            })
         }
     }
 
     struct ErrorProvider;
 
     impl EmbeddingModelProvider for ErrorProvider {
-        fn embed(
+        async fn embed(
             &self,
             _req: EmbeddingRequest,
-        ) -> impl Future<Output = ModelProviderResult<EmbeddingResponse>> + Send + '_ {
-            async move { Err(ModelProviderError::Timeout) }
+        ) -> ModelProviderResult<EmbeddingResponse> {
+            Err(ModelProviderError::Timeout)
         }
     }
 
