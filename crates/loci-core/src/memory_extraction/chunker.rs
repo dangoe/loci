@@ -2,88 +2,29 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // This file is part of loci-core.
 
-use std::{collections::HashSet, future::Future, marker::PhantomData, sync::Arc};
+/// Splits text into a sequence of chunks suitable for downstream processing.
+pub trait Chunker: Send + Sync {
+    fn chunk(&self, text: &str) -> Vec<String>;
+}
 
-use crate::{error::MemoryExtractionError, memory::MemoryInput};
-
-use super::MemoryExtractionStrategy;
-
-/// Parameters for [`ChunkingMemoryExtractionStrategy`].
-pub struct ChunkingParams<P> {
+/// A [`Chunker`] that splits at paragraph and sentence boundaries, falling back
+/// to word-level splitting for oversized segments.
+pub struct SentenceAwareChunker {
     /// Maximum number of words per chunk.
     pub chunk_size: usize,
-    /// Number of words from the end of each chunk to repeat at the start of the
-    /// next, preserving context across chunk boundaries.
-    /// Clamped to `chunk_size - 1` if larger.
+    /// Words of overlap between consecutive chunks. Clamped to `chunk_size - 1`.
     pub overlap: usize,
-    /// Params forwarded verbatim to the inner extraction strategy for every chunk.
-    pub inner: P,
 }
 
-/// A [`MemoryExtractionStrategy`] wrapper that splits large inputs into
-/// overlapping chunks before delegating to an inner strategy.
-///
-/// Chunks are split at paragraph then sentence boundaries; segments that exceed
-/// `chunk_size` words fall back to word-level splitting. After collecting
-/// results from all chunks, exact-duplicate entries (same content string) are
-/// removed before returning.
-pub struct ChunkingMemoryExtractionStrategy<E, P> {
-    inner: Arc<E>,
-    phantom: PhantomData<P>,
-}
-
-impl<E, P> ChunkingMemoryExtractionStrategy<E, P> {
-    /// Creates a new strategy wrapping `inner`.
-    pub fn new(inner: E) -> Self {
-        Self {
-            inner: Arc::new(inner),
-            phantom: PhantomData,
-        }
-    }
-
-    /// Creates a new strategy from a pre-existing `Arc` handle — useful when
-    /// the inner strategy is already shared with another component.
-    pub fn from_arc(inner: Arc<E>) -> Self {
-        Self {
-            inner,
-            phantom: PhantomData,
-        }
-    }
-}
-
-impl<E, P> MemoryExtractionStrategy<ChunkingParams<P>> for ChunkingMemoryExtractionStrategy<E, P>
-where
-    E: MemoryExtractionStrategy<P> + Send + Sync,
-    P: Clone + Send + Sync + 'static,
-{
-    fn extract(
-        &self,
-        input: &str,
-        params: ChunkingParams<P>,
-    ) -> impl Future<Output = Result<Vec<MemoryInput>, MemoryExtractionError>> + Send {
-        let chunks = split_into_chunks(input, params.chunk_size, params.overlap);
-        let inner = Arc::clone(&self.inner);
-
-        async move {
-            let mut all_entries: Vec<MemoryInput> = Vec::new();
-
-            for chunk in chunks {
-                let mut entries = inner.extract(&chunk, params.inner.clone()).await?;
-                all_entries.append(&mut entries);
-            }
-
-            // Exact-match dedup: retain the first occurrence of each content string.
-            let mut seen: HashSet<String> = HashSet::new();
-            all_entries.retain(|e| seen.insert(e.content.clone()));
-
-            Ok(all_entries)
-        }
+impl Chunker for SentenceAwareChunker {
+    fn chunk(&self, text: &str) -> Vec<String> {
+        split_into_chunks(text, self.chunk_size, self.overlap)
     }
 }
 
 /// Splits `text` into a flat list of segments at paragraph then sentence
 /// boundaries. Blank lines (one or more) are treated as paragraph separators.
-fn split_into_segments(text: &str) -> Vec<String> {
+pub(super) fn split_into_segments(text: &str) -> Vec<String> {
     let mut segments = Vec::new();
     let mut paragraph_lines: Vec<&str> = Vec::new();
 
@@ -107,7 +48,7 @@ fn split_into_segments(text: &str) -> Vec<String> {
 
 /// Splits `text` into sentences, breaking after `.`, `!`, or `?` when followed
 /// by whitespace or end-of-string.
-fn split_into_sentences(text: &str) -> Vec<String> {
+pub(super) fn split_into_sentences(text: &str) -> Vec<String> {
     let mut sentences = Vec::new();
     let mut current = String::new();
     let chars: Vec<char> = text.chars().collect();
@@ -194,7 +135,7 @@ pub(super) fn split_into_chunks(text: &str, chunk_size: usize, overlap: usize) -
 mod tests {
     use pretty_assertions::assert_eq;
 
-    use super::split_into_chunks;
+    use super::{SentenceAwareChunker, split_into_chunks, Chunker};
 
     fn word_count(s: &str) -> usize {
         s.split_whitespace().count()
@@ -295,5 +236,29 @@ mod tests {
         let text = format!("{}\n\n\n\n{}", para.trim(), para.trim());
         let chunks = split_into_chunks(&text, 50, 0);
         assert!(chunks.len() >= 2, "expected split on multiple blank lines: {chunks:?}");
+    }
+
+    #[test]
+    fn test_sentence_aware_chunker_delegates_to_split_into_chunks() {
+        let text = "Hello world. This is a short text.";
+        let chunker = SentenceAwareChunker {
+            chunk_size: 100,
+            overlap: 10,
+        };
+        let chunks = chunker.chunk(text);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0], text);
+    }
+
+    #[test]
+    fn test_sentence_aware_chunker_respects_chunk_size() {
+        let words: Vec<String> = (0..200).map(|i| format!("word{i}")).collect();
+        let text = words.join(" ");
+        let chunker = SentenceAwareChunker {
+            chunk_size: 50,
+            overlap: 0,
+        };
+        let chunks = chunker.chunk(&text);
+        assert!(chunks.len() >= 4, "expected at least 4 chunks, got: {chunks:?}");
     }
 }
