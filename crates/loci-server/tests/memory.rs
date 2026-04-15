@@ -74,8 +74,7 @@ async fn test_memory_add_entry_uses_real_server_and_preserves_request_mapping() 
 
     let captured = store.snapshot().add_inputs.unwrap_or_default();
     let input = captured
-        .iter()
-        .next()
+        .first()
         .expect("store should capture add_entry input");
     assert_eq!(input.content, "remember this");
     assert_eq!(input.metadata.get("kind"), Some(&"fact".to_string()));

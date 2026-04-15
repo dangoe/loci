@@ -111,6 +111,12 @@ pub struct MockStore {
     prune_behavior: UnitBehavior,
 }
 
+impl Default for MockStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MockStore {
     /// Creates a new mock store with default behaviors.
     ///

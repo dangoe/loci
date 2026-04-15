@@ -368,11 +368,11 @@ mod tests {
     struct FailingTextGenerationProvider;
 
     impl TextGenerationModelProvider for FailingTextGenerationProvider {
-        fn generate(
+        async fn generate(
             &self,
             _req: TextGenerationRequest,
-        ) -> impl Future<Output = ModelProviderResult<TextGenerationResponse>> + Send + '_ {
-            async move { Err(ModelProviderError::Timeout) }
+        ) -> ModelProviderResult<TextGenerationResponse> {
+            Err(ModelProviderError::Timeout)
         }
     }
 
