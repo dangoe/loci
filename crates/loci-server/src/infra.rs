@@ -8,15 +8,60 @@
 //! Infrastructure builders: constructs concrete store and provider instances
 //! from parsed [`AppConfig`] sections.
 
+use std::pin::Pin;
 use std::sync::Arc;
 
+use futures::Stream;
 use log::info;
 
 use loci_config::{AppConfig, ConfigError, ModelProviderConfig, ModelProviderKind, StoreConfig};
 use loci_core::embedding::DefaultTextEmbedder;
+use loci_core::model_provider::common::ModelProviderResult;
+use loci_core::model_provider::text_generation::{
+    TextGenerationModelProvider, TextGenerationRequest, TextGenerationResponse,
+};
 use loci_memory_store_qdrant::config::QdrantConfig;
 use loci_memory_store_qdrant::store::QdrantMemoryStore;
 use loci_model_provider_ollama::provider::{OllamaConfig, OllamaModelProvider};
+use loci_model_provider_openai::provider::{OpenAIConfig, OpenAIModelProvider};
+
+/// A runtime-selected text-generation provider.
+///
+/// Used as the concrete `E` type parameter in [`AppState`] so that loci-server
+/// can support multiple provider backends (Ollama, OpenAI-compatible, …)
+/// without monomorphising the entire server for each variant.
+pub enum AnyModelProvider {
+    Ollama(OllamaModelProvider),
+    OpenAI(OpenAIModelProvider),
+}
+
+impl TextGenerationModelProvider for AnyModelProvider {
+    fn generate(
+        &self,
+        req: TextGenerationRequest,
+    ) -> impl std::future::Future<Output = ModelProviderResult<TextGenerationResponse>> + Send + '_
+    {
+        async move {
+            match self {
+                AnyModelProvider::Ollama(p) => p.generate(req).await,
+                AnyModelProvider::OpenAI(p) => p.generate(req).await,
+            }
+        }
+    }
+
+    fn generate_stream(
+        &self,
+        req: TextGenerationRequest,
+    ) -> impl Stream<Item = ModelProviderResult<TextGenerationResponse>> + Send + '_ {
+        let boxed: Pin<
+            Box<dyn Stream<Item = ModelProviderResult<TextGenerationResponse>> + Send + '_>,
+        > = match self {
+            AnyModelProvider::Ollama(p) => Box::pin(p.generate_stream(req)),
+            AnyModelProvider::OpenAI(p) => Box::pin(p.generate_stream(req)),
+        };
+        boxed
+    }
+}
 
 /// Builds a `QdrantMemoryStore<DefaultTextEmbedder<OllamaModelProvider>>` from the active config.
 pub async fn build_store(
@@ -76,12 +121,37 @@ pub async fn build_store(
     }
 }
 
-/// Builds an [`OllamaModelProvider`] for text generation using the default model's provider.
+/// Builds an [`AnyModelProvider`] for text generation using the default model's provider.
 pub fn build_llm_provider(
     config: &AppConfig,
-) -> Result<OllamaModelProvider, Box<dyn std::error::Error>> {
+) -> Result<AnyModelProvider, Box<dyn std::error::Error>> {
     let provider = resolve_llm_provider(config)?;
-    build_ollama_provider(provider)
+    match provider.kind {
+        ModelProviderKind::Ollama => {
+            info!("Using Ollama model provider at {}", provider.endpoint);
+            let cfg = OllamaConfig {
+                base_url: provider.endpoint.clone(),
+                timeout: None,
+            };
+            Ok(AnyModelProvider::Ollama(OllamaModelProvider::new(cfg)?))
+        }
+        ModelProviderKind::OpenAI => {
+            info!(
+                "Using OpenAI-compatible model provider at {}",
+                provider.endpoint
+            );
+            let cfg = OpenAIConfig {
+                base_url: provider.endpoint.clone(),
+                api_key: provider.api_key.clone(),
+                timeout: None,
+            };
+            Ok(AnyModelProvider::OpenAI(OpenAIModelProvider::new(cfg)?))
+        }
+        ModelProviderKind::Anthropic => Err(Box::new(ConfigError::UnsupportedKind {
+            kind: "anthropic".into(),
+            context: "provider".into(),
+        })),
+    }
 }
 
 fn resolve_embedding_provider(
@@ -134,16 +204,14 @@ fn build_ollama_provider(
                 base_url: provider.endpoint.clone(),
                 timeout: None,
             };
-            info!("Using Ollama model provider at {}", provider.endpoint);
+            info!("Using Ollama embedding provider at {}", provider.endpoint);
             Ok(OllamaModelProvider::new(cfg)?)
         }
-        ModelProviderKind::OpenAI => Err(Box::new(ConfigError::UnsupportedKind {
-            kind: "openai".into(),
-            context: "provider".into(),
-        })),
-        ModelProviderKind::Anthropic => Err(Box::new(ConfigError::UnsupportedKind {
-            kind: "anthropic".into(),
-            context: "provider".into(),
-        })),
+        ModelProviderKind::OpenAI | ModelProviderKind::Anthropic => {
+            Err(Box::new(ConfigError::UnsupportedKind {
+                kind: provider.kind.to_string(),
+                context: "embedding provider".into(),
+            }))
+        }
     }
 }

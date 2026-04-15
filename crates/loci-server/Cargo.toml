@@ -19,6 +19,7 @@ loci-core = { path = "../loci-core" }
 loci-config = { path = "../loci-config" }
 loci-memory-store-qdrant = { path = "../loci-memory-store-qdrant", features = ["background-delete"] }
 loci-model-provider-ollama = { path = "../loci-model-provider-ollama" }
+loci-model-provider-openai = { path = "../loci-model-provider-openai" }
 
 async-stream.workspace = true
 axum.workspace = true

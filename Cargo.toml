@@ -2,6 +2,7 @@
 members = [
     "crates/loci-core",
     "crates/loci-model-provider-ollama",
+    "crates/loci-model-provider-openai",
     "crates/loci-memory-store-qdrant",
     "crates/loci-config",
     "crates/loci-cli",
