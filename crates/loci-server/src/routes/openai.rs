@@ -10,15 +10,15 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use axum::Json;
 use axum::extract::State;
 use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use futures::StreamExt as _;
 use loci_config::ConfigError;
 use loci_core::contextualization::{
     ContextualizationMemoryMode, Contextualizer, ContextualizerConfig, ContextualizerSystemConfig,
-    ContextualizerSystemMode,
+    ContextualizerSystemMode, ContextualizerTuningConfig,
 };
 use loci_core::memory::Score;
 use loci_core::model_provider::text_generation::TextGenerationModelProvider;
@@ -29,10 +29,11 @@ use uuid::Uuid;
 
 use crate::state::AppState;
 
-// ── Incoming request types ────────────────────────────────────────────────────
-
 #[derive(Debug, Deserialize)]
 pub(crate) struct ChatCompletionRequest {
+    /// Ignored — loci-server uses its configured backend model, not the
+    /// client-requested one.
+    #[allow(dead_code)]
     pub model: String,
     pub messages: Vec<ChatMessage>,
     #[serde(default)]
@@ -47,8 +48,6 @@ pub(crate) struct ChatMessage {
     pub role: String,
     pub content: String,
 }
-
-// ── Outgoing response types ───────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
 struct ChatCompletionResponse {
@@ -106,8 +105,6 @@ struct UsageInfo {
     total_tokens: u32,
 }
 
-// ── Handler ───────────────────────────────────────────────────────────────────
-
 pub(crate) async fn chat_completions_handler<M, E>(
     State(state): State<Arc<AppState<M, E>>>,
     Json(request): Json<ChatCompletionRequest>,
@@ -141,10 +138,7 @@ where
     }
 }
 
-async fn collect_response<M, E>(
-    contextualizer: Contextualizer<M, E>,
-    prompt: String,
-) -> Response
+async fn collect_response<M, E>(contextualizer: Contextualizer<M, E>, prompt: String) -> Response
 where
     M: MemoryStore + 'static,
     E: TextGenerationModelProvider + 'static,
@@ -207,10 +201,7 @@ where
     .into_response()
 }
 
-async fn stream_response<M, E>(
-    contextualizer: Contextualizer<M, E>,
-    prompt: String,
-) -> Response
+async fn stream_response<M, E>(contextualizer: Contextualizer<M, E>, prompt: String) -> Response
 where
     M: MemoryStore + 'static,
     E: TextGenerationModelProvider + 'static,
@@ -334,6 +325,19 @@ where
         .find(|m| m.role == "system")
         .map(|m| m.content.clone());
 
+    let tuning =
+        if request.temperature.is_some() || request.max_tokens.is_some() || request.top_p.is_some()
+        {
+            Some(ContextualizerTuningConfig {
+                temperature: request.temperature,
+                max_tokens: request.max_tokens,
+                top_p: request.top_p,
+                ..Default::default()
+            })
+        } else {
+            None
+        };
+
     let config = ContextualizerConfig {
         text_generation_model: model.model.clone(),
         system: system_message.map(|s| ContextualizerSystemConfig {
@@ -344,7 +348,7 @@ where
         max_memory_entries: 5,
         min_score: Score::ZERO,
         filters: HashMap::new(),
-        tuning: None,
+        tuning,
     };
 
     Ok(Contextualizer::new(

@@ -43,8 +43,6 @@ impl Default for OpenAIConfig {
     }
 }
 
-// ── Wire types: text generation ───────────────────────────────────────────────
-
 #[derive(Debug, Serialize)]
 struct ChatCompletionRequest<'a> {
     model: &'a str,
@@ -127,8 +125,6 @@ struct CompletionUsage {
     total_tokens: u32,
 }
 
-// ── Wire types: embeddings ────────────────────────────────────────────────────
-
 #[derive(Debug, Serialize)]
 struct OpenAIEmbeddingRequest<'a> {
     model: &'a str,
@@ -148,8 +144,6 @@ struct EmbeddingData {
     embedding: Vec<f32>,
     index: usize,
 }
-
-// ── Provider ──────────────────────────────────────────────────────────────────
 
 /// A model provider that speaks the OpenAI REST API (`/v1/chat/completions`,
 /// `/v1/embeddings`).  Compatible with OpenAI, Groq, LM Studio, llama.cpp,
@@ -251,7 +245,10 @@ impl TextGenerationModelProvider for OpenAIModelProvider {
     ) -> ModelProviderResult<TextGenerationResponse> {
         let body = Self::build_chat_request(&req, false);
 
-        debug!("Sending non-streaming request to OpenAI: model={}", req.model);
+        debug!(
+            "Sending non-streaming request to OpenAI: model={}",
+            req.model
+        );
 
         let http_response = self
             .add_auth(
@@ -274,12 +271,13 @@ impl TextGenerationModelProvider for OpenAIModelProvider {
             });
         }
 
-        let parsed: ChatCompletionResponse = http_response
-            .json()
-            .await
-            .map_err(|e| ModelProviderError::Parse {
-                message: e.to_string(),
-            })?;
+        let parsed: ChatCompletionResponse =
+            http_response
+                .json()
+                .await
+                .map_err(|e| ModelProviderError::Parse {
+                    message: e.to_string(),
+                })?;
 
         let text = parsed
             .choices

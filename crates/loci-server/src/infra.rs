@@ -36,16 +36,13 @@ pub enum AnyModelProvider {
 }
 
 impl TextGenerationModelProvider for AnyModelProvider {
-    fn generate(
+    async fn generate(
         &self,
         req: TextGenerationRequest,
-    ) -> impl std::future::Future<Output = ModelProviderResult<TextGenerationResponse>> + Send + '_
-    {
-        async move {
-            match self {
-                AnyModelProvider::Ollama(p) => p.generate(req).await,
-                AnyModelProvider::OpenAI(p) => p.generate(req).await,
-            }
+    ) -> ModelProviderResult<TextGenerationResponse> {
+        match self {
+            AnyModelProvider::Ollama(p) => p.generate(req).await,
+            AnyModelProvider::OpenAI(p) => p.generate(req).await,
         }
     }
 
