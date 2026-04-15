@@ -188,8 +188,6 @@ async fn test_memory_extract_dry_run_outputs_candidates_without_persisting() {
             metadata: vec![],
             max_entries: None,
             guidelines: None,
-            chunk_size: None,
-            overlap: 0,
             dry_run: true,
         })
         .await
@@ -218,8 +216,6 @@ async fn test_memory_extract_persists_and_outputs_added_result() {
             metadata: vec![],
             max_entries: None,
             guidelines: None,
-            chunk_size: None,
-            overlap: 0,
             dry_run: false,
         })
         .await
@@ -244,8 +240,6 @@ async fn test_memory_extract_empty_text_returns_error() {
             metadata: vec![],
             max_entries: None,
             guidelines: None,
-            chunk_size: None,
-            overlap: 0,
             dry_run: false,
         })
         .await;
@@ -265,8 +259,6 @@ async fn test_memory_extract_conflicting_input_returns_error() {
             metadata: vec![],
             max_entries: None,
             guidelines: None,
-            chunk_size: None,
-            overlap: 0,
             dry_run: false,
         })
         .await;

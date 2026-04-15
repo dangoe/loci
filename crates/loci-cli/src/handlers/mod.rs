@@ -7,6 +7,7 @@ use std::{error::Error as StdError, io::Write};
 pub mod config;
 pub mod generate;
 mod json;
+pub(crate) mod mapping;
 pub mod memory;
 
 /// A trait for handling commands and returning a result.

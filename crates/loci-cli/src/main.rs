@@ -71,7 +71,12 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 })?
                 .model
                 .clone();
-            let handler = MemoryCommandHandler::new(store, provider, text_model);
+            let handler = MemoryCommandHandler::new(
+                store,
+                provider,
+                text_model,
+                config.memory.extraction.clone(),
+            );
             handler.handle(command, &mut std::io::stdout()).await
         }
         Command::Generate { args } => {

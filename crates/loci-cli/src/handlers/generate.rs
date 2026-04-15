@@ -5,9 +5,7 @@
 use std::sync::Arc;
 use std::{error::Error as StdError, io::Write};
 
-use loci_config::{
-    AppConfig, ConfigError, ModelThinkingConfig, ModelThinkingEffortLevel, ModelTuningConfig,
-};
+use loci_config::{AppConfig, ConfigError, ModelTuningConfig};
 use loci_core::{
     contextualization::{
         ContextualizationMemoryMode as CoreContextualizationMemoryMode,
@@ -21,7 +19,6 @@ use loci_core::{
     model_provider::text_generation::{
         TextGenerationModelProvider as CoreTextGenerationModelProvider,
         TextGenerationResponse as CoreTextGenerationResponse,
-        ThinkingEffortLevel as CoreThinkingEffortLevel, ThinkingMode as CoreThinkingMode,
     },
     store::MemoryStore as CoreMemoryStore,
 };
@@ -31,7 +28,7 @@ use crate::{
         GenerateCommand,
         generate::{GenerateDebugFlags, GenerateMemoryMode, GenerateSystemMode},
     },
-    handlers::{CommandHandler, json::entry_to_json},
+    handlers::{CommandHandler, json::entry_to_json, mapping::model_thinking_to_core},
 };
 
 impl From<GenerateMemoryMode> for CoreContextualizationMemoryMode {
@@ -149,23 +146,6 @@ fn model_tuning_to_contextualizer(tuning: &ModelTuningConfig) -> CoreContextuali
     }
 }
 
-fn model_thinking_to_core(thinking: &ModelThinkingConfig) -> CoreThinkingMode {
-    match thinking {
-        ModelThinkingConfig::Enabled => CoreThinkingMode::Enabled,
-        ModelThinkingConfig::Disabled => CoreThinkingMode::Disabled,
-        ModelThinkingConfig::Effort { level } => CoreThinkingMode::Effort {
-            level: match level {
-                ModelThinkingEffortLevel::Low => CoreThinkingEffortLevel::Low,
-                ModelThinkingEffortLevel::Medium => CoreThinkingEffortLevel::Medium,
-                ModelThinkingEffortLevel::High => CoreThinkingEffortLevel::High,
-            },
-        },
-        ModelThinkingConfig::Budgeted { max_tokens } => CoreThinkingMode::Budgeted {
-            max_tokens: *max_tokens,
-        },
-    }
-}
-
 /// Consumes a text-generation stream, printing each chunk to stdout.
 ///
 /// A newline is printed after the final chunk (when `chunk.done` is `true`).
@@ -202,9 +182,9 @@ mod tests {
         handlers::{
             CommandHandler,
             generate::{
-                GenerateCommandHandler, model_thinking_to_core, model_tuning_to_contextualizer,
-                stream_text_generation,
+                GenerateCommandHandler, model_tuning_to_contextualizer, stream_text_generation,
             },
+            mapping::model_thinking_to_core,
         },
         testing,
     };

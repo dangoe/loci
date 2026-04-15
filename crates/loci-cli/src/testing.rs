@@ -8,9 +8,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use loci_config::{
-    AppConfig, EmbeddingModelConfig, EmbeddingRoutingConfig, MemoryConfig, MemoryRoutingConfig,
-    MemorySection, ModelProviderConfig, ModelProviderKind, ModelsConfig, RoutingConfig,
-    StoreConfig, TextModelConfig, TextRoutingConfig,
+    AppConfig, EmbeddingModelConfig, EmbeddingRoutingConfig, MemoryConfig, MemoryExtractionConfig,
+    MemoryRoutingConfig, MemorySection, ModelProviderConfig, ModelProviderKind, ModelsConfig,
+    RoutingConfig, StoreConfig, TextModelConfig, TextRoutingConfig,
 };
 use loci_core::model_provider::text_generation::TextGenerationModelProvider;
 use loci_core::store::MemoryStore;
@@ -64,6 +64,7 @@ impl<S: MemoryStore + 'static, T: TextGenerationModelProvider + 'static> TestCli
             Arc::clone(&self.store),
             Arc::clone(&self.provider),
             text_model,
+            self.config.memory.extraction.clone(),
         );
         handler.handle(cmd, &mut out).await?;
         Ok(String::from_utf8(out)?)
@@ -149,6 +150,14 @@ pub fn minimal_ollama_config() -> AppConfig {
                 similarity_threshold: None,
                 promotion_source_threshold: 2,
             },
+            extraction: MemoryExtractionConfig {
+                model: "default".to_string(),
+                default_tier: loci_config::ExtractionTierConfig::default(),
+                max_entries: None,
+                guidelines: None,
+                thinking: None,
+                chunking: None,
+            },
         },
         routing: RoutingConfig {
             text: TextRoutingConfig {
@@ -208,6 +217,14 @@ pub fn mock_config() -> AppConfig {
                 backend: "qdrant".to_string(),
                 similarity_threshold: None,
                 promotion_source_threshold: 2,
+            },
+            extraction: MemoryExtractionConfig {
+                model: "default".to_string(),
+                default_tier: loci_config::ExtractionTierConfig::default(),
+                max_entries: None,
+                guidelines: None,
+                thinking: None,
+                chunking: None,
             },
         },
         routing: RoutingConfig {

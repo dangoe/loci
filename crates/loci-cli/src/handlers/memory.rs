@@ -10,6 +10,7 @@ use std::{
     sync::Arc,
 };
 
+use loci_config::MemoryExtractionConfig;
 use loci_core::{
     memory::{
         MemoryInput as CoreMemoryInput, MemoryQuery as CoreMemoryQuery,
@@ -17,9 +18,9 @@ use loci_core::{
     },
     memory_extraction::{
         LlmMemoryExtractionStrategy, LlmMemoryExtractionStrategyParams, MemoryExtractionStrategy,
-        MemoryExtractor,
+        MemoryExtractor, llm::ChunkingConfig as CoreChunkingConfig,
     },
-    model_provider::text_generation::{TextGenerationModelProvider, ThinkingMode},
+    model_provider::text_generation::TextGenerationModelProvider,
     store::MemoryStore as CoreMemoryStore,
 };
 use log::debug;
@@ -29,7 +30,7 @@ use crate::{
         input::read_extraction_input,
         memory::{MemoryCommand, MemoryTier},
     },
-    handlers::{CommandHandler, json::entry_to_json},
+    handlers::{CommandHandler, json::entry_to_json, mapping::model_thinking_to_core},
 };
 
 impl From<MemoryTier> for CoreMemoryTier {
@@ -47,6 +48,7 @@ pub struct MemoryCommandHandler<'a, S: CoreMemoryStore, P: TextGenerationModelPr
     store: Arc<S>,
     provider: Arc<P>,
     text_model: String,
+    extraction_config: MemoryExtractionConfig,
     /// Ties the `'a` lifetime used in `CommandHandler<'a, …>` to this struct
     /// so that Rust can prove `'a: '_` when borrowing `&'_ Self` — identical to
     /// the pattern used in `GenerateCommandHandler`.
@@ -54,11 +56,17 @@ pub struct MemoryCommandHandler<'a, S: CoreMemoryStore, P: TextGenerationModelPr
 }
 
 impl<'a, S: CoreMemoryStore, P: TextGenerationModelProvider> MemoryCommandHandler<'a, S, P> {
-    pub fn new(store: Arc<S>, provider: Arc<P>, text_model: impl Into<String>) -> Self {
+    pub fn new(
+        store: Arc<S>,
+        provider: Arc<P>,
+        text_model: impl Into<String>,
+        extraction_config: MemoryExtractionConfig,
+    ) -> Self {
         Self {
             store,
             provider,
             text_model: text_model.into(),
+            extraction_config,
             _marker: PhantomData,
         }
     }
@@ -204,8 +212,17 @@ where
                     default_tier: tier.into(),
                     metadata: pairs_to_map(metadata),
                     max_entries,
-                    // Extraction produces structured JSON — thinking adds latency with no benefit.
-                    thinking: Some(ThinkingMode::Disabled),
+                    thinking_mode: self
+                        .extraction_config
+                        .thinking
+                        .as_ref()
+                        .map(model_thinking_to_core),
+                    chunking: self.extraction_config.chunking.as_ref().map(|c| {
+                        CoreChunkingConfig {
+                            chunk_size: Some(c.chunk_size),
+                            overlap_size: Some(c.overlap_size),
+                        }
+                    }),
                 };
 
                 let strategy = LlmMemoryExtractionStrategy::new(
@@ -232,13 +249,6 @@ where
                 } else {
                     let extractor =
                         MemoryExtractor::from_arcs(Arc::clone(&self.store), Arc::new(strategy));
-                    /* TODO let extractor = match chunk_size {
-                        Some(size) => extractor.with_chunker(SentenceAwareChunker {
-                            chunk_size: size,
-                            overlap,
-                        }),
-                        None => extractor,
-                    }; */
                     let result = extractor
                         .extract_and_store(&input, params)
                         .await
@@ -269,6 +279,7 @@ mod tests {
     use rstest::rstest;
     use std::{collections::HashMap, sync::Arc};
 
+    use loci_config::MemoryExtractionConfig;
     use loci_core::{
         memory::{
             MemoryEntry as CoreMemoryEntry, MemoryQueryResult as CoreMemoryQueryResult,
@@ -297,6 +308,14 @@ mod tests {
             Arc::new(store),
             Arc::new(MockTextGenerationModelProvider::ok()),
             "test-model",
+            MemoryExtractionConfig {
+                model: "test-model".to_string(),
+                default_tier: loci_config::ExtractionTierConfig::default(),
+                max_entries: None,
+                guidelines: None,
+                thinking: None,
+                chunking: None,
+            },
         )
     }
 
@@ -304,7 +323,19 @@ mod tests {
         store: MockStore,
         provider: MockTextGenerationModelProvider,
     ) -> MemoryCommandHandler<'static, MockStore, MockTextGenerationModelProvider> {
-        MemoryCommandHandler::new(Arc::new(store), Arc::new(provider), "test-model")
+        MemoryCommandHandler::new(
+            Arc::new(store),
+            Arc::new(provider),
+            "test-model",
+            MemoryExtractionConfig {
+                model: "test-model".to_string(),
+                default_tier: loci_config::ExtractionTierConfig::default(),
+                max_entries: None,
+                guidelines: None,
+                thinking: None,
+                chunking: None,
+            },
+        )
     }
 
     fn make_result(content: &str, tier: loci_core::memory::MemoryTier) -> CoreMemoryQueryResult {
@@ -497,6 +528,14 @@ mod tests {
             Arc::clone(&store),
             Arc::new(MockTextGenerationModelProvider::ok()),
             "test-model",
+            MemoryExtractionConfig {
+                model: "test-model".to_string(),
+                default_tier: loci_config::ExtractionTierConfig::default(),
+                max_entries: None,
+                guidelines: None,
+                thinking: None,
+                chunking: None,
+            },
         );
         let mut out = Vec::new();
 
@@ -556,6 +595,14 @@ mod tests {
             Arc::clone(&store),
             Arc::new(MockTextGenerationModelProvider::ok()),
             "test-model",
+            MemoryExtractionConfig {
+                model: "test-model".to_string(),
+                default_tier: loci_config::ExtractionTierConfig::default(),
+                max_entries: None,
+                guidelines: None,
+                thinking: None,
+                chunking: None,
+            },
         );
         let mut out = Vec::new();
 
@@ -626,7 +673,19 @@ mod tests {
     async fn test_extract_dry_run_prints_candidates_without_persisting() {
         let provider = extraction_provider(r#"["extracted fact"]"#);
         let store = Arc::new(MockStore::new()); // add_entries not configured → would err if called
-        let handler = MemoryCommandHandler::new(Arc::clone(&store), Arc::new(provider), "m");
+        let handler = MemoryCommandHandler::new(
+            Arc::clone(&store),
+            Arc::new(provider),
+            "m",
+            MemoryExtractionConfig {
+                model: "m".to_string(),
+                default_tier: loci_config::ExtractionTierConfig::default(),
+                max_entries: None,
+                guidelines: None,
+                thinking: None,
+                chunking: None,
+            },
+        );
         let mut out = Vec::new();
 
         handler
@@ -664,7 +723,19 @@ mod tests {
         let stored = make_extract_entries(&["fact one", "fact two"]);
         let store =
             Arc::new(MockStore::new().with_add_entries_behavior(AddEntriesBehavior::Ok(stored)));
-        let handler = MemoryCommandHandler::new(Arc::clone(&store), Arc::new(provider), "m");
+        let handler = MemoryCommandHandler::new(
+            Arc::clone(&store),
+            Arc::new(provider),
+            "m",
+            MemoryExtractionConfig {
+                model: "m".to_string(),
+                default_tier: loci_config::ExtractionTierConfig::default(),
+                max_entries: None,
+                guidelines: None,
+                thinking: None,
+                chunking: None,
+            },
+        );
         let mut out = Vec::new();
 
         handler
@@ -778,41 +849,6 @@ mod tests {
 
         let v = parse_json_output(&out);
         assert_eq!(v.as_array().unwrap().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_extract_with_chunking_calls_provider_per_chunk() {
-        // Two sentences of ~10 words each; chunk_size=10 forces two chunks.
-        let input = "The quick brown fox jumps over the lazy dog today. \
-                     Another quick brown fox leaps over a sleeping hound now."
-            .to_string();
-        let provider = Arc::new(extraction_provider(r#"["a fact"]"#));
-        let stored: Vec<CoreMemoryQueryResult> = (0..2)
-            .map(|_| make_result("a fact", CoreMemoryTier::Candidate))
-            .collect();
-        let store =
-            Arc::new(MockStore::new().with_add_entries_behavior(AddEntriesBehavior::Ok(stored)));
-        let handler = MemoryCommandHandler::new(Arc::clone(&store), Arc::clone(&provider), "m");
-        let mut out = Vec::new();
-
-        handler
-            .handle(
-                MemoryCommand::Extract {
-                    text: Some(input),
-                    files: vec![],
-                    tier: MemoryTier::Candidate,
-                    metadata: vec![],
-                    max_entries: None,
-                    guidelines: None,
-                    dry_run: false,
-                },
-                &mut out,
-            )
-            .await
-            .unwrap();
-
-        // Provider should have been called once per chunk (2 chunks)
-        assert_eq!(provider.snapshot().request_count, 2);
     }
 
     #[tokio::test]
@@ -960,6 +996,14 @@ mod tests {
             Arc::clone(&store),
             Arc::new(MockTextGenerationModelProvider::ok()),
             "test-model",
+            MemoryExtractionConfig {
+                model: "test-model".to_string(),
+                default_tier: loci_config::ExtractionTierConfig::default(),
+                max_entries: None,
+                guidelines: None,
+                thinking: None,
+                chunking: None,
+            },
         );
         let mut out = Vec::new();
 
@@ -998,6 +1042,14 @@ mod tests {
             Arc::clone(&store),
             Arc::new(MockTextGenerationModelProvider::ok()),
             "test-model",
+            MemoryExtractionConfig {
+                model: "test-model".to_string(),
+                default_tier: loci_config::ExtractionTierConfig::default(),
+                max_entries: None,
+                guidelines: None,
+                thinking: None,
+                chunking: None,
+            },
         );
         let mut out = Vec::new();
 

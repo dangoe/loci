@@ -265,9 +265,10 @@ loci memory extract "…some text…" --dry-run
 | `--meta KEY=VALUE`                           | _(none)_     | Metadata applied to every extracted entry (repeatable).                |
 | `--max-entries <n>`                          | _(none)_     | Hard cap on the number of entries extracted.                           |
 | `--guidelines <TEXT>`                        | _(none)_     | Free-form instructions appended to the extraction prompt.              |
-| `--chunk-size <n>`                           | _(off)_      | Enable chunking: split input into word-bounded chunks of at most N words. |
-| `--overlap <n>`                              | `0`          | Word overlap between consecutive chunks (only with `--chunk-size`).    |
 | `--dry-run`                                  | off          | Print extracted candidates as JSON without persisting.                 |
+
+> **Note:** Chunking and thinking mode are configured in `config.toml` under `[memory.extraction]`,
+> not as CLI flags.
 
 **Output (persist mode):**
 
