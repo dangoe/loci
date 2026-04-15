@@ -27,21 +27,23 @@ pub enum ExtractionTierConfig {
 /// deserialized from `[memory.extraction.chunking]`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ChunkingConfig {
-    /// Maximum number of words per chunk.
+    /// Maximum number of characters per chunk. The splitter finishes the
+    /// current word before cutting, so the actual chunk may be slightly
+    /// longer.
     #[serde(default = "default_chunk_size")]
     pub chunk_size: usize,
 
-    /// Words of overlap between consecutive chunks.
-    #[serde(default = "default_overlap")]
-    pub overlap: usize,
+    /// Characters of overlap between consecutive chunks.
+    #[serde(default = "default_overlap_size")]
+    pub overlap_size: usize,
 }
 
 fn default_chunk_size() -> usize {
-    500
+    2500
 }
 
-fn default_overlap() -> usize {
-    50
+fn default_overlap_size() -> usize {
+    200
 }
 
 /// LLM-based memory extraction configuration, deserialized from
@@ -254,8 +256,8 @@ model = "default"
 "#,
         );
         let chunking = cfg.memory.extraction.chunking.as_ref().unwrap();
-        assert_eq!(chunking.chunk_size, 500);
-        assert_eq!(chunking.overlap, 50);
+        assert_eq!(chunking.chunk_size, 2500);
+        assert_eq!(chunking.overlap_size, 200);
     }
 
     #[test]
@@ -266,13 +268,13 @@ model = "default"
 model = "default"
 
 [memory.extraction.chunking]
-chunk_size = 300
-overlap    = 25
+chunk_size   = 3000
+overlap_size = 300
 "#,
         );
         let chunking = cfg.memory.extraction.chunking.as_ref().unwrap();
-        assert_eq!(chunking.chunk_size, 300);
-        assert_eq!(chunking.overlap, 25);
+        assert_eq!(chunking.chunk_size, 3000);
+        assert_eq!(chunking.overlap_size, 300);
     }
 
     #[test]

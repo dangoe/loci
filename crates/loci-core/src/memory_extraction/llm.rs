@@ -16,6 +16,20 @@ use crate::{
 
 use super::MemoryExtractionStrategy;
 
+/// Optional chunking configuration for LLM-based extraction strategies.
+#[derive(Clone)]
+pub struct ChunkingConfig {
+    /// If set, the input text is processed in non-overlapping chunks of this
+    /// size (in characters) to extract entries from long inputs that exceed
+    /// the model context window. `None` means no chunking (i.e. one prompt
+    /// for the entire input).
+    pub chunk_size: Option<usize>,
+    /// If set, the input text is processed in overlapping chunks of this size
+    /// (in characters) to extract more entries from long inputs. The overlap
+    /// helps ensure that entries spanning chunk boundaries
+    pub overlap_size: Option<usize>,
+}
+
 /// Parameters shared by all LLM-based memory extraction strategies.
 #[derive(Clone)]
 pub struct LlmMemoryExtractionStrategyParams {
@@ -33,7 +47,12 @@ pub struct LlmMemoryExtractionStrategyParams {
     /// structured JSON output, so thinking is rarely beneficial; callers
     /// should pass [`ThinkingMode::Disabled`] explicitly unless they have a
     /// specific reason to enable it.  `None` defers to the provider default.
-    pub thinking: Option<ThinkingMode>,
+    pub thinking_mode: Option<ThinkingMode>,
+    /// Optional chunking configuration for long inputs that may exceed the model
+    /// context window. If set, the input is split into chunks according to the
+    /// configuration and each chunk is processed separately, with results aggregated
+    /// into a single output list.
+    pub chunking: Option<ChunkingConfig>,
 }
 
 const EXTRACTION_SYSTEM_PROMPT: &str = "\
@@ -139,7 +158,7 @@ impl<P: TextGenerationModelProvider + Send + Sync>
             .with_temperature(0.1); // Low temperature for deterministic, structured output.
         let provider = Arc::clone(&self.provider);
 
-        let req = match params.thinking.clone() {
+        let req = match params.thinking_mode.clone() {
             Some(mode) => req.with_thinking(mode),
             None => req,
         };
@@ -176,7 +195,8 @@ mod tests {
             default_tier: MemoryTier::Candidate,
             metadata: HashMap::new(),
             max_entries: None,
-            thinking: None,
+            chunking: None,
+            thinking_mode: None,
         }
     }
 

@@ -85,8 +85,8 @@ mode = "disabled"               # extraction produces structured JSON; thinking 
 # level = "low"                # for mode = "effort"
 
 # [memory.extraction.chunking]
-# chunk_size = 500             # max words per chunk
-# overlap    = 50              # words of overlap between consecutive chunks
+# chunk_size   = 2500            # max characters per chunk (splits at word boundary)
+# overlap_size = 200             # characters of overlap between consecutive chunks
 
 ########################################
 # Routing — default selections
