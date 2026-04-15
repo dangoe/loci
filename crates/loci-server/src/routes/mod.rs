@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::Router;
-use axum::routing::{get, post};
+use axum::routing::get;
 use connectrpc::Router as ConnectRouter;
 use log::info;
 use tower_http::cors::CorsLayer;
@@ -38,10 +38,7 @@ where
 
     Router::new()
         .route("/v1/health", get(health::health_handler))
-        .route(
-            "/v1/chat/completions",
-            post(openai::chat_completions_handler::<M, E>),
-        )
+        .nest("/openai", openai::openai_router::<M, E>())
         .fallback_service(connect.into_axum_router())
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())

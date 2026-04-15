@@ -4,3 +4,4 @@
 
 pub(crate) mod generate;
 pub(crate) mod memory;
+pub(crate) mod openai;

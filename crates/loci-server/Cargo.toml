@@ -49,4 +49,5 @@ loci-server = { path = ".", features = ["testing"] }
 chrono.workspace = true
 futures.workspace = true
 pretty_assertions.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rstest.workspace = true

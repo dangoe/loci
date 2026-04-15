@@ -2,52 +2,67 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // This file is part of loci-server.
 
-//! OpenAI-compatible proxy endpoint (`POST /v1/chat/completions`).
+//! OpenAI-compatible proxy sub-router, mounted at `/openai`.
 //!
-//! Any client that speaks the OpenAI chat-completions wire format can point at
-//! loci-server and get transparent memory enrichment without modifications.
+//! Exposes `POST /openai/v1/chat/completions` — any client configured to use
+//! loci-server as an OpenAI-compatible base URL will get transparent memory
+//! enrichment without modification.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::Json;
+use axum::Router;
 use axum::extract::State;
 use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response};
+use axum::routing::post;
 use futures::StreamExt as _;
-use loci_config::ConfigError;
-use loci_core::contextualization::{
-    ContextualizationMemoryMode, Contextualizer, ContextualizerConfig, ContextualizerSystemConfig,
-    ContextualizerSystemMode, ContextualizerTuningConfig,
-};
-use loci_core::memory::Score;
+use loci_core::contextualization::ContextualizerTuningConfig;
 use loci_core::model_provider::text_generation::TextGenerationModelProvider;
 use loci_core::store::MemoryStore;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
+use crate::service::openai::{ChatCompletionInput, OpenAICompletionService, OpenAIServiceError};
 use crate::state::AppState;
 
+// ── Sub-router ────────────────────────────────────────────────────────────────
+
+pub(crate) fn openai_router<M, E>() -> Router<Arc<AppState<M, E>>>
+where
+    M: MemoryStore + 'static,
+    E: TextGenerationModelProvider + 'static,
+{
+    Router::new().route(
+        "/v1/chat/completions",
+        post(chat_completions_handler::<M, E>),
+    )
+}
+
+// ── Incoming wire types ───────────────────────────────────────────────────────
+
 #[derive(Debug, Deserialize)]
-pub(crate) struct ChatCompletionRequest {
+struct ChatCompletionRequest {
     /// Ignored — loci-server uses its configured backend model, not the
     /// client-requested one.
     #[allow(dead_code)]
-    pub model: String,
-    pub messages: Vec<ChatMessage>,
+    model: String,
+    messages: Vec<ChatMessage>,
     #[serde(default)]
-    pub stream: bool,
-    pub temperature: Option<f32>,
-    pub max_tokens: Option<u32>,
-    pub top_p: Option<f32>,
+    stream: bool,
+    temperature: Option<f32>,
+    max_tokens: Option<u32>,
+    top_p: Option<f32>,
 }
 
 #[derive(Debug, Deserialize)]
-pub(crate) struct ChatMessage {
-    pub role: String,
-    pub content: String,
+struct ChatMessage {
+    role: String,
+    content: String,
 }
+
+// ── Outgoing wire types ───────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
 struct ChatCompletionResponse {
@@ -56,6 +71,7 @@ struct ChatCompletionResponse {
     created: u64,
     model: String,
     choices: Vec<NonStreamChoice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     usage: Option<UsageInfo>,
 }
 
@@ -105,7 +121,9 @@ struct UsageInfo {
     total_tokens: u32,
 }
 
-pub(crate) async fn chat_completions_handler<M, E>(
+// ── Handler ───────────────────────────────────────────────────────────────────
+
+async fn chat_completions_handler<M, E>(
     State(state): State<Arc<AppState<M, E>>>,
     Json(request): Json<ChatCompletionRequest>,
 ) -> Response
@@ -113,46 +131,33 @@ where
     M: MemoryStore + 'static,
     E: TextGenerationModelProvider + 'static,
 {
-    let contextualizer = match build_contextualizer(&state, &request) {
-        Ok(c) => c,
-        Err(e) => {
-            return Json(json!({
-                "error": { "message": e.to_string(), "type": "invalid_request_error" }
-            }))
-            .into_response();
+    let service = OpenAICompletionService::new(state);
+    let input = extract_input(&request);
+
+    match service.complete(input).await {
+        Ok(stream) => {
+            if request.stream {
+                build_sse_response(stream).into_response()
+            } else {
+                build_json_response(stream).await.into_response()
+            }
         }
-    };
-
-    let last_user_msg = request
-        .messages
-        .iter()
-        .rev()
-        .find(|m| m.role == "user")
-        .map(|m| m.content.clone())
-        .unwrap_or_default();
-
-    if request.stream {
-        stream_response(contextualizer, last_user_msg).await
-    } else {
-        collect_response(contextualizer, last_user_msg).await
+        Err(e) => error_response(&e),
     }
 }
 
-async fn collect_response<M, E>(contextualizer: Contextualizer<M, E>, prompt: String) -> Response
-where
-    M: MemoryStore + 'static,
-    E: TextGenerationModelProvider + 'static,
-{
-    let stream = match contextualizer.contextualize(prompt).await {
-        Ok(s) => s,
-        Err(e) => {
-            return Json(json!({
-                "error": { "message": e.to_string(), "type": "server_error" }
-            }))
-            .into_response();
-        }
-    };
+// ── Response builders ─────────────────────────────────────────────────────────
 
+async fn build_json_response<S>(stream: S) -> Response
+where
+    S: futures::Stream<
+            Item = Result<
+                loci_core::model_provider::text_generation::TextGenerationResponse,
+                loci_core::error::ContextualizerError,
+            >,
+        > + Send
+        + 'static,
+{
     let chunks: Vec<_> = stream.collect().await;
 
     let mut full_text = String::new();
@@ -174,12 +179,7 @@ where
                     });
                 }
             }
-            Err(e) => {
-                return Json(json!({
-                    "error": { "message": e.to_string(), "type": "server_error" }
-                }))
-                .into_response();
-            }
+            Err(e) => return error_response(&OpenAIServiceError::Contextualization(e)),
         }
     }
 
@@ -201,125 +201,115 @@ where
     .into_response()
 }
 
-async fn stream_response<M, E>(contextualizer: Contextualizer<M, E>, prompt: String) -> Response
+fn build_sse_response<S>(
+    stream: S,
+) -> Sse<impl futures::Stream<Item = Result<Event, serde_json::Error>>>
 where
-    M: MemoryStore + 'static,
-    E: TextGenerationModelProvider + 'static,
+    S: futures::Stream<
+            Item = Result<
+                loci_core::model_provider::text_generation::TextGenerationResponse,
+                loci_core::error::ContextualizerError,
+            >,
+        > + Send
+        + 'static,
 {
-    let completion_id = format!("chatcmpl-{}", Uuid::new_v4());
+    let id = format!("chatcmpl-{}", Uuid::new_v4());
     let created = unix_now();
-    let id_clone = completion_id.clone();
 
-    // Emit the role-announcing delta first, then content chunks.
     let role_event = {
-        let id = id_clone.clone();
-        let chunk = ChatCompletionChunk {
-            id,
-            object: "chat.completion.chunk",
-            created,
-            model: String::new(),
-            choices: vec![StreamChoice {
-                index: 0,
-                delta: DeltaContent {
-                    role: Some("assistant"),
-                    content: None,
-                },
-                finish_reason: None,
-            }],
-            usage: None,
-        };
-        match serde_json::to_string(&chunk) {
-            Ok(json) => Ok(Event::default().data(json)),
-            Err(e) => Err(e),
-        }
+        let id = id.clone();
+        futures::stream::once(async move {
+            let chunk = ChatCompletionChunk {
+                id,
+                object: "chat.completion.chunk",
+                created,
+                model: String::new(),
+                choices: vec![StreamChoice {
+                    index: 0,
+                    delta: DeltaContent {
+                        role: Some("assistant"),
+                        content: None,
+                    },
+                    finish_reason: None,
+                }],
+                usage: None,
+            };
+            serde_json::to_string(&chunk).map(|json| Event::default().data(json))
+        })
     };
 
-    let inner_stream = match contextualizer.contextualize(prompt).await {
-        Ok(s) => s,
-        Err(e) => {
-            return Json(json!({
-                "error": { "message": e.to_string(), "type": "server_error" }
-            }))
-            .into_response();
-        }
-    };
-
-    let id_for_stream = id_clone.clone();
-    let content_stream = inner_stream.map(move |item| {
-        let id = id_for_stream.clone();
-        match item {
-            Ok(resp) => {
-                let is_done = resp.done;
-                let usage = resp.usage.map(|u| UsageInfo {
-                    prompt_tokens: u.prompt_tokens.unwrap_or(0),
-                    completion_tokens: u.completion_tokens.unwrap_or(0),
-                    total_tokens: u.total_tokens.unwrap_or(0),
-                });
-
-                let chunk = ChatCompletionChunk {
-                    id,
-                    object: "chat.completion.chunk",
-                    created,
-                    model: resp.model,
-                    choices: vec![StreamChoice {
-                        index: 0,
-                        delta: DeltaContent {
-                            role: None,
-                            content: if resp.text.is_empty() && is_done {
-                                None
-                            } else {
-                                Some(resp.text)
+    let content_stream = {
+        let id = id.clone();
+        stream.map(move |item| {
+            let id = id.clone();
+            match item {
+                Ok(resp) => {
+                    let is_done = resp.done;
+                    let usage = resp.usage.map(|u| UsageInfo {
+                        prompt_tokens: u.prompt_tokens.unwrap_or(0),
+                        completion_tokens: u.completion_tokens.unwrap_or(0),
+                        total_tokens: u.total_tokens.unwrap_or(0),
+                    });
+                    let chunk = ChatCompletionChunk {
+                        id,
+                        object: "chat.completion.chunk",
+                        created,
+                        model: resp.model,
+                        choices: vec![StreamChoice {
+                            index: 0,
+                            delta: DeltaContent {
+                                role: None,
+                                content: if resp.text.is_empty() && is_done {
+                                    None
+                                } else {
+                                    Some(resp.text)
+                                },
                             },
-                        },
-                        finish_reason: if is_done { Some("stop") } else { None },
-                    }],
-                    usage,
-                };
-
-                serde_json::to_string(&chunk).map(|json| Event::default().data(json))
+                            finish_reason: if is_done { Some("stop") } else { None },
+                        }],
+                        usage,
+                    };
+                    serde_json::to_string(&chunk).map(|json| Event::default().data(json))
+                }
+                Err(e) => {
+                    let err_json = json!({
+                        "error": { "message": e.to_string(), "type": "server_error" }
+                    });
+                    serde_json::to_string(&err_json).map(|json| Event::default().data(json))
+                }
             }
-            Err(e) => {
-                let err_json = json!({
-                    "error": { "message": e.to_string(), "type": "server_error" }
-                });
-                serde_json::to_string(&err_json).map(|json| Event::default().data(json))
-            }
-        }
-    });
+        })
+    };
 
-    // Prepend the role announcement, append [DONE]
     let done_event = futures::stream::once(async {
         Ok::<Event, serde_json::Error>(Event::default().data("[DONE]"))
     });
 
-    let full_stream = futures::stream::once(async move { role_event })
-        .chain(content_stream)
-        .chain(done_event);
-
-    Sse::new(full_stream).into_response()
+    Sse::new(role_event.chain(content_stream).chain(done_event))
 }
 
-fn build_contextualizer<M, E>(
-    state: &AppState<M, E>,
-    request: &ChatCompletionRequest,
-) -> Result<Contextualizer<M, E>, Box<dyn std::error::Error>>
-where
-    M: MemoryStore,
-    E: TextGenerationModelProvider + 'static,
-{
-    let model_key = &state.config.routing.text.default;
-    let model = state
-        .config
-        .models
-        .text
-        .get(model_key)
-        .ok_or_else(|| ConfigError::MissingKey {
-            section: "models.text".into(),
-            key: model_key.clone(),
-        })?;
+fn error_response(e: &OpenAIServiceError) -> Response {
+    Json(json!({
+        "error": {
+            "message": e.to_string(),
+            "type": "server_error"
+        }
+    }))
+    .into_response()
+}
 
-    // Use the system message from the incoming request, if present.
-    let system_message = request
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+fn extract_input(request: &ChatCompletionRequest) -> ChatCompletionInput {
+    let prompt = request
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.role == "user")
+        .map(|m| m.content.clone())
+        .unwrap_or_default();
+
+    let system = request
         .messages
         .iter()
         .find(|m| m.role == "system")
@@ -338,24 +328,11 @@ where
             None
         };
 
-    let config = ContextualizerConfig {
-        text_generation_model: model.model.clone(),
-        system: system_message.map(|s| ContextualizerSystemConfig {
-            mode: ContextualizerSystemMode::Append,
-            system: s,
-        }),
-        memory_mode: ContextualizationMemoryMode::Auto,
-        max_memory_entries: 5,
-        min_score: Score::ZERO,
-        filters: HashMap::new(),
+    ChatCompletionInput {
+        prompt,
+        system,
         tuning,
-    };
-
-    Ok(Contextualizer::new(
-        Arc::clone(&state.store),
-        Arc::clone(&state.llm_provider),
-        config,
-    ))
+    }
 }
 
 fn unix_now() -> u64 {
