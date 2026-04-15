@@ -4,6 +4,7 @@
 
 pub mod config;
 pub mod generate;
+pub mod input;
 pub mod memory;
 mod parse;
 

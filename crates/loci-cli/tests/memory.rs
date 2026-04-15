@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use loci_core::memory::MemoryTier;
 use loci_core::model_provider::text_generation::TextGenerationResponse;
+use loci_core::testing::AddEntriesBehavior;
 
 use loci_cli::commands::memory::MemoryCommand;
 
@@ -158,4 +159,117 @@ async fn test_memory_add_propagates_store_errors() {
         .await;
 
     assert!(result.is_err(), "add should propagate store error");
+}
+
+fn extraction_provider(response_json: &str) -> MockTextGenerationModelProvider {
+    MockTextGenerationModelProvider::new(ProviderBehavior::Stream(vec![
+        TextGenerationResponse::done(response_json.to_string(), "mock".to_string(), None),
+    ]))
+}
+
+#[tokio::test]
+async fn test_memory_extract_dry_run_outputs_candidates_without_persisting() {
+    let id = uuid::Uuid::new_v4();
+    let stored = vec![make_result(
+        id,
+        "extracted fact",
+        MemoryTier::Candidate,
+        0.0,
+    )];
+    let store = MockStore::new().with_add_entries_behavior(AddEntriesBehavior::Ok(stored));
+    let provider = extraction_provider(r#"["extracted fact"]"#);
+    let cli = TestCli::new(store, provider);
+
+    let output = cli
+        .memory(MemoryCommand::Extract {
+            text: Some("some interesting text".to_string()),
+            files: vec![],
+            tier: loci_cli::commands::memory::MemoryTier::Candidate,
+            metadata: vec![],
+            max_entries: None,
+            guidelines: None,
+            chunk_size: None,
+            overlap: 0,
+            dry_run: true,
+        })
+        .await
+        .expect("dry_run extract should succeed");
+
+    let v: serde_json::Value = serde_json::from_str(&output).expect("output should be valid JSON");
+    let arr = v.as_array().expect("output should be a JSON array");
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["content"].as_str().unwrap(), "extracted fact");
+    assert_eq!(arr[0]["tier"].as_str().unwrap(), "candidate");
+}
+
+#[tokio::test]
+async fn test_memory_extract_persists_and_outputs_added_result() {
+    let id = uuid::Uuid::new_v4();
+    let stored = vec![make_result(id, "a fact", MemoryTier::Candidate, 0.0)];
+    let store = MockStore::new().with_add_entries_behavior(AddEntriesBehavior::Ok(stored));
+    let provider = extraction_provider(r#"["a fact"]"#);
+    let cli = TestCli::new(store, provider);
+
+    let output = cli
+        .memory(MemoryCommand::Extract {
+            text: Some("text containing a fact".to_string()),
+            files: vec![],
+            tier: loci_cli::commands::memory::MemoryTier::Candidate,
+            metadata: vec![],
+            max_entries: None,
+            guidelines: None,
+            chunk_size: None,
+            overlap: 0,
+            dry_run: false,
+        })
+        .await
+        .expect("extract should succeed");
+
+    let v: serde_json::Value = serde_json::from_str(&output).expect("output should be valid JSON");
+    assert!(v.get("added").is_some(), "output should have 'added' key");
+    assert_eq!(v["added"].as_array().unwrap().len(), 1);
+    assert_eq!(v["failures"].as_array().unwrap().len(), 0);
+    assert_eq!(v["added"][0]["id"].as_str().unwrap(), id.to_string());
+}
+
+#[tokio::test]
+async fn test_memory_extract_empty_text_returns_error() {
+    let cli = TestCli::new(MockStore::new(), default_provider());
+
+    let result = cli
+        .memory(MemoryCommand::Extract {
+            text: Some("   ".to_string()),
+            files: vec![],
+            tier: loci_cli::commands::memory::MemoryTier::Candidate,
+            metadata: vec![],
+            max_entries: None,
+            guidelines: None,
+            chunk_size: None,
+            overlap: 0,
+            dry_run: false,
+        })
+        .await;
+
+    assert!(result.is_err(), "empty text should return an error");
+}
+
+#[tokio::test]
+async fn test_memory_extract_conflicting_input_returns_error() {
+    let cli = TestCli::new(MockStore::new(), default_provider());
+
+    let result = cli
+        .memory(MemoryCommand::Extract {
+            text: Some("positional text".to_string()),
+            files: vec![std::path::PathBuf::from("some_file.txt")],
+            tier: loci_cli::commands::memory::MemoryTier::Candidate,
+            metadata: vec![],
+            max_entries: None,
+            guidelines: None,
+            chunk_size: None,
+            overlap: 0,
+            dry_run: false,
+        })
+        .await;
+
+    assert!(result.is_err(), "conflicting input should return an error");
 }

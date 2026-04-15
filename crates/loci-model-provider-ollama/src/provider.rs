@@ -221,12 +221,24 @@ impl TextGenerationModelProvider for OllamaModelProvider {
 
         debug!("Received response from Ollama: {:?}", http_response);
 
+        if !http_response.status().is_success() {
+            let status = http_response.status();
+            let body_text = http_response.text().await.unwrap_or_default();
+            let detail = serde_json::from_str::<Value>(&body_text)
+                .ok()
+                .and_then(|v| v["error"].as_str().map(str::to_owned))
+                .unwrap_or(body_text);
+            return Err(ModelProviderError::Other {
+                message: format!("Ollama returned HTTP {status}: {detail}"),
+            });
+        }
+
         let parse_response: OllamaTextGenerationResponse =
             http_response
                 .json()
                 .await
                 .map_err(|e| ModelProviderError::Parse {
-                    message: e.to_string(),
+                    message: format!("error decoding response body: {e}"),
                 })?;
 
         debug!("Parsed response from Ollama: {:?}", parse_response);
@@ -266,6 +278,19 @@ impl TextGenerationModelProvider for OllamaModelProvider {
                 .send()
                 .await
                 .map_err(|e| ModelProviderError::Transport { message: e.to_string() })?;
+
+            let status = http_response.status();
+            if !status.is_success() {
+                let body_text = http_response.text().await.unwrap_or_default();
+                let detail = serde_json::from_str::<Value>(&body_text)
+                    .ok()
+                    .and_then(|v| v["error"].as_str().map(str::to_owned))
+                    .unwrap_or(body_text);
+                Err(ModelProviderError::Other {
+                    message: format!("Ollama returned HTTP {status}: {detail}"),
+                })?;
+                return; // unreachable — satisfies borrow checker that http_response is not reused
+            }
 
             let mut byte_stream = http_response.bytes_stream();
             let mut buffer = String::new();
@@ -339,6 +364,18 @@ impl EmbeddingModelProvider for OllamaModelProvider {
             .map_err(|e| ModelProviderError::Transport {
                 message: format!("Failed to send request: {e}"),
             })?;
+
+        if !http_response.status().is_success() {
+            let status = http_response.status();
+            let body_text = http_response.text().await.unwrap_or_default();
+            let detail = serde_json::from_str::<Value>(&body_text)
+                .ok()
+                .and_then(|v| v["error"].as_str().map(str::to_owned))
+                .unwrap_or(body_text);
+            return Err(ModelProviderError::Other {
+                message: format!("Ollama returned HTTP {status}: {detail}"),
+            });
+        }
 
         let parsed_response: OllamaEmbeddingResponse =
             http_response

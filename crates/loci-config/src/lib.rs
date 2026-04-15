@@ -14,6 +14,7 @@ use std::path::Path;
 
 pub use embedding::EmbeddingModelConfig;
 pub use error::ConfigError;
+pub use extraction::{ChunkingConfig, ExtractionTierConfig, MemoryExtractionConfig};
 pub use init::{ConfigInitError, DEFAULT_CONFIG_TEMPLATE, init_config};
 pub use memory::{MemoryConfig, MemorySection};
 pub use model::{
@@ -25,6 +26,7 @@ pub use store::StoreConfig;
 
 mod embedding;
 mod error;
+mod extraction;
 mod init;
 mod memory;
 mod model;
@@ -121,6 +123,10 @@ collection = "memory_entries"
 backend = "qdrant"
 promotion_source_threshold = 2
 
+[memory.extraction]
+model = "default"
+
+
 [routing.text]
 default = "default"
 
@@ -165,6 +171,10 @@ collection = "mem"
 [memory.config]
 backend = "qdrant"
 
+[memory.extraction]
+model = "default"
+
+
 [routing.text]
 default = "x"
 
@@ -199,6 +209,10 @@ collection = "mem"
 
 [memory.config]
 backend = "qdrant"
+
+[memory.extraction]
+model = "default"
+
 
 [routing.text]
 default = "x"
@@ -236,6 +250,10 @@ collection = "mem"
 
 [memory.config]
 backend = "qdrant"
+
+[memory.extraction]
+model = "default"
+
 
 [routing.text]
 default = "x"
@@ -289,6 +307,10 @@ backend = "qdrant"
 promotion_source_threshold = 2
 similarity_threshold = 0.92
 
+[memory.extraction]
+model = "default"
+
+
 [routing.text]
 default = "default"
 
@@ -316,6 +338,10 @@ api_key = "env:LOCI_QDRANT_KEY"
 
 [memory.config]
 backend = "qdrant"
+
+[memory.extraction]
+model = "default"
+
 
 [routing.text]
 default = "x"
@@ -359,6 +385,10 @@ collection = "mem"
 [memory.config]
 backend = "qdrant"
 
+[memory.extraction]
+model = "default"
+
+
 [routing.text]
 default = "primary"
 fallback = ["secondary", "tertiary"]
@@ -386,6 +416,10 @@ collection = "mem"
 
 [memory.config]
 backend = "qdrant"
+
+[memory.extraction]
+model = "default"
+
 
 [routing.text]
 default = "x"
@@ -419,6 +453,10 @@ collection = "mem"
 [memory.config]
 backend = "qdrant"
 
+[memory.extraction]
+model = "default"
+
+
 [routing.text]
 default = "x"
 
@@ -451,6 +489,10 @@ collection = "mem"
 [memory.config]
 backend = "qdrant"
 
+[memory.extraction]
+model = "default"
+
+
 [routing.text]
 default = "default"
 
@@ -482,6 +524,10 @@ collection = "mem"
 
 [memory.config]
 backend = "qdrant"
+
+[memory.extraction]
+model = "default"
+
 
 [routing.text]
 default = "default"
@@ -523,6 +569,10 @@ collection = "mem"
 [memory.config]
 backend = "qdrant"
 
+[memory.extraction]
+model = "default"
+
+
 [routing.text]
 default = "default"
 
@@ -549,6 +599,10 @@ path = "./memory"
 
 [memory.config]
 backend = "local"
+
+[memory.extraction]
+model = "default"
+
 
 [routing.text]
 default = "x"
@@ -603,6 +657,10 @@ collection = "memory_entries"
 [memory.config]
 backend = "qdrant"
 promotion_source_threshold = 2
+
+[memory.extraction]
+model = "default"
+
 
 [routing.text]
 default = "default"

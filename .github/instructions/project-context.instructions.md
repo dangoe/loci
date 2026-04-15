@@ -17,7 +17,7 @@ A Rust workspace for memory-augmented LLM prompts.
 | `loci-memory-store-qdrant`   | Qdrant-backed memory store with deduplication, tiers, and metadata filtering   |
 | `loci-model-provider-ollama` | Ollama model provider (embeddings + text generation, including streaming)      |
 | `loci-config`                | TOML config schema, parsing, and `env:` secret resolution                      |
-| `loci-cli`                   | `loci` binary (`memory`, `generate`, `config init`)                            |
+| `loci-cli`                   | `loci` binary (`memory add/query/get/update/delete/prune-expired/extract`, `generate`, `config init`) |
 | `loci-e2e-tests`             | End-to-end tests (requires Docker + Ollama)                                    |
 
 ## Runtime Support

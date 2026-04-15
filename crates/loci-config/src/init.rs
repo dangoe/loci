@@ -71,6 +71,24 @@ backend = "qdrant"
 # promotion_source_threshold = 2     # Candidate → Stable after N independent sources
 
 ########################################
+# Memory extraction — LLM-based extraction
+########################################
+[memory.extraction]
+model = "default"               # key in [models.text] used for extraction
+# default_tier = "candidate"   # "candidate" | "stable" | "core"  (default: candidate)
+# max_entries  = 20            # hard cap per extraction run (prompt hint + post-processing)
+# guidelines   = "Focus on technical facts only."
+
+[memory.extraction.thinking]
+mode = "disabled"               # extraction produces structured JSON; thinking adds no benefit
+# mode  = "effort"             # override when using a thinking-capable model
+# level = "low"                # for mode = "effort"
+
+# [memory.extraction.chunking]
+# chunk_size = 500             # max words per chunk
+# overlap    = 50              # words of overlap between consecutive chunks
+
+########################################
 # Routing — default selections
 ########################################
 [routing.text]

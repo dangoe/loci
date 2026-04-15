@@ -7,6 +7,7 @@ pub mod llm;
 
 pub use chunker::{Chunker, SentenceAwareChunker};
 pub use llm::{LlmMemoryExtractionStrategy, LlmMemoryExtractionStrategyParams};
+use log::info;
 
 use std::{future::Future, marker::PhantomData, sync::Arc};
 
@@ -85,6 +86,8 @@ impl<S: MemoryStore, E: MemoryExtractionStrategy<P>, P: Send + Sync> MemoryExtra
     where
         P: Clone,
     {
+        info!("Extracting memory from {}", input);
+
         let strategy = Arc::clone(&self.memory_extraction_strategy);
         let store = Arc::clone(&self.memory_store);
         let chunker = self.chunker.clone();

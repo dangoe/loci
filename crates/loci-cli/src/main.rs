@@ -17,6 +17,7 @@ use std::sync::Arc;
 use systemd_journal_logger::JournalLog;
 
 use clap::Parser;
+use env_logger::Builder;
 use log::{LevelFilter, error, info};
 
 use loci_cli::cli::Cli;
@@ -25,7 +26,7 @@ use loci_cli::handlers::CommandHandler;
 use loci_cli::handlers::config::ConfigCommandHandler;
 use loci_cli::handlers::generate::GenerateCommandHandler;
 use loci_cli::handlers::memory::MemoryCommandHandler;
-use loci_config::load_config;
+use loci_config::{ConfigError, load_config};
 
 use crate::infra::{build_llm_provider, build_store};
 
@@ -58,8 +59,19 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
     match cli.command {
         Command::Memory { command } => {
-            let store = build_store(&config).await?;
-            let handler = MemoryCommandHandler::new(&store);
+            let store = Arc::new(build_store(&config).await?);
+            let provider = Arc::new(build_llm_provider(&config)?);
+            let text_model = config
+                .models
+                .text
+                .get(&config.routing.text.default)
+                .ok_or_else(|| ConfigError::MissingKey {
+                    section: "models.text".into(),
+                    key: config.routing.text.default.clone(),
+                })?
+                .model
+                .clone();
+            let handler = MemoryCommandHandler::new(store, provider, text_model);
             handler.handle(command, &mut std::io::stdout()).await
         }
         Command::Generate { args } => {
@@ -91,27 +103,36 @@ fn resolve_config_path(cli_value: Option<PathBuf>) -> PathBuf {
 }
 
 fn setup_logging(verbose: bool) {
+    // Build from the RUST_LOG env var as the baseline; --verbose forces Debug on
+    // top of whatever RUST_LOG says.  We do NOT call log::set_max_level() after
+    // init() because that would silently discard any level set by RUST_LOG.
+    let mut builder = Builder::from_default_env();
+    if verbose {
+        builder.filter_level(LevelFilter::Debug);
+    }
+
     #[cfg(feature = "systemd-journal-logger")]
     {
         let journald_ok = JournalLog::new()
             .and_then(|journal| journal.install())
             .is_ok();
-        if !journald_ok {
-            eprintln!("warning: failed to connect to journald, falling back to env_logger");
-            env_logger::init();
+        if journald_ok {
+            // Journald is active; apply the level filter there instead.
+            log::set_max_level(if verbose {
+                LevelFilter::Debug
+            } else {
+                // Respect RUST_LOG if set, otherwise fall back to Info.
+                std::env::var("RUST_LOG")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(LevelFilter::Info)
+            });
+            return;
         }
+        eprintln!("warning: failed to connect to journald, falling back to env_logger");
     }
 
-    #[cfg(not(feature = "systemd-journal-logger"))]
-    {
-        env_logger::init();
-    }
-
-    log::set_max_level(if verbose {
-        LevelFilter::Debug
-    } else {
-        LevelFilter::Info
-    });
+    builder.init();
 }
 
 #[cfg(test)]

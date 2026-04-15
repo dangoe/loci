@@ -4,10 +4,14 @@
 
 use std::{collections::HashMap, future::Future, sync::Arc};
 
+use futures::StreamExt as _;
+
 use crate::{
     error::MemoryExtractionError,
     memory::{MemoryInput, MemoryTier},
-    model_provider::text_generation::{TextGenerationModelProvider, TextGenerationRequest},
+    model_provider::text_generation::{
+        TextGenerationModelProvider, TextGenerationRequest, ThinkingMode,
+    },
 };
 
 use super::MemoryExtractionStrategy;
@@ -25,15 +29,25 @@ pub struct LlmMemoryExtractionStrategyParams {
     /// If set, at most this many entries are returned (applied both as a
     /// prompt hint and as a hard post-processing cap).
     pub max_entries: Option<usize>,
+    /// Thinking mode forwarded to the model provider.  Extraction produces
+    /// structured JSON output, so thinking is rarely beneficial; callers
+    /// should pass [`ThinkingMode::Disabled`] explicitly unless they have a
+    /// specific reason to enable it.  `None` defers to the provider default.
+    pub thinking: Option<ThinkingMode>,
 }
 
 const EXTRACTION_SYSTEM_PROMPT: &str = "\
-You are a memory extraction assistant. Extract discrete, self-contained facts, \
-preferences, goals, and important details worth remembering from the provided text.\n\n\
-Output ONLY a valid JSON array of strings. Each string is one memory entry. \
-Be concise but complete. If nothing is worth remembering, return an empty array.\n\n\
-Example output:\n\
-[\"The user prefers dark mode.\", \"The project targets Rust stable.\", \"Deadline is end of Q3.\"]";
+You are a memory extraction assistant. Extract ONLY information that is:\n
+- Directly stated facts about a specific, named subject\n
+- User preferences, goals, or decisions\n
+- Deadlines, constraints, or requirements\n\n
+Do NOT extract:\n
+- General knowledge or encyclopedia-style facts\n
+- Information that can be looked up anywhere\n
+- Vague or context-free statements\n\n
+Output ONLY a valid JSON array of strings. Each string must name its subject explicitly.\n\n
+Example output:\n
+[\"The user prefers dark mode.\", \"Project X targets Rust stable.\", \"Deadline for feature Y is end of Q3.\"]";
 
 fn build_extraction_prompt(input: &str, params: &LlmMemoryExtractionStrategyParams) -> String {
     let mut parts: Vec<String> = Vec::new();
@@ -125,13 +139,23 @@ impl<P: TextGenerationModelProvider + Send + Sync>
             .with_temperature(0.1); // Low temperature for deterministic, structured output.
         let provider = Arc::clone(&self.provider);
 
-        async move {
-            let response = provider
-                .generate(req)
-                .await
-                .map_err(MemoryExtractionError::ModelProvider)?;
+        let req = match params.thinking.clone() {
+            Some(mode) => req.with_thinking(mode),
+            None => req,
+        };
 
-            parse_extraction_response(&response.text, params)
+        async move {
+            // Use generate_stream so the connection stays alive while the model
+            // generates (important for thinking-capable models like qwen3 that
+            // can produce very long outputs before the JSON array).
+            let mut stream = Box::pin(provider.generate_stream(req));
+            let mut full_text = String::new();
+            while let Some(chunk) = stream.next().await {
+                let resp = chunk.map_err(MemoryExtractionError::ModelProvider)?;
+                full_text.push_str(&resp.text);
+            }
+
+            parse_extraction_response(&full_text, params)
         }
     }
 }
@@ -152,6 +176,7 @@ mod tests {
             default_tier: MemoryTier::Candidate,
             metadata: HashMap::new(),
             max_entries: None,
+            thinking: None,
         }
     }
 

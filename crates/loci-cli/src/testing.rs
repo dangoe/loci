@@ -53,7 +53,18 @@ impl<S: MemoryStore + 'static, T: TextGenerationModelProvider + 'static> TestCli
     /// Executes a memory sub-command and returns stdout as a string.
     pub async fn memory(&self, cmd: MemoryCommand) -> Result<String, Box<dyn StdError>> {
         let mut out = Vec::new();
-        let handler = MemoryCommandHandler::new(&*self.store);
+        let text_model = self
+            .config
+            .models
+            .text
+            .get(&self.config.routing.text.default)
+            .map(|m| m.model.clone())
+            .unwrap_or_default();
+        let handler = MemoryCommandHandler::new(
+            Arc::clone(&self.store),
+            Arc::clone(&self.provider),
+            text_model,
+        );
         handler.handle(cmd, &mut out).await?;
         Ok(String::from_utf8(out)?)
     }

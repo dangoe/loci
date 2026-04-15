@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // This file is part of loci-cli.
 
+use std::path::PathBuf;
+
 use clap::Subcommand;
 use uuid::Uuid;
 
@@ -66,6 +68,32 @@ pub enum MemoryCommand {
     /// Prunes all expired memory entries from the collection.
     #[command(name = "prune-expired")]
     PruneExpired,
+    /// Extract discrete memory entries from text using the configured LLM and
+    /// persist them (use --dry-run to preview without persisting).
+    #[command(name = "extract")]
+    Extract {
+        /// Text to extract memories from.
+        /// Mutually exclusive with --file and auto-stdin.
+        text: Option<String>,
+        /// File(s) to read input from. Use `-` for stdin. Repeatable.
+        /// Mutually exclusive with a positional text argument.
+        #[arg(long = "file", short = 'f')]
+        files: Vec<PathBuf>,
+        /// Tier assigned to every extracted entry (default: candidate).
+        #[arg(long, default_value = "candidate")]
+        tier: MemoryTier,
+        /// Metadata key=value pairs applied to every extracted entry (repeatable).
+        #[arg(long = "meta", value_parser = parse_key_value)]
+        metadata: Vec<(String, String)>,
+        /// Hard cap on the number of entries extracted.
+        #[arg(long)]
+        max_entries: Option<usize>,
+        /// Free-form guidelines appended to the extraction prompt.
+        #[arg(long)]
+        guidelines: Option<String>,
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 /// A semantic memory tier.

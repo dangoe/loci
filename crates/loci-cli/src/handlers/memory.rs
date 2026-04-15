@@ -2,19 +2,33 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // This file is part of loci-cli.
 
-use std::{collections::HashMap, error::Error as StdError, io::Write};
+use std::{
+    collections::HashMap,
+    error::Error as StdError,
+    io::{IsTerminal, Write},
+    marker::PhantomData,
+    sync::Arc,
+};
 
 use loci_core::{
     memory::{
         MemoryInput as CoreMemoryInput, MemoryQuery as CoreMemoryQuery,
         MemoryQueryMode as CoreMemoryQueryMode, MemoryTier as CoreMemoryTier, Score as CoreScore,
     },
+    memory_extraction::{
+        LlmMemoryExtractionStrategy, LlmMemoryExtractionStrategyParams, MemoryExtractionStrategy,
+        MemoryExtractor,
+    },
+    model_provider::text_generation::{TextGenerationModelProvider, ThinkingMode},
     store::MemoryStore as CoreMemoryStore,
 };
 use log::debug;
 
 use crate::{
-    commands::memory::{MemoryCommand, MemoryTier},
+    commands::{
+        input::read_extraction_input,
+        memory::{MemoryCommand, MemoryTier},
+    },
     handlers::{CommandHandler, json::entry_to_json},
 };
 
@@ -29,18 +43,32 @@ impl From<MemoryTier> for CoreMemoryTier {
     }
 }
 
-pub struct MemoryCommandHandler<'a, S: CoreMemoryStore> {
-    store: &'a S,
+pub struct MemoryCommandHandler<'a, S: CoreMemoryStore, P: TextGenerationModelProvider> {
+    store: Arc<S>,
+    provider: Arc<P>,
+    text_model: String,
+    /// Ties the `'a` lifetime used in `CommandHandler<'a, …>` to this struct
+    /// so that Rust can prove `'a: '_` when borrowing `&'_ Self` — identical to
+    /// the pattern used in `GenerateCommandHandler`.
+    _marker: PhantomData<&'a ()>,
 }
 
-impl<'a, S: CoreMemoryStore> MemoryCommandHandler<'a, S> {
-    pub fn new(store: &'a S) -> Self {
-        Self { store }
+impl<'a, S: CoreMemoryStore, P: TextGenerationModelProvider> MemoryCommandHandler<'a, S, P> {
+    pub fn new(store: Arc<S>, provider: Arc<P>, text_model: impl Into<String>) -> Self {
+        Self {
+            store,
+            provider,
+            text_model: text_model.into(),
+            _marker: PhantomData,
+        }
     }
 }
 
-impl<'a, S: CoreMemoryStore, W: Write + Send> CommandHandler<'a, MemoryCommand, W>
-    for MemoryCommandHandler<'a, S>
+impl<'a, S, P, W> CommandHandler<'a, MemoryCommand, W> for MemoryCommandHandler<'a, S, P>
+where
+    S: CoreMemoryStore + 'static,
+    P: TextGenerationModelProvider + Send + Sync + 'static,
+    W: Write + Send,
 {
     async fn handle(&self, command: MemoryCommand, out: &mut W) -> Result<(), Box<dyn StdError>> {
         match command {
@@ -153,6 +181,78 @@ impl<'a, S: CoreMemoryStore, W: Write + Send> CommandHandler<'a, MemoryCommand, 
                     serde_json::to_string_pretty(&serde_json::json!({ "expired pruned": true }))?
                 )?;
             }
+            MemoryCommand::Extract {
+                text,
+                files,
+                tier,
+                metadata,
+                max_entries,
+                guidelines,
+                dry_run,
+            } => {
+                debug!("extract memories: dry_run={dry_run}");
+                if text.is_none() && files.is_empty() && std::io::stdin().is_terminal() {
+                    return Err(
+                        "no input provided: pass text as an argument, pipe via stdin, or use --file"
+                            .into(),
+                    );
+                }
+                let input = read_extraction_input(text, &files, std::io::stdin())?;
+
+                let params = LlmMemoryExtractionStrategyParams {
+                    guidelines,
+                    default_tier: tier.into(),
+                    metadata: pairs_to_map(metadata),
+                    max_entries,
+                    // Extraction produces structured JSON — thinking adds latency with no benefit.
+                    thinking: Some(ThinkingMode::Disabled),
+                };
+
+                let strategy = LlmMemoryExtractionStrategy::new(
+                    Arc::clone(&self.provider),
+                    self.text_model.clone(),
+                );
+
+                if dry_run {
+                    let entries = strategy
+                        .extract(&input, params)
+                        .await
+                        .map_err(|e| Box::new(e) as Box<dyn StdError>)?;
+                    let json: Vec<_> = entries
+                        .iter()
+                        .map(|e| {
+                            serde_json::json!({
+                                "content": e.content,
+                                "tier": e.tier.map(|t: CoreMemoryTier| t.as_str()).unwrap_or("candidate"),
+                                "metadata": e.metadata,
+                            })
+                        })
+                        .collect();
+                    writeln!(out, "{}", serde_json::to_string_pretty(&json)?)?;
+                } else {
+                    let extractor =
+                        MemoryExtractor::from_arcs(Arc::clone(&self.store), Arc::new(strategy));
+                    /* TODO let extractor = match chunk_size {
+                        Some(size) => extractor.with_chunker(SentenceAwareChunker {
+                            chunk_size: size,
+                            overlap,
+                        }),
+                        None => extractor,
+                    }; */
+                    let result = extractor
+                        .extract_and_store(&input, params)
+                        .await
+                        .map_err(|e| Box::new(e) as Box<dyn StdError>)?;
+                    let json = serde_json::json!({
+                        "added": result.added.iter().map(entry_to_json).collect::<Vec<_>>(),
+                        "failures": result.failures.iter().map(|f| serde_json::json!({
+                            "index": f.index,
+                            "error": f.error.to_string(),
+                        })).collect::<Vec<_>>(),
+                    });
+                    writeln!(out, "{}", serde_json::to_string_pretty(&json)?)?;
+                }
+            }
         }
         Ok(())
     }
@@ -167,11 +267,17 @@ fn pairs_to_map(pairs: Vec<(String, String)>) -> HashMap<String, String> {
 mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;
-    use std::collections::HashMap;
+    use std::{collections::HashMap, sync::Arc};
 
-    use loci_core::memory::{
-        MemoryEntry as CoreMemoryEntry, MemoryQueryResult as CoreMemoryQueryResult,
-        MemoryTier as CoreMemoryTier, Score as CoreScore,
+    use loci_core::{
+        memory::{
+            MemoryEntry as CoreMemoryEntry, MemoryQueryResult as CoreMemoryQueryResult,
+            MemoryTier as CoreMemoryTier, Score as CoreScore,
+        },
+        model_provider::text_generation::TextGenerationResponse,
+        testing::{
+            AddEntriesBehavior, MockStore, MockTextGenerationModelProvider, ProviderBehavior,
+        },
     };
     use serde_json::Value;
     use uuid::Uuid;
@@ -184,16 +290,50 @@ mod tests {
         handlers::memory::{MemoryCommandHandler, pairs_to_map},
     };
 
-    use loci_core::testing::MockStore;
+    fn make_handler(
+        store: MockStore,
+    ) -> MemoryCommandHandler<'static, MockStore, MockTextGenerationModelProvider> {
+        MemoryCommandHandler::new(
+            Arc::new(store),
+            Arc::new(MockTextGenerationModelProvider::ok()),
+            "test-model",
+        )
+    }
+
+    fn make_handler_with_provider(
+        store: MockStore,
+        provider: MockTextGenerationModelProvider,
+    ) -> MemoryCommandHandler<'static, MockStore, MockTextGenerationModelProvider> {
+        MemoryCommandHandler::new(Arc::new(store), Arc::new(provider), "test-model")
+    }
+
+    fn make_result(content: &str, tier: loci_core::memory::MemoryTier) -> CoreMemoryQueryResult {
+        CoreMemoryQueryResult {
+            memory_entry: CoreMemoryEntry::new_with_tier(content.to_string(), HashMap::new(), tier),
+            score: CoreScore::ZERO,
+        }
+    }
+
+    fn make_result_with_metadata(
+        content: &str,
+        metadata: HashMap<String, String>,
+    ) -> CoreMemoryQueryResult {
+        CoreMemoryQueryResult {
+            memory_entry: CoreMemoryEntry::new(content.to_string(), metadata),
+            score: CoreScore::new(0.9).unwrap(),
+        }
+    }
+
+    fn parse_json_output(buf: &[u8]) -> Value {
+        serde_json::from_str(std::str::from_utf8(buf).unwrap().trim()).unwrap()
+    }
 
     #[tokio::test]
     async fn test_memory_add_outputs_json() {
         let entry = make_result("hello world", CoreMemoryTier::Candidate);
         let id = entry.memory_entry.id;
-        let store = MockStore::new().with_add(entry);
+        let handler = make_handler(MockStore::new().with_add(entry));
         let mut out = Vec::new();
-
-        let handler = MemoryCommandHandler::new(&store);
 
         handler
             .handle(
@@ -216,10 +356,8 @@ mod tests {
     #[tokio::test]
     async fn test_memory_add_with_tier_outputs_tier_field() {
         let entry = make_result("core fact", CoreMemoryTier::Core);
-        let store = MockStore::new().with_add(entry);
+        let handler = make_handler(MockStore::new().with_add(entry));
         let mut out = Vec::new();
-
-        let handler = MemoryCommandHandler::new(&store);
 
         handler
             .handle(
@@ -239,10 +377,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_memory_add_propagates_store_error() {
-        let store = MockStore::new(); // save_entry = None → Connection error
+        let handler = make_handler(MockStore::new());
         let mut out = Vec::new();
-
-        let handler = MemoryCommandHandler::new(&store);
 
         let result = handler
             .handle(
@@ -264,10 +400,8 @@ mod tests {
             make_result("first", CoreMemoryTier::Stable),
             make_result("second", CoreMemoryTier::Core),
         ];
-        let store = MockStore::new().with_query(entries);
+        let handler = make_handler(MockStore::new().with_query(entries));
         let mut out = Vec::new();
-
-        let handler = MemoryCommandHandler::new(&store);
 
         handler
             .handle(
@@ -291,17 +425,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_memory_query_invalid_min_score_returns_err() {
-        let store = MockStore::new();
+        let handler = make_handler(MockStore::new());
         let mut out = Vec::new();
-
-        let handler = MemoryCommandHandler::new(&store);
 
         let result = handler
             .handle(
                 MemoryCommand::Query {
                     topic: "t".to_string(),
                     max_results: 5,
-                    min_score: 1.5, // invalid — outside [0.0, 1.0]
+                    min_score: 1.5,
                     filters: vec![],
                 },
                 &mut out,
@@ -321,10 +453,8 @@ mod tests {
     async fn test_memory_get_outputs_json() {
         let entry = make_result("specific entry", CoreMemoryTier::Stable);
         let id = entry.memory_entry.id;
-        let store = MockStore::new().with_get(entry);
+        let handler = make_handler(MockStore::new().with_get(entry));
         let mut out = Vec::new();
-
-        let handler = MemoryCommandHandler::new(&store);
 
         handler
             .handle(MemoryCommand::Get { id }, &mut out)
@@ -339,10 +469,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_memory_get_not_found_returns_err() {
-        let store = MockStore::new(); // get_entry = None → NotFound
+        let handler = make_handler(MockStore::new());
         let mut out = Vec::new();
-
-        let handler = MemoryCommandHandler::new(&store);
 
         let result = handler
             .handle(MemoryCommand::Get { id: Uuid::new_v4() }, &mut out)
@@ -364,10 +492,13 @@ mod tests {
         };
         let updated = make_result("new content", CoreMemoryTier::Stable);
         let updated_id = updated.memory_entry.id;
-        let store = MockStore::new().with_get(existing).with_update(updated);
+        let store = Arc::new(MockStore::new().with_get(existing).with_update(updated));
+        let handler = MemoryCommandHandler::new(
+            Arc::clone(&store),
+            Arc::new(MockTextGenerationModelProvider::ok()),
+            "test-model",
+        );
         let mut out = Vec::new();
-
-        let handler = MemoryCommandHandler::new(&store);
 
         handler
             .handle(
@@ -389,10 +520,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_memory_update_nothing_to_update_returns_err() {
-        let store = MockStore::new();
+        let handler = make_handler(MockStore::new());
         let mut out = Vec::new();
-
-        let handler = MemoryCommandHandler::new(&store);
 
         let result = handler
             .handle(
@@ -422,17 +551,20 @@ mod tests {
         let original_meta = HashMap::from([("source".to_string(), "original-source".to_string())]);
         let existing = make_result_with_metadata("original", original_meta.clone());
         let updated = make_result_with_metadata("updated", original_meta.clone());
-        let store = MockStore::new().with_get(existing).with_update(updated);
+        let store = Arc::new(MockStore::new().with_get(existing).with_update(updated));
+        let handler = MemoryCommandHandler::new(
+            Arc::clone(&store),
+            Arc::new(MockTextGenerationModelProvider::ok()),
+            "test-model",
+        );
         let mut out = Vec::new();
-
-        let handler = MemoryCommandHandler::new(&store);
 
         handler
             .handle(
                 MemoryCommand::Update {
                     id,
                     content: Some("updated".to_string()),
-                    metadata: vec![], // no --meta flag → should preserve existing
+                    metadata: vec![],
                     tier: None,
                 },
                 &mut out,
@@ -451,10 +583,8 @@ mod tests {
     #[tokio::test]
     async fn test_memory_delete_outputs_deleted_id() {
         let id = Uuid::new_v4();
-        let store = MockStore::new();
+        let handler = make_handler(MockStore::new());
         let mut out = Vec::new();
-
-        let handler = MemoryCommandHandler::new(&store);
 
         handler
             .handle(MemoryCommand::Delete { id }, &mut out)
@@ -467,10 +597,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_memory_prune_expired_outputs_success() {
-        let store = MockStore::new();
+        let handler = make_handler(MockStore::new());
         let mut out = Vec::new();
-
-        let handler = MemoryCommandHandler::new(&store);
 
         handler
             .handle(MemoryCommand::PruneExpired, &mut out)
@@ -479,6 +607,262 @@ mod tests {
 
         let v = parse_json_output(&out);
         assert_eq!(v["expired pruned"].as_bool().unwrap(), true);
+    }
+
+    fn extraction_provider(response_json: &str) -> MockTextGenerationModelProvider {
+        MockTextGenerationModelProvider::new(ProviderBehavior::Stream(vec![
+            TextGenerationResponse::done(response_json.to_string(), "mock".to_string(), None),
+        ]))
+    }
+
+    fn make_extract_entries(contents: &[&str]) -> Vec<CoreMemoryQueryResult> {
+        contents
+            .iter()
+            .map(|c| make_result(c, CoreMemoryTier::Candidate))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn test_extract_dry_run_prints_candidates_without_persisting() {
+        let provider = extraction_provider(r#"["extracted fact"]"#);
+        let store = Arc::new(MockStore::new()); // add_entries not configured → would err if called
+        let handler = MemoryCommandHandler::new(Arc::clone(&store), Arc::new(provider), "m");
+        let mut out = Vec::new();
+
+        handler
+            .handle(
+                MemoryCommand::Extract {
+                    text: Some("some input text".to_string()),
+                    files: vec![],
+                    tier: MemoryTier::Candidate,
+                    metadata: vec![],
+                    max_entries: None,
+                    guidelines: None,
+                    dry_run: true,
+                },
+                &mut out,
+            )
+            .await
+            .unwrap();
+
+        // Nothing written to store
+        assert!(
+            store.snapshot().add_inputs.is_none(),
+            "dry_run must not write to store"
+        );
+
+        let v = parse_json_output(&out);
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["content"].as_str().unwrap(), "extracted fact");
+        assert_eq!(arr[0]["tier"].as_str().unwrap(), "candidate");
+    }
+
+    #[tokio::test]
+    async fn test_extract_persists_entries_by_default() {
+        let provider = extraction_provider(r#"["fact one", "fact two"]"#);
+        let stored = make_extract_entries(&["fact one", "fact two"]);
+        let store =
+            Arc::new(MockStore::new().with_add_entries_behavior(AddEntriesBehavior::Ok(stored)));
+        let handler = MemoryCommandHandler::new(Arc::clone(&store), Arc::new(provider), "m");
+        let mut out = Vec::new();
+
+        handler
+            .handle(
+                MemoryCommand::Extract {
+                    text: Some("text with two facts".to_string()),
+                    files: vec![],
+                    tier: MemoryTier::Candidate,
+                    metadata: vec![],
+                    max_entries: None,
+                    guidelines: None,
+                    dry_run: false,
+                },
+                &mut out,
+            )
+            .await
+            .unwrap();
+
+        // Store was written
+        let inputs = store
+            .snapshot()
+            .add_inputs
+            .expect("store should have received add_entries");
+        assert_eq!(inputs.len(), 2);
+
+        let v = parse_json_output(&out);
+        assert!(v.get("added").is_some());
+        assert_eq!(v["added"].as_array().unwrap().len(), 2);
+        assert_eq!(v["failures"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_extract_propagates_tier_to_entries() {
+        let provider = extraction_provider(r#"["a core fact"]"#);
+        let stored = make_extract_entries(&["a core fact"]);
+        let store = MockStore::new().with_add_entries_behavior(AddEntriesBehavior::Ok(stored));
+        let handler = make_handler_with_provider(store, provider);
+        let mut out = Vec::new();
+
+        handler
+            .handle(
+                MemoryCommand::Extract {
+                    text: Some("input".to_string()),
+                    files: vec![],
+                    tier: MemoryTier::Core,
+                    metadata: vec![],
+                    max_entries: None,
+                    guidelines: None,
+                    dry_run: true,
+                },
+                &mut out,
+            )
+            .await
+            .unwrap();
+
+        let v = parse_json_output(&out);
+        assert_eq!(v[0]["tier"].as_str().unwrap(), "core");
+    }
+
+    #[tokio::test]
+    async fn test_extract_propagates_metadata_to_entries() {
+        let provider = extraction_provider(r#"["a fact"]"#);
+        let stored = make_extract_entries(&["a fact"]);
+        let store = MockStore::new().with_add_entries_behavior(AddEntriesBehavior::Ok(stored));
+        let handler = make_handler_with_provider(store, provider);
+        let mut out = Vec::new();
+
+        handler
+            .handle(
+                MemoryCommand::Extract {
+                    text: Some("input".to_string()),
+                    files: vec![],
+                    tier: MemoryTier::Candidate,
+                    metadata: vec![("source".to_string(), "readme".to_string())],
+                    max_entries: None,
+                    guidelines: None,
+                    dry_run: true,
+                },
+                &mut out,
+            )
+            .await
+            .unwrap();
+
+        let v = parse_json_output(&out);
+        assert_eq!(v[0]["metadata"]["source"].as_str().unwrap(), "readme");
+    }
+
+    #[tokio::test]
+    async fn test_extract_max_entries_caps_result() {
+        let provider = extraction_provider(r#"["one", "two", "three"]"#);
+        let stored = make_extract_entries(&["one"]);
+        let store = MockStore::new().with_add_entries_behavior(AddEntriesBehavior::Ok(stored));
+        let handler = make_handler_with_provider(store, provider);
+        let mut out = Vec::new();
+
+        handler
+            .handle(
+                MemoryCommand::Extract {
+                    text: Some("input".to_string()),
+                    files: vec![],
+                    tier: MemoryTier::Candidate,
+                    metadata: vec![],
+                    max_entries: Some(1),
+                    guidelines: None,
+                    dry_run: true,
+                },
+                &mut out,
+            )
+            .await
+            .unwrap();
+
+        let v = parse_json_output(&out);
+        assert_eq!(v.as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_extract_with_chunking_calls_provider_per_chunk() {
+        // Two sentences of ~10 words each; chunk_size=10 forces two chunks.
+        let input = "The quick brown fox jumps over the lazy dog today. \
+                     Another quick brown fox leaps over a sleeping hound now."
+            .to_string();
+        let provider = Arc::new(extraction_provider(r#"["a fact"]"#));
+        let stored: Vec<CoreMemoryQueryResult> = (0..2)
+            .map(|_| make_result("a fact", CoreMemoryTier::Candidate))
+            .collect();
+        let store =
+            Arc::new(MockStore::new().with_add_entries_behavior(AddEntriesBehavior::Ok(stored)));
+        let handler = MemoryCommandHandler::new(Arc::clone(&store), Arc::clone(&provider), "m");
+        let mut out = Vec::new();
+
+        handler
+            .handle(
+                MemoryCommand::Extract {
+                    text: Some(input),
+                    files: vec![],
+                    tier: MemoryTier::Candidate,
+                    metadata: vec![],
+                    max_entries: None,
+                    guidelines: None,
+                    dry_run: false,
+                },
+                &mut out,
+            )
+            .await
+            .unwrap();
+
+        // Provider should have been called once per chunk (2 chunks)
+        assert_eq!(provider.snapshot().request_count, 2);
+    }
+
+    #[tokio::test]
+    async fn test_extract_empty_input_returns_error() {
+        let handler = make_handler(MockStore::new());
+        let mut out = Vec::new();
+
+        let result = handler
+            .handle(
+                MemoryCommand::Extract {
+                    text: Some("   ".to_string()),
+                    files: vec![],
+                    tier: MemoryTier::Candidate,
+                    metadata: vec![],
+                    max_entries: None,
+                    guidelines: None,
+                    dry_run: false,
+                },
+                &mut out,
+            )
+            .await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_extract_conflicting_input_returns_error() {
+        let handler = make_handler(MockStore::new());
+        let mut out = Vec::new();
+
+        let result = handler
+            .handle(
+                MemoryCommand::Extract {
+                    text: Some("positional text".to_string()),
+                    files: vec![std::path::PathBuf::from("some_file.txt")],
+                    tier: MemoryTier::Candidate,
+                    metadata: vec![],
+                    max_entries: None,
+                    guidelines: None,
+                    dry_run: false,
+                },
+                &mut out,
+            )
+            .await;
+
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("conflict"),
+            "expected conflict error message"
+        );
     }
 
     #[test]
@@ -491,40 +875,6 @@ mod tests {
         assert_eq!(map.get("a").unwrap(), "1");
         assert_eq!(map.get("b").unwrap(), "two");
         assert_eq!(map.len(), 2);
-    }
-
-    fn make_result(content: &str, tier: loci_core::memory::MemoryTier) -> CoreMemoryQueryResult {
-        CoreMemoryQueryResult {
-            memory_entry: CoreMemoryEntry::new_with_tier(content.to_string(), HashMap::new(), tier),
-            score: CoreScore::ZERO,
-        }
-    }
-
-    fn make_result_with_metadata(
-        content: &str,
-        metadata: HashMap<String, String>,
-    ) -> CoreMemoryQueryResult {
-        CoreMemoryQueryResult {
-            memory_entry: CoreMemoryEntry::new(content.to_string(), metadata),
-            score: CoreScore::new(0.9).unwrap(),
-        }
-    }
-
-    fn parse_json_output(buf: &[u8]) -> Value {
-        serde_json::from_str(std::str::from_utf8(buf).unwrap().trim()).unwrap()
-    }
-
-    #[rstest]
-    #[case(MemoryTier::Ephemeral, CoreMemoryTier::Ephemeral)]
-    #[case(MemoryTier::Candidate, CoreMemoryTier::Candidate)]
-    #[case(MemoryTier::Stable, CoreMemoryTier::Stable)]
-    #[case(MemoryTier::Core, CoreMemoryTier::Core)]
-    fn test_memory_tier_all_variants_convert(
-        #[case] input: MemoryTier,
-        #[case] expected: CoreMemoryTier,
-    ) {
-        let result: CoreMemoryTier = input.into();
-        assert_eq!(result, expected);
     }
 
     #[test]
@@ -544,15 +894,27 @@ mod tests {
         assert_eq!(map.get("k").unwrap(), "last");
     }
 
+    #[rstest]
+    #[case(MemoryTier::Ephemeral, CoreMemoryTier::Ephemeral)]
+    #[case(MemoryTier::Candidate, CoreMemoryTier::Candidate)]
+    #[case(MemoryTier::Stable, CoreMemoryTier::Stable)]
+    #[case(MemoryTier::Core, CoreMemoryTier::Core)]
+    fn test_memory_tier_all_variants_convert(
+        #[case] input: MemoryTier,
+        #[case] expected: CoreMemoryTier,
+    ) {
+        let result: CoreMemoryTier = input.into();
+        assert_eq!(result, expected);
+    }
+
     #[tokio::test]
     async fn test_memory_add_with_metadata_outputs_metadata_in_json() {
         let mut meta = HashMap::new();
         meta.insert("source".to_string(), "wiki".to_string());
         let entry = make_result_with_metadata("some fact", meta);
-        let store = MockStore::new().with_add(entry);
+        let handler = make_handler(MockStore::new().with_add(entry));
         let mut out = Vec::new();
 
-        let handler = MemoryCommandHandler::new(&store);
         handler
             .handle(
                 MemoryCommand::Add {
@@ -571,10 +933,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_memory_query_empty_results_outputs_empty_array() {
-        let store = MockStore::new(); // query_entries defaults to vec![]
+        let handler = make_handler(MockStore::new());
         let mut out = Vec::new();
 
-        let handler = MemoryCommandHandler::new(&store);
         handler
             .handle(
                 MemoryCommand::Query {
@@ -594,10 +955,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_memory_query_forwards_filters_to_store() {
-        let store = MockStore::new();
+        let store = Arc::new(MockStore::new());
+        let handler = MemoryCommandHandler::new(
+            Arc::clone(&store),
+            Arc::new(MockTextGenerationModelProvider::ok()),
+            "test-model",
+        );
         let mut out = Vec::new();
 
-        let handler = MemoryCommandHandler::new(&store);
         handler
             .handle(
                 MemoryCommand::Query {
@@ -628,10 +993,14 @@ mod tests {
             "original",
             HashMap::from([("new_key".to_string(), "new_val".to_string())]),
         );
-        let store = MockStore::new().with_get(existing).with_update(updated);
+        let store = Arc::new(MockStore::new().with_get(existing).with_update(updated));
+        let handler = MemoryCommandHandler::new(
+            Arc::clone(&store),
+            Arc::new(MockTextGenerationModelProvider::ok()),
+            "test-model",
+        );
         let mut out = Vec::new();
 
-        let handler = MemoryCommandHandler::new(&store);
         handler
             .handle(
                 MemoryCommand::Update {
@@ -655,10 +1024,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_memory_update_get_not_found_propagates_error() {
-        let store = MockStore::new(); // get_entry = None → NotFound
+        let handler = make_handler(MockStore::new());
         let mut out = Vec::new();
 
-        let handler = MemoryCommandHandler::new(&store);
         let result = handler
             .handle(
                 MemoryCommand::Update {
@@ -677,10 +1045,9 @@ mod tests {
     #[tokio::test]
     async fn test_memory_update_store_write_fails_propagates_error() {
         let existing = make_result("existing", CoreMemoryTier::Candidate);
-        let store = MockStore::new().with_get(existing); // update_entry = None → NotFound
+        let handler = make_handler(MockStore::new().with_get(existing));
         let mut out = Vec::new();
 
-        let handler = MemoryCommandHandler::new(&store);
         let result = handler
             .handle(
                 MemoryCommand::Update {
@@ -698,12 +1065,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_memory_delete_propagates_store_error() {
-        let store = MockStore::new().with_delete_behavior(loci_core::testing::UnitBehavior::Err(
-            loci_core::testing::MockStoreErrorKind::Connection("mock: delete error".into()),
+        let handler = make_handler(MockStore::new().with_delete_behavior(
+            loci_core::testing::UnitBehavior::Err(
+                loci_core::testing::MockStoreErrorKind::Connection("mock: delete error".into()),
+            ),
         ));
         let mut out = Vec::new();
 
-        let handler = MemoryCommandHandler::new(&store);
         let result = handler
             .handle(MemoryCommand::Delete { id: Uuid::new_v4() }, &mut out)
             .await;
@@ -713,14 +1081,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_memory_prune_expired_propagates_store_error() {
-        let store = MockStore::new().with_prune_behavior(loci_core::testing::UnitBehavior::Err(
-            loci_core::testing::MockStoreErrorKind::Connection("mock: prune error".into()),
+        let handler = make_handler(MockStore::new().with_prune_behavior(
+            loci_core::testing::UnitBehavior::Err(
+                loci_core::testing::MockStoreErrorKind::Connection("mock: prune error".into()),
+            ),
         ));
         let mut out = Vec::new();
 
-        let handler = MemoryCommandHandler::new(&store);
         let result = handler.handle(MemoryCommand::PruneExpired, &mut out).await;
-
         assert!(result.is_err());
     }
 }

@@ -54,8 +54,6 @@ fn parse_sse_events(body: &str) -> Vec<Value> {
         .collect()
 }
 
-// ── Non-streaming ─────────────────────────────────────────────────────────────
-
 #[tokio::test]
 async fn test_non_streaming_returns_assembled_text() {
     let store = Arc::new(
@@ -322,8 +320,6 @@ async fn test_non_streaming_memory_entries_injected_into_system_prompt() {
         "memory entry should appear in system prompt; got: {system}"
     );
 }
-
-// ── Streaming ─────────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn test_streaming_returns_sse_chunks_and_done_marker() {

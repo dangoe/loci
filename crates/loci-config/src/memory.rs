@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
-use crate::store::StoreConfig;
+use crate::{extraction::MemoryExtractionConfig, store::StoreConfig};
 
 /// Top-level memory section, deserialized from `[memory]`.
 #[derive(Debug, Clone, Deserialize)]
@@ -17,6 +17,9 @@ pub struct MemorySection {
 
     /// Active backend selection and tuning, under `[memory.config]`.
     pub config: MemoryConfig,
+
+    /// LLM-based memory extraction configuration, under `[memory.extraction]`.
+    pub extraction: MemoryExtractionConfig,
 }
 
 /// Memory persistence configuration, deserialized from `[memory.config]`.

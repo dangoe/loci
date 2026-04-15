@@ -354,6 +354,7 @@ pub enum ProviderBehavior {
 #[derive(Debug, Clone, Default)]
 pub struct MockProviderState {
     pub last_request: Option<TextGenerationRequest>,
+    pub request_count: usize,
 }
 
 /// A configurable mock text-generation provider for tests.
@@ -413,10 +414,10 @@ impl TextGenerationModelProvider for MockTextGenerationModelProvider {
         &self,
         req: TextGenerationRequest,
     ) -> impl Future<Output = ModelProviderResult<TextGenerationResponse>> + Send + '_ {
-        self.state
-            .lock()
-            .expect("mock provider mutex poisoned")
-            .last_request = Some(req.clone());
+        let mut state = self.state.lock().expect("mock provider mutex poisoned");
+        state.last_request = Some(req.clone());
+        state.request_count += 1;
+        drop(state);
         let response = match &self.behavior {
             ProviderBehavior::Stream(chunks) => chunks
                 .last()
@@ -430,10 +431,10 @@ impl TextGenerationModelProvider for MockTextGenerationModelProvider {
         &self,
         req: TextGenerationRequest,
     ) -> impl futures::Stream<Item = ModelProviderResult<TextGenerationResponse>> + Send + '_ {
-        self.state
-            .lock()
-            .expect("mock provider mutex poisoned")
-            .last_request = Some(req);
+        let mut state = self.state.lock().expect("mock provider mutex poisoned");
+        state.last_request = Some(req);
+        state.request_count += 1;
+        drop(state);
         let chunks = match &self.behavior {
             ProviderBehavior::Stream(chunks) => chunks.clone(),
         };

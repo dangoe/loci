@@ -27,8 +27,6 @@ use uuid::Uuid;
 use crate::service::openai::{ChatCompletionInput, OpenAICompletionService, OpenAIServiceError};
 use crate::state::AppState;
 
-// ── Sub-router ────────────────────────────────────────────────────────────────
-
 pub(crate) fn openai_router<M, E>() -> Router<Arc<AppState<M, E>>>
 where
     M: MemoryStore + 'static,
@@ -39,8 +37,6 @@ where
         post(chat_completions_handler::<M, E>),
     )
 }
-
-// ── Incoming wire types ───────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 struct ChatCompletionRequest {
@@ -61,8 +57,6 @@ struct ChatMessage {
     role: String,
     content: String,
 }
-
-// ── Outgoing wire types ───────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
 struct ChatCompletionResponse {
@@ -121,8 +115,6 @@ struct UsageInfo {
     total_tokens: u32,
 }
 
-// ── Handler ───────────────────────────────────────────────────────────────────
-
 async fn chat_completions_handler<M, E>(
     State(state): State<Arc<AppState<M, E>>>,
     Json(request): Json<ChatCompletionRequest>,
@@ -145,8 +137,6 @@ where
         Err(e) => error_response(&e),
     }
 }
-
-// ── Response builders ─────────────────────────────────────────────────────────
 
 async fn build_json_response<S>(stream: S) -> Response
 where
@@ -297,8 +287,6 @@ fn error_response(e: &OpenAIServiceError) -> Response {
     }))
     .into_response()
 }
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn extract_input(request: &ChatCompletionRequest) -> ChatCompletionInput {
     let prompt = request

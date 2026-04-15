@@ -28,6 +28,7 @@ fn base_params() -> LlmMemoryExtractionStrategyParams {
         default_tier: MemoryTier::Candidate,
         metadata: HashMap::new(),
         max_entries: None,
+        thinking: None,
     }
 }
 

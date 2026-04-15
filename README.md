@@ -55,7 +55,7 @@ The following is fully implemented and working today.
 | `loci-memory-store-qdrant`   | `crates/loci-memory-store-qdrant`   | Qdrant-backed `MemoryStore` with lifecycle-aware retrieval |
 | `loci-model-provider-ollama` | `crates/loci-model-provider-ollama` | Ollama embedding + text generation model provider          |
 | `loci-config`                | `crates/loci-config`                | TOML config loading and secret resolution                  |
-| `loci-cli`                   | `crates/loci-cli`                   | `loci` CLI binary for CRUD + prompt enhancement            |
+| `loci-cli`                   | `crates/loci-cli`                   | `loci` CLI binary — memory CRUD, LLM extraction, and prompt enhancement |
 
 ### Core Abstractions (`loci-core`)
 
@@ -234,6 +234,58 @@ Remove **all** expired memory entries from the collection.
 loci memory prune-expired
 ```
 
+### `loci memory extract`
+
+Extract discrete memory entries from a block of text using the configured LLM and persist
+them. Use `--dry-run` to preview candidates without writing to the store.
+
+**Input sources (mutually exclusive):**
+
+```bash
+# Positional string
+loci memory extract "The team uses Qdrant for vector storage and Ollama for embeddings."
+
+# File(s) — use - for stdin, repeatable
+loci memory extract -f notes.md
+loci memory extract -f chapter1.md -f chapter2.md
+
+# Stdin (auto-detected when no other input is given)
+cat transcript.txt | loci memory extract
+echo "Deployment target is Kubernetes" | loci memory extract --tier core
+
+# Preview without persisting
+loci memory extract "…some text…" --dry-run
+```
+
+| Argument / Flag                              | Default      | Description                                                            |
+| -------------------------------------------- | ------------ | ---------------------------------------------------------------------- |
+| `[TEXT]`                                     | _(optional)_ | Text to extract from (positional). Mutually exclusive with `--file`.   |
+| `--file / -f <PATH>`                         | _(none)_     | File to read input from. Use `-` for stdin. Repeatable.                |
+| `--tier <candidate \| stable \| core \| ephemeral>` | `candidate`  | Tier assigned to every extracted entry.                        |
+| `--meta KEY=VALUE`                           | _(none)_     | Metadata applied to every extracted entry (repeatable).                |
+| `--max-entries <n>`                          | _(none)_     | Hard cap on the number of entries extracted.                           |
+| `--guidelines <TEXT>`                        | _(none)_     | Free-form instructions appended to the extraction prompt.              |
+| `--chunk-size <n>`                           | _(off)_      | Enable chunking: split input into word-bounded chunks of at most N words. |
+| `--overlap <n>`                              | `0`          | Word overlap between consecutive chunks (only with `--chunk-size`).    |
+| `--dry-run`                                  | off          | Print extracted candidates as JSON without persisting.                 |
+
+**Output (persist mode):**
+
+```json
+{
+  "added":    [ { "id": "…", "content": "…", "tier": "candidate", … } ],
+  "failures": []
+}
+```
+
+**Output (dry-run mode):**
+
+```json
+[
+  { "content": "The team uses Qdrant.", "tier": "candidate", "metadata": {} }
+]
+```
+
 ### `loci generate` (alias: `gen`)
 
 Generate a response for a prompt, with optional memory retrieval and contextualization.
@@ -312,22 +364,14 @@ Override models/URL via environment variables:
 The items below are **planned** — they are not yet implemented. They are listed in
 dependency order: each step builds on the capabilities introduced by the previous ones.
 
-### Phase 1: Memory Extraction Strategies
+### ~~Phase 1: Memory Extraction Strategies~~ ✓ Done
 
-Currently, saving memories is a manual process. Before any automated ingestion can be
-useful, loci needs the ability to distill raw content into meaningful memory entries.
-
-A `MemoryExtractionStrategy` trait will process content asynchronously and produce
-candidate memory entries. Two built-in strategies are planned:
-
-- **`LlmSummarizationStrategy`** — sends content to the LLM with a system prompt that
-  extracts factual statements as new memory entries.
-- **`KeywordEntityStrategy`** — lightweight keyword and entity extraction that does not
-  require an additional LLM call.
-
-The trait is open for extension; custom strategies can be plugged in. Once extraction
-strategies exist, they also enable automatic memory extraction from prompt/response pairs
-during generation.
+The `MemoryExtractionStrategy` trait and the LLM-based implementation
+(`LlmMemoryExtractionStrategy`) are shipped and fully tested. The `MemoryExtractor`
+orchestrator optionally chunks large inputs via `SentenceAwareChunker` before running
+extraction. The `loci memory extract` CLI subcommand exposes this pipeline with full
+support for positional text, file(s), stdin, chunking, dry-run preview, tier, metadata,
+and entry caps. See the [CLI Reference](#loci-memory-extract) above.
 
 ### Phase 2: Scanner Integration
 
