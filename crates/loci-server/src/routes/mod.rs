@@ -3,6 +3,7 @@
 // This file is part of loci-server.
 
 mod health;
+mod openai;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -37,6 +38,7 @@ where
 
     Router::new()
         .route("/v1/health", get(health::health_handler))
+        .nest("/openai", openai::openai_router::<M, E>())
         .fallback_service(connect.into_axum_router())
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())

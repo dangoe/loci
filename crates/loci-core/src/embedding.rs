@@ -132,10 +132,7 @@ mod tests {
     struct EmptyResponseProvider;
 
     impl EmbeddingModelProvider for EmptyResponseProvider {
-        async fn embed(
-            &self,
-            req: EmbeddingRequest,
-        ) -> ModelProviderResult<EmbeddingResponse> {
+        async fn embed(&self, req: EmbeddingRequest) -> ModelProviderResult<EmbeddingResponse> {
             Ok(EmbeddingResponse {
                 embeddings: vec![], // empty — should trigger EmptyResponse error
                 model: req.model.clone(),
@@ -147,10 +144,7 @@ mod tests {
     struct ErrorProvider;
 
     impl EmbeddingModelProvider for ErrorProvider {
-        async fn embed(
-            &self,
-            _req: EmbeddingRequest,
-        ) -> ModelProviderResult<EmbeddingResponse> {
+        async fn embed(&self, _req: EmbeddingRequest) -> ModelProviderResult<EmbeddingResponse> {
             Err(ModelProviderError::Timeout)
         }
     }

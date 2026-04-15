@@ -1636,6 +1636,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "loci-model-provider-openai"
+version = "0.2.0-dev"
+dependencies = [
+ "async-stream",
+ "futures",
+ "loci-core",
+ "log",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "loci-server"
 version = "0.2.0-dev"
 dependencies = [
@@ -1655,9 +1668,11 @@ dependencies = [
  "loci-core",
  "loci-memory-store-qdrant",
  "loci-model-provider-ollama",
+ "loci-model-provider-openai",
  "loci-server",
  "log",
  "pretty_assertions",
+ "reqwest 0.12.28",
  "rstest",
  "serde",
  "serde_json",
