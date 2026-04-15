@@ -157,7 +157,10 @@ mod tests {
         let inputs = vec![make_input("fact one"), make_input("fact two")];
         let strategy = FixedStrategy(inputs.clone());
         let store = MockStore::new().with_add_entries_behavior(AddEntriesBehavior::Ok(
-            inputs.iter().map(|i| make_query_result(&i.content)).collect(),
+            inputs
+                .iter()
+                .map(|i| make_query_result(&i.content))
+                .collect(),
         ));
 
         let result = MemoryExtractor::new(store, strategy)

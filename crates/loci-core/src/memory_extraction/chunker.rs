@@ -135,7 +135,7 @@ pub(super) fn split_into_chunks(text: &str, chunk_size: usize, overlap: usize) -
 mod tests {
     use pretty_assertions::assert_eq;
 
-    use super::{SentenceAwareChunker, split_into_chunks, Chunker};
+    use super::{Chunker, SentenceAwareChunker, split_into_chunks};
 
     fn word_count(s: &str) -> usize {
         s.split_whitespace().count()
@@ -164,7 +164,10 @@ mod tests {
         let sentence = "The quick brown fox jumps over the lazy dog in the meadow. ";
         let text = sentence.repeat(3);
         let chunks = split_into_chunks(&text, 25, 0);
-        assert!(chunks.len() >= 2, "expected multiple chunks, got: {chunks:?}");
+        assert!(
+            chunks.len() >= 2,
+            "expected multiple chunks, got: {chunks:?}"
+        );
     }
 
     #[test]
@@ -173,12 +176,12 @@ mod tests {
         let words: Vec<String> = (0..200).map(|i| format!("word{i}")).collect();
         let text = words.join(" ");
         let chunks = split_into_chunks(&text, 50, 0);
-        assert!(chunks.len() >= 4, "expected at least 4 chunks, got: {chunks:?}");
+        assert!(
+            chunks.len() >= 4,
+            "expected at least 4 chunks, got: {chunks:?}"
+        );
         for chunk in &chunks {
-            assert!(
-                word_count(chunk) <= 50,
-                "chunk exceeds chunk_size: {chunk}"
-            );
+            assert!(word_count(chunk) <= 50, "chunk exceeds chunk_size: {chunk}");
         }
     }
 
@@ -235,7 +238,10 @@ mod tests {
         let para = "word ".repeat(40);
         let text = format!("{}\n\n\n\n{}", para.trim(), para.trim());
         let chunks = split_into_chunks(&text, 50, 0);
-        assert!(chunks.len() >= 2, "expected split on multiple blank lines: {chunks:?}");
+        assert!(
+            chunks.len() >= 2,
+            "expected split on multiple blank lines: {chunks:?}"
+        );
     }
 
     #[test]
@@ -259,6 +265,9 @@ mod tests {
             overlap: 0,
         };
         let chunks = chunker.chunk(&text);
-        assert!(chunks.len() >= 4, "expected at least 4 chunks, got: {chunks:?}");
+        assert!(
+            chunks.len() >= 4,
+            "expected at least 4 chunks, got: {chunks:?}"
+        );
     }
 }
