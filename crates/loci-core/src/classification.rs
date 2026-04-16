@@ -50,7 +50,7 @@ pub trait ClassificationModelProvider: Send + Sync {
 }
 
 /// Maps a string label to a [`HitClass`] variant (case-insensitive, trimmed).
-pub(crate) fn parse_hit_class(s: &str) -> Option<HitClass> {
+pub fn parse_hit_class(s: &str) -> Option<HitClass> {
     match s.trim().to_ascii_lowercase().as_str() {
         "duplicate" => Some(HitClass::Duplicate),
         "complementary" => Some(HitClass::Complementary),

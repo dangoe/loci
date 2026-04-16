@@ -14,6 +14,7 @@ use chrono::Utc;
 use futures::stream;
 use uuid::Uuid;
 
+use crate::classification::{ClassificationError, ClassificationModelProvider, HitClass};
 use crate::embedding::{Embedding, TextEmbedder};
 use crate::error::{EmbeddingError, MemoryStoreError};
 use crate::memory::{MemoryEntry, MemoryInput, MemoryQuery, MemoryQueryResult, MemoryTier, Score};
@@ -501,5 +502,144 @@ pub fn make_result(id: Uuid, content: &str, tier: MemoryTier, score: f64) -> Mem
             review: Default::default(),
         },
         score: Score::new(score).expect("score should be valid"),
+    }
+}
+
+/// Configures the outcome of [`MockClassificationModelProvider::classify_hit`].
+#[derive(Debug, Clone)]
+pub enum ClassifyBehavior {
+    Ok(HitClass),
+    Err(String),
+}
+
+/// Captured state from a [`MockClassificationModelProvider`].
+#[derive(Debug, Clone, Default)]
+pub struct MockClassificationState {
+    pub calls: Vec<(String, String)>,
+}
+
+/// A configurable mock classification provider for tests.
+///
+/// Returns a preset [`HitClass`] or error and captures every `(candidate, hit)`
+/// pair for assertion via [`MockClassificationModelProvider::snapshot`].
+///
+/// # Construction
+///
+/// ```ignore
+/// let provider = MockClassificationModelProvider::new()
+///     .with_behavior(ClassifyBehavior::Ok(HitClass::Duplicate));
+/// ```
+pub struct MockClassificationModelProvider {
+    state: Mutex<MockClassificationState>,
+    behavior: ClassifyBehavior,
+}
+
+impl Default for MockClassificationModelProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MockClassificationModelProvider {
+    /// Creates a mock that returns [`HitClass::Unrelated`] by default.
+    pub fn new() -> Self {
+        Self {
+            state: Mutex::new(MockClassificationState::default()),
+            behavior: ClassifyBehavior::Ok(HitClass::Unrelated),
+        }
+    }
+
+    /// Overrides the classification outcome.
+    pub fn with_behavior(mut self, behavior: ClassifyBehavior) -> Self {
+        self.behavior = behavior;
+        self
+    }
+
+    /// Returns a clone of all captured state.
+    pub fn snapshot(&self) -> MockClassificationState {
+        self.state
+            .lock()
+            .expect("mock classification mutex poisoned")
+            .clone()
+    }
+}
+
+impl ClassificationModelProvider for MockClassificationModelProvider {
+    fn classify_hit(
+        &self,
+        candidate: &str,
+        hit: &str,
+    ) -> impl Future<Output = Result<HitClass, ClassificationError>> + Send {
+        self.state
+            .lock()
+            .expect("mock classification mutex poisoned")
+            .calls
+            .push((candidate.to_string(), hit.to_string()));
+        let behavior = self.behavior.clone();
+        async move {
+            match behavior {
+                ClassifyBehavior::Ok(class) => Ok(class),
+                ClassifyBehavior::Err(msg) => Err(ClassificationError::Parse(msg)),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use pretty_assertions::assert_eq;
+    use rstest::rstest;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn test_mock_classification_default_returns_unrelated() {
+        let provider = MockClassificationModelProvider::new();
+        let result = provider.classify_hit("candidate", "hit").await.unwrap();
+        assert_eq!(result, HitClass::Unrelated);
+    }
+
+    #[rstest]
+    #[case(ClassifyBehavior::Ok(HitClass::Duplicate), Ok(HitClass::Duplicate))]
+    #[case(
+        ClassifyBehavior::Ok(HitClass::Complementary),
+        Ok(HitClass::Complementary)
+    )]
+    #[case(
+        ClassifyBehavior::Ok(HitClass::Contradiction),
+        Ok(HitClass::Contradiction)
+    )]
+    #[case(ClassifyBehavior::Ok(HitClass::Unrelated), Ok(HitClass::Unrelated))]
+    #[tokio::test]
+    async fn test_mock_classification_ok_behavior(
+        #[case] behavior: ClassifyBehavior,
+        #[case] expected: Result<HitClass, ()>,
+    ) {
+        let provider = MockClassificationModelProvider::new().with_behavior(behavior);
+        let result = provider.classify_hit("c", "h").await.unwrap();
+        assert_eq!(result, expected.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_mock_classification_err_behavior_returns_parse_error() {
+        let provider = MockClassificationModelProvider::new()
+            .with_behavior(ClassifyBehavior::Err("bad".into()));
+        let err = provider.classify_hit("c", "h").await.unwrap_err();
+        assert!(matches!(err, ClassificationError::Parse(ref msg) if msg == "bad"));
+    }
+
+    #[tokio::test]
+    async fn test_mock_classification_snapshot_captures_calls() {
+        let provider = MockClassificationModelProvider::new();
+        provider.classify_hit("alpha", "beta").await.unwrap();
+        provider.classify_hit("gamma", "delta").await.unwrap();
+        let state = provider.snapshot();
+        assert_eq!(
+            state.calls,
+            vec![
+                ("alpha".to_string(), "beta".to_string()),
+                ("gamma".to_string(), "delta".to_string()),
+            ]
+        );
     }
 }

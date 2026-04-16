@@ -68,6 +68,18 @@ pub enum MemoryCommand {
     /// Prunes all expired memory entries from the collection.
     #[command(name = "prune-expired")]
     PruneExpired,
+    /// Apply exponential decay to review alpha counters for all memory entries
+    /// that have been through the pipeline. Entries with default ReviewState
+    /// (alpha == 0, beta == 0) are skipped.
+    #[command(name = "decay")]
+    Decay {
+        /// Per-day decay rate in (0.0, 1.0). Defaults to 0.99.
+        #[arg(long, default_value = "0.99")]
+        rate: f64,
+        /// Dry-run: show what would be decayed without modifying the store.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Extract discrete memory entries from text using the configured LLM and
     /// persist them (use --dry-run to preview without persisting).
     #[command(name = "extract")]
