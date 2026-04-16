@@ -4,10 +4,12 @@
 
 pub mod chunker;
 pub mod llm;
+pub mod pipeline;
 
 pub use chunker::{Chunker, SentenceAwareChunker};
 pub use llm::{LlmMemoryExtractionStrategy, LlmMemoryExtractionStrategyParams};
 use log::info;
+pub use pipeline::{MemoryExtractionPipeline, PipelineConfig, PipelineResult};
 
 use std::{future::Future, marker::PhantomData, sync::Arc};
 

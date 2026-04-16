@@ -43,6 +43,8 @@ pub enum MemoryExtractionError {
     ModelProvider(ModelProviderError),
     /// The model's response could not be parsed into memory entries.
     Parse(String),
+    /// An error that does not fit any other variant (e.g. classification failures).
+    Other(String),
 }
 
 impl fmt::Display for MemoryExtractionError {
@@ -51,6 +53,7 @@ impl fmt::Display for MemoryExtractionError {
             Self::MemoryStore(e) => write!(f, "memory store error: {e}"),
             Self::ModelProvider(e) => write!(f, "model provider error: {e}"),
             Self::Parse(msg) => write!(f, "parse error: {msg}"),
+            Self::Other(msg) => write!(f, "{msg}"),
         }
     }
 }
@@ -60,7 +63,7 @@ impl std::error::Error for MemoryExtractionError {
         match self {
             Self::MemoryStore(e) => Some(e),
             Self::ModelProvider(e) => Some(e),
-            Self::Parse(_) => None,
+            Self::Parse(_) | Self::Other(_) => None,
         }
     }
 }

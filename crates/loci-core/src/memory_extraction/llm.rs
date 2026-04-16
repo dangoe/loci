@@ -220,8 +220,7 @@ mod tests {
 
     #[test]
     fn test_parse_clean_json_array() {
-        let response =
-            r#"[{"content": "fact one", "confidence": 0.9}, {"content": "fact two", "confidence": 0.8}, {"content": "fact three", "confidence": 0.7}]"#;
+        let response = r#"[{"content": "fact one", "confidence": 0.9}, {"content": "fact two", "confidence": 0.8}, {"content": "fact three", "confidence": 0.7}]"#;
         let result = parse_extraction_response(response, default_params()).unwrap();
         assert_eq!(result.len(), 3);
         assert_eq!(result[0].content, "fact one");
@@ -272,8 +271,7 @@ mod tests {
             metadata: meta,
             ..default_params()
         };
-        let response =
-            r#"[{"content": "fact one", "confidence": 0.9}, {"content": "fact two", "confidence": 0.8}]"#;
+        let response = r#"[{"content": "fact one", "confidence": 0.9}, {"content": "fact two", "confidence": 0.8}]"#;
         let result = parse_extraction_response(response, params).unwrap();
         assert_eq!(
             result[0].metadata.get("source").map(|s| s.as_str()),
