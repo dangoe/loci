@@ -37,6 +37,10 @@ const FIELD_LAST_SEEN: &str = "last_seen";
 const FIELD_EXPIRES_AT: &str = "expires_at";
 const FIELD_SOURCES: &str = "sources";
 const FIELD_CONFIDENCE: &str = "confidence";
+const FIELD_REVIEW_ALPHA: &str = "review_alpha";
+const FIELD_REVIEW_BETA: &str = "review_beta";
+const FIELD_REVIEW_SCORE: &str = "review_score";
+const FIELD_REVIEW_PENDING: &str = "review_pending";
 
 const SOURCE_METADATA_KEY: &str = "source";
 
@@ -139,6 +143,18 @@ impl<E: TextEmbedder> QdrantMemoryStore<E> {
         payload.insert(FIELD_SOURCES, sources_value);
         if let Some(confidence) = memory.confidence {
             payload.insert(FIELD_CONFIDENCE, confidence);
+        }
+        if let Some(alpha) = memory.review.alpha {
+            payload.insert(FIELD_REVIEW_ALPHA, alpha);
+        }
+        if let Some(beta) = memory.review.beta {
+            payload.insert(FIELD_REVIEW_BETA, beta);
+        }
+        if let Some(score) = memory.review.score {
+            payload.insert(FIELD_REVIEW_SCORE, score);
+        }
+        if memory.review.pending {
+            payload.insert(FIELD_REVIEW_PENDING, true);
         }
 
         let point = PointStruct::new(
@@ -738,6 +754,16 @@ fn parse_payload_to_memory(
         .get(FIELD_CONFIDENCE)
         .and_then(|v| v.as_double());
 
+    let review = loci_core::memory::ReviewState {
+        alpha: payload.get(FIELD_REVIEW_ALPHA).and_then(|v| v.as_double()),
+        beta: payload.get(FIELD_REVIEW_BETA).and_then(|v| v.as_double()),
+        score: payload.get(FIELD_REVIEW_SCORE).and_then(|v| v.as_double()),
+        pending: payload
+            .get(FIELD_REVIEW_PENDING)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+    };
+
     Ok(MemoryEntry {
         id,
         content,
@@ -750,7 +776,7 @@ fn parse_payload_to_memory(
         expires_at,
         created_at,
         confidence,
-        review: Default::default(),
+        review,
     })
 }
 

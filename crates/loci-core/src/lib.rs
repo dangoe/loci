@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // This file is part of loci-core.
 
+pub mod classification;
 pub mod contextualization;
 pub mod embedding;
 pub mod error;
