@@ -177,8 +177,7 @@ async fn test_memory_extract_dry_run_outputs_candidates_without_persisting() {
         0.0,
     )];
     let store = MockStore::new().with_add_entries_behavior(AddEntriesBehavior::Ok(stored));
-    let provider =
-        extraction_provider(r#"[{"content": "extracted fact", "confidence": 0.9}]"#);
+    let provider = extraction_provider(r#"[{"content": "extracted fact", "confidence": 0.9}]"#);
     let cli = TestCli::new(store, provider);
 
     let output = cli
