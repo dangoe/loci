@@ -9,6 +9,7 @@ pub fn entry_to_json(e: &loci_core::memory::MemoryQueryResult) -> serde_json::Va
         "content": e.memory_entry.content,
         "metadata": e.memory_entry.metadata,
         "tier": e.memory_entry.tier.as_str(),
+        "confidence": e.memory_entry.confidence,
         "seen_count": e.memory_entry.seen_count,
         "sources": e.memory_entry.sources,
         "first_seen": e.memory_entry.first_seen.to_rfc3339(),

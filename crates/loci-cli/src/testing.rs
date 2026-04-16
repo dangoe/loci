@@ -152,8 +152,8 @@ pub fn minimal_ollama_config() -> AppConfig {
             },
             extraction: MemoryExtractionConfig {
                 model: "default".to_string(),
-                default_tier: loci_config::ExtractionTierConfig::default(),
                 max_entries: None,
+                min_confidence: None,
                 guidelines: None,
                 thinking: None,
                 chunking: None,
@@ -220,8 +220,8 @@ pub fn mock_config() -> AppConfig {
             },
             extraction: MemoryExtractionConfig {
                 model: "default".to_string(),
-                default_tier: loci_config::ExtractionTierConfig::default(),
                 max_entries: None,
+                min_confidence: None,
                 guidelines: None,
                 thinking: None,
                 chunking: None,

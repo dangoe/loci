@@ -177,16 +177,17 @@ async fn test_memory_extract_dry_run_outputs_candidates_without_persisting() {
         0.0,
     )];
     let store = MockStore::new().with_add_entries_behavior(AddEntriesBehavior::Ok(stored));
-    let provider = extraction_provider(r#"["extracted fact"]"#);
+    let provider =
+        extraction_provider(r#"[{"content": "extracted fact", "confidence": 0.9}]"#);
     let cli = TestCli::new(store, provider);
 
     let output = cli
         .memory(MemoryCommand::Extract {
             text: Some("some interesting text".to_string()),
             files: vec![],
-            tier: loci_cli::commands::memory::MemoryTier::Candidate,
             metadata: vec![],
             max_entries: None,
+            min_confidence: None,
             guidelines: None,
             dry_run: true,
         })
@@ -197,7 +198,7 @@ async fn test_memory_extract_dry_run_outputs_candidates_without_persisting() {
     let arr = v.as_array().expect("output should be a JSON array");
     assert_eq!(arr.len(), 1);
     assert_eq!(arr[0]["content"].as_str().unwrap(), "extracted fact");
-    assert_eq!(arr[0]["tier"].as_str().unwrap(), "candidate");
+    assert_eq!(arr[0]["tier"].as_str().unwrap(), "stable");
 }
 
 #[tokio::test]
@@ -205,16 +206,16 @@ async fn test_memory_extract_persists_and_outputs_added_result() {
     let id = uuid::Uuid::new_v4();
     let stored = vec![make_result(id, "a fact", MemoryTier::Candidate, 0.0)];
     let store = MockStore::new().with_add_entries_behavior(AddEntriesBehavior::Ok(stored));
-    let provider = extraction_provider(r#"["a fact"]"#);
+    let provider = extraction_provider(r#"[{"content": "a fact", "confidence": 0.9}]"#);
     let cli = TestCli::new(store, provider);
 
     let output = cli
         .memory(MemoryCommand::Extract {
             text: Some("text containing a fact".to_string()),
             files: vec![],
-            tier: loci_cli::commands::memory::MemoryTier::Candidate,
             metadata: vec![],
             max_entries: None,
+            min_confidence: None,
             guidelines: None,
             dry_run: false,
         })
@@ -236,9 +237,9 @@ async fn test_memory_extract_empty_text_returns_error() {
         .memory(MemoryCommand::Extract {
             text: Some("   ".to_string()),
             files: vec![],
-            tier: loci_cli::commands::memory::MemoryTier::Candidate,
             metadata: vec![],
             max_entries: None,
+            min_confidence: None,
             guidelines: None,
             dry_run: false,
         })
@@ -255,9 +256,9 @@ async fn test_memory_extract_conflicting_input_returns_error() {
         .memory(MemoryCommand::Extract {
             text: Some("positional text".to_string()),
             files: vec![std::path::PathBuf::from("some_file.txt")],
-            tier: loci_cli::commands::memory::MemoryTier::Candidate,
             metadata: vec![],
             max_entries: None,
+            min_confidence: None,
             guidelines: None,
             dry_run: false,
         })

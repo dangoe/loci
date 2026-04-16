@@ -192,9 +192,9 @@ where
             MemoryCommand::Extract {
                 text,
                 files,
-                tier,
                 metadata,
                 max_entries,
+                min_confidence,
                 guidelines,
                 dry_run,
             } => {
@@ -209,9 +209,9 @@ where
 
                 let params = LlmMemoryExtractionStrategyParams {
                     guidelines,
-                    default_tier: tier.into(),
                     metadata: pairs_to_map(metadata),
                     max_entries,
+                    min_confidence: min_confidence.or(self.extraction_config.min_confidence),
                     thinking_mode: self
                         .extraction_config
                         .thinking
@@ -240,7 +240,8 @@ where
                         .map(|e| {
                             serde_json::json!({
                                 "content": e.content,
-                                "tier": e.tier.map(|t: CoreMemoryTier| t.as_str()).unwrap_or("candidate"),
+                                "confidence": e.confidence,
+                                "tier": e.tier.map(|t: CoreMemoryTier| t.as_str()).unwrap_or("stable"),
                                 "metadata": e.metadata,
                             })
                         })
@@ -310,8 +311,8 @@ mod tests {
             "test-model",
             MemoryExtractionConfig {
                 model: "test-model".to_string(),
-                default_tier: loci_config::ExtractionTierConfig::default(),
                 max_entries: None,
+                min_confidence: None,
                 guidelines: None,
                 thinking: None,
                 chunking: None,
@@ -329,8 +330,8 @@ mod tests {
             "test-model",
             MemoryExtractionConfig {
                 model: "test-model".to_string(),
-                default_tier: loci_config::ExtractionTierConfig::default(),
                 max_entries: None,
+                min_confidence: None,
                 guidelines: None,
                 thinking: None,
                 chunking: None,
@@ -530,8 +531,8 @@ mod tests {
             "test-model",
             MemoryExtractionConfig {
                 model: "test-model".to_string(),
-                default_tier: loci_config::ExtractionTierConfig::default(),
                 max_entries: None,
+                min_confidence: None,
                 guidelines: None,
                 thinking: None,
                 chunking: None,
@@ -597,8 +598,8 @@ mod tests {
             "test-model",
             MemoryExtractionConfig {
                 model: "test-model".to_string(),
-                default_tier: loci_config::ExtractionTierConfig::default(),
                 max_entries: None,
+                min_confidence: None,
                 guidelines: None,
                 thinking: None,
                 chunking: None,
@@ -671,7 +672,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_extract_dry_run_prints_candidates_without_persisting() {
-        let provider = extraction_provider(r#"["extracted fact"]"#);
+        let provider =
+            extraction_provider(r#"[{"content": "extracted fact", "confidence": 0.9}]"#);
         let store = Arc::new(MockStore::new()); // add_entries not configured → would err if called
         let handler = MemoryCommandHandler::new(
             Arc::clone(&store),
@@ -679,8 +681,8 @@ mod tests {
             "m",
             MemoryExtractionConfig {
                 model: "m".to_string(),
-                default_tier: loci_config::ExtractionTierConfig::default(),
                 max_entries: None,
+                min_confidence: None,
                 guidelines: None,
                 thinking: None,
                 chunking: None,
@@ -693,9 +695,9 @@ mod tests {
                 MemoryCommand::Extract {
                     text: Some("some input text".to_string()),
                     files: vec![],
-                    tier: MemoryTier::Candidate,
                     metadata: vec![],
                     max_entries: None,
+                    min_confidence: None,
                     guidelines: None,
                     dry_run: true,
                 },
@@ -714,12 +716,15 @@ mod tests {
         let arr = v.as_array().unwrap();
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["content"].as_str().unwrap(), "extracted fact");
-        assert_eq!(arr[0]["tier"].as_str().unwrap(), "candidate");
+        assert_eq!(arr[0]["tier"].as_str().unwrap(), "stable");
+        assert!((arr[0]["confidence"].as_f64().unwrap() - 0.9).abs() < f64::EPSILON);
     }
 
     #[tokio::test]
     async fn test_extract_persists_entries_by_default() {
-        let provider = extraction_provider(r#"["fact one", "fact two"]"#);
+        let provider = extraction_provider(
+            r#"[{"content": "fact one", "confidence": 0.9}, {"content": "fact two", "confidence": 0.8}]"#,
+        );
         let stored = make_extract_entries(&["fact one", "fact two"]);
         let store =
             Arc::new(MockStore::new().with_add_entries_behavior(AddEntriesBehavior::Ok(stored)));
@@ -729,8 +734,8 @@ mod tests {
             "m",
             MemoryExtractionConfig {
                 model: "m".to_string(),
-                default_tier: loci_config::ExtractionTierConfig::default(),
                 max_entries: None,
+                min_confidence: None,
                 guidelines: None,
                 thinking: None,
                 chunking: None,
@@ -743,9 +748,9 @@ mod tests {
                 MemoryCommand::Extract {
                     text: Some("text with two facts".to_string()),
                     files: vec![],
-                    tier: MemoryTier::Candidate,
                     metadata: vec![],
                     max_entries: None,
+                    min_confidence: None,
                     guidelines: None,
                     dry_run: false,
                 },
@@ -768,36 +773,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_extract_propagates_tier_to_entries() {
-        let provider = extraction_provider(r#"["a core fact"]"#);
-        let stored = make_extract_entries(&["a core fact"]);
-        let store = MockStore::new().with_add_entries_behavior(AddEntriesBehavior::Ok(stored));
-        let handler = make_handler_with_provider(store, provider);
-        let mut out = Vec::new();
-
-        handler
-            .handle(
-                MemoryCommand::Extract {
-                    text: Some("input".to_string()),
-                    files: vec![],
-                    tier: MemoryTier::Core,
-                    metadata: vec![],
-                    max_entries: None,
-                    guidelines: None,
-                    dry_run: true,
-                },
-                &mut out,
-            )
-            .await
-            .unwrap();
-
-        let v = parse_json_output(&out);
-        assert_eq!(v[0]["tier"].as_str().unwrap(), "core");
-    }
-
-    #[tokio::test]
-    async fn test_extract_propagates_metadata_to_entries() {
-        let provider = extraction_provider(r#"["a fact"]"#);
+    async fn test_extract_entries_have_stable_tier() {
+        let provider =
+            extraction_provider(r#"[{"content": "a fact", "confidence": 0.9}]"#);
         let stored = make_extract_entries(&["a fact"]);
         let store = MockStore::new().with_add_entries_behavior(AddEntriesBehavior::Ok(stored));
         let handler = make_handler_with_provider(store, provider);
@@ -808,9 +786,37 @@ mod tests {
                 MemoryCommand::Extract {
                     text: Some("input".to_string()),
                     files: vec![],
-                    tier: MemoryTier::Candidate,
+                    metadata: vec![],
+                    max_entries: None,
+                    min_confidence: None,
+                    guidelines: None,
+                    dry_run: true,
+                },
+                &mut out,
+            )
+            .await
+            .unwrap();
+
+        let v = parse_json_output(&out);
+        assert_eq!(v[0]["tier"].as_str().unwrap(), "stable");
+    }
+
+    #[tokio::test]
+    async fn test_extract_propagates_metadata_to_entries() {
+        let provider = extraction_provider(r#"[{"content": "a fact", "confidence": 0.9}]"#);
+        let stored = make_extract_entries(&["a fact"]);
+        let store = MockStore::new().with_add_entries_behavior(AddEntriesBehavior::Ok(stored));
+        let handler = make_handler_with_provider(store, provider);
+        let mut out = Vec::new();
+
+        handler
+            .handle(
+                MemoryCommand::Extract {
+                    text: Some("input".to_string()),
+                    files: vec![],
                     metadata: vec![("source".to_string(), "readme".to_string())],
                     max_entries: None,
+                    min_confidence: None,
                     guidelines: None,
                     dry_run: true,
                 },
@@ -825,7 +831,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_extract_max_entries_caps_result() {
-        let provider = extraction_provider(r#"["one", "two", "three"]"#);
+        let provider = extraction_provider(
+            r#"[{"content": "one", "confidence": 0.9}, {"content": "two", "confidence": 0.8}, {"content": "three", "confidence": 0.7}]"#,
+        );
         let stored = make_extract_entries(&["one"]);
         let store = MockStore::new().with_add_entries_behavior(AddEntriesBehavior::Ok(stored));
         let handler = make_handler_with_provider(store, provider);
@@ -836,9 +844,9 @@ mod tests {
                 MemoryCommand::Extract {
                     text: Some("input".to_string()),
                     files: vec![],
-                    tier: MemoryTier::Candidate,
                     metadata: vec![],
                     max_entries: Some(1),
+                    min_confidence: None,
                     guidelines: None,
                     dry_run: true,
                 },
@@ -861,9 +869,9 @@ mod tests {
                 MemoryCommand::Extract {
                     text: Some("   ".to_string()),
                     files: vec![],
-                    tier: MemoryTier::Candidate,
                     metadata: vec![],
                     max_entries: None,
+                    min_confidence: None,
                     guidelines: None,
                     dry_run: false,
                 },
@@ -884,9 +892,9 @@ mod tests {
                 MemoryCommand::Extract {
                     text: Some("positional text".to_string()),
                     files: vec![std::path::PathBuf::from("some_file.txt")],
-                    tier: MemoryTier::Candidate,
                     metadata: vec![],
                     max_entries: None,
+                    min_confidence: None,
                     guidelines: None,
                     dry_run: false,
                 },
@@ -998,8 +1006,8 @@ mod tests {
             "test-model",
             MemoryExtractionConfig {
                 model: "test-model".to_string(),
-                default_tier: loci_config::ExtractionTierConfig::default(),
                 max_entries: None,
+                min_confidence: None,
                 guidelines: None,
                 thinking: None,
                 chunking: None,
@@ -1044,8 +1052,8 @@ mod tests {
             "test-model",
             MemoryExtractionConfig {
                 model: "test-model".to_string(),
-                default_tier: loci_config::ExtractionTierConfig::default(),
                 max_entries: None,
+                min_confidence: None,
                 guidelines: None,
                 thinking: None,
                 chunking: None,

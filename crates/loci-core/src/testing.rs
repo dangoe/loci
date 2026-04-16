@@ -497,6 +497,7 @@ pub fn make_result(id: Uuid, content: &str, tier: MemoryTier, score: f64) -> Mem
             last_seen: now,
             expires_at: None,
             created_at: now,
+            confidence: None,
         },
         score: Score::new(score).expect("score should be valid"),
     }

@@ -25,10 +25,11 @@ const RICH_INPUT: &str = "Alice is a senior Rust developer with ten years of exp
 fn base_params() -> LlmMemoryExtractionStrategyParams {
     LlmMemoryExtractionStrategyParams {
         guidelines: None,
-        default_tier: MemoryTier::Candidate,
         metadata: HashMap::new(),
         max_entries: None,
-        thinking: None,
+        min_confidence: None,
+        thinking_mode: None,
+        chunking: None,
     }
 }
 
@@ -73,19 +74,14 @@ async fn test_extract_yields_entries_from_fact_rich_text() {
 
 #[tokio::test]
 #[cfg_attr(not(feature = "e2e"), ignore)]
-async fn test_extracted_entries_carry_configured_tier() {
+async fn test_extracted_entries_carry_stable_tier() {
     ensure_ollama_available().await;
 
     let provider = Arc::new(ollama_provider());
     let strategy = LlmMemoryExtractionStrategy::new(Arc::clone(&provider), text_model());
 
-    let params = LlmMemoryExtractionStrategyParams {
-        default_tier: MemoryTier::Stable,
-        ..base_params()
-    };
-
     let entries = strategy
-        .extract(RICH_INPUT, params)
+        .extract(RICH_INPUT, base_params())
         .await
         .expect("extraction should succeed");
 
@@ -98,7 +94,7 @@ async fn test_extracted_entries_carry_configured_tier() {
         assert_eq!(
             entry.tier,
             Some(MemoryTier::Stable),
-            "every entry should carry the configured tier"
+            "every extracted entry must carry the hardcoded Stable tier"
         );
     }
 }
@@ -340,7 +336,7 @@ async fn test_stored_entries_have_configured_metadata() {
 
 #[tokio::test]
 #[cfg_attr(not(feature = "e2e"), ignore)]
-async fn test_stored_entries_have_configured_tier() {
+async fn test_stored_entries_have_stable_tier() {
     ensure_ollama_available().await;
 
     let provider = Arc::new(ollama_provider());
@@ -351,13 +347,8 @@ async fn test_stored_entries_have_configured_tier() {
     let strategy = LlmMemoryExtractionStrategy::new(Arc::clone(&provider), text_model());
     let extractor = MemoryExtractor::from_arcs(Arc::clone(&store), Arc::new(strategy));
 
-    let params = LlmMemoryExtractionStrategyParams {
-        default_tier: MemoryTier::Core,
-        ..base_params()
-    };
-
     let result = extractor
-        .extract_and_store(RICH_INPUT, params)
+        .extract_and_store(RICH_INPUT, base_params())
         .await
         .expect("extract_and_store should succeed");
 
@@ -368,8 +359,8 @@ async fn test_stored_entries_have_configured_tier() {
     for added in &result.added {
         assert_eq!(
             added.memory_entry.tier,
-            MemoryTier::Core,
-            "stored entry should carry the configured tier, entry id: {}",
+            MemoryTier::Stable,
+            "stored entry must carry the hardcoded Stable tier, entry id: {}",
             added.memory_entry.id
         );
     }

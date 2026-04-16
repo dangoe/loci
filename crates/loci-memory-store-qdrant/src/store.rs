@@ -36,6 +36,7 @@ const FIELD_FIRST_SEEN: &str = "first_seen";
 const FIELD_LAST_SEEN: &str = "last_seen";
 const FIELD_EXPIRES_AT: &str = "expires_at";
 const FIELD_SOURCES: &str = "sources";
+const FIELD_CONFIDENCE: &str = "confidence";
 
 const SOURCE_METADATA_KEY: &str = "source";
 
@@ -136,6 +137,9 @@ impl<E: TextEmbedder> QdrantMemoryStore<E> {
         let sources_value = serde_json::to_value(&memory.sources)
             .map_err(|e| MemoryStoreError::Query(e.to_string()))?;
         payload.insert(FIELD_SOURCES, sources_value);
+        if let Some(confidence) = memory.confidence {
+            payload.insert(FIELD_CONFIDENCE, confidence);
+        }
 
         let point = PointStruct::new(
             PointId::from(memory.id.to_string()),
@@ -502,6 +506,7 @@ impl<E: TextEmbedder> MemoryStore for QdrantMemoryStore<E> {
             last_seen: existing.last_seen,
             expires_at,
             created_at: existing.created_at,
+            confidence: input.confidence.or(existing.confidence),
         };
 
         let embedding = self
@@ -728,6 +733,10 @@ fn parse_payload_to_memory(
         .and_then(|value| serde_json::from_value(value).ok())
         .unwrap_or_default();
 
+    let confidence = payload
+        .get(FIELD_CONFIDENCE)
+        .and_then(|v| v.as_double());
+
     Ok(MemoryEntry {
         id,
         content,
@@ -739,6 +748,7 @@ fn parse_payload_to_memory(
         last_seen,
         expires_at,
         created_at,
+        confidence,
     })
 }
 

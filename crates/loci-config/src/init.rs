@@ -75,9 +75,9 @@ backend = "qdrant"
 ########################################
 [memory.extraction]
 model = "default"               # key in [models.text] used for extraction
-# default_tier = "candidate"   # "candidate" | "stable" | "core"  (default: candidate)
-# max_entries  = 20            # hard cap per extraction run (prompt hint + post-processing)
-# guidelines   = "Focus on technical facts only."
+# max_entries    = 20           # hard cap per extraction run (prompt hint + post-processing)
+# min_confidence = 0.7          # discard entries below this LLM confidence score (0.0–1.0)
+# guidelines     = "Focus on technical facts only."
 
 [memory.extraction.thinking]
 mode = "disabled"               # extraction produces structured JSON; thinking adds no benefit

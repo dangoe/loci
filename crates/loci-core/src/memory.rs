@@ -14,6 +14,9 @@ pub struct MemoryInput {
     pub content: String,
     pub metadata: HashMap<String, String>,
     pub tier: Option<MemoryTier>,
+    /// LLM-assigned confidence score in [0.0, 1.0]. Used for retrieval ranking.
+    /// `None` when the entry was not produced by LLM extraction.
+    pub confidence: Option<f64>,
 }
 
 impl MemoryInput {
@@ -22,6 +25,7 @@ impl MemoryInput {
             content,
             metadata,
             tier: None,
+            confidence: None,
         }
     }
 
@@ -34,6 +38,7 @@ impl MemoryInput {
             content,
             metadata,
             tier: Some(tier),
+            confidence: None,
         }
     }
 }
@@ -154,6 +159,9 @@ pub struct MemoryEntry {
     pub last_seen: DateTime<Utc>,
     pub expires_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
+    /// LLM-assigned confidence score in [0.0, 1.0]. Used for retrieval ranking.
+    /// `None` when the entry was not produced by LLM extraction.
+    pub confidence: Option<f64>,
 }
 
 impl MemoryEntry {
@@ -184,6 +192,7 @@ impl MemoryEntry {
             last_seen: now,
             expires_at: tier.default_ttl().map(|ttl| now + ttl),
             created_at: now,
+            confidence: None,
         }
     }
 }

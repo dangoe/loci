@@ -79,15 +79,16 @@ pub enum MemoryCommand {
         /// Mutually exclusive with a positional text argument.
         #[arg(long = "file", short = 'f')]
         files: Vec<PathBuf>,
-        /// Tier assigned to every extracted entry (default: candidate).
-        #[arg(long, default_value = "candidate")]
-        tier: MemoryTier,
         /// Metadata key=value pairs applied to every extracted entry (repeatable).
         #[arg(long = "meta", value_parser = parse_key_value)]
         metadata: Vec<(String, String)>,
         /// Hard cap on the number of entries extracted.
         #[arg(long)]
         max_entries: Option<usize>,
+        /// Minimum LLM confidence score to keep an entry (0.0–1.0).
+        /// Entries below this threshold are discarded before storing.
+        #[arg(long)]
+        min_confidence: Option<f64>,
         /// Free-form guidelines appended to the extraction prompt.
         #[arg(long)]
         guidelines: Option<String>,

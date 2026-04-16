@@ -145,6 +145,7 @@ mod tests {
             content: content.to_string(),
             metadata: HashMap::new(),
             tier: Some(MemoryTier::Candidate),
+            confidence: None,
         }
     }
 

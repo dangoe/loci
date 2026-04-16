@@ -6,23 +6,6 @@ use serde::Deserialize;
 
 use crate::model::ModelThinkingConfig;
 
-/// Memory tier assigned to extracted entries, deserialized from
-/// `[memory.extraction]`.
-///
-/// Mirrors `loci_core::MemoryTier` without `Ephemeral`, which is not
-/// meaningful for persisted extraction output.
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum ExtractionTierConfig {
-    /// New persisted memory with shorter TTL and lower retrieval priority.
-    #[default]
-    Candidate,
-    /// Promoted memory with longer TTL and higher retrieval priority.
-    Stable,
-    /// Manually curated long-term memory that does not expire.
-    Core,
-}
-
 /// Chunking settings for splitting input text before LLM extraction,
 /// deserialized from `[memory.extraction.chunking]`.
 #[derive(Debug, Clone, Deserialize)]
@@ -53,14 +36,14 @@ pub struct MemoryExtractionConfig {
     /// Name of the text model in `[models.text]` used to perform extraction.
     pub model: String,
 
-    /// Memory tier assigned to every extracted entry.
-    /// Defaults to `candidate` when absent.
-    #[serde(default)]
-    pub default_tier: ExtractionTierConfig,
-
     /// Optional hard cap on the number of entries extracted per run.
     /// Applied both as a prompt hint and as a post-processing limit.
     pub max_entries: Option<usize>,
+
+    /// Minimum LLM-assigned confidence score required to keep an extracted
+    /// entry. Entries below this threshold are discarded before storing.
+    /// In [0.0, 1.0]. When absent, all entries are kept.
+    pub min_confidence: Option<f64>,
 
     /// Optional additional guidelines appended to the extraction prompt to
     /// guide or constrain what the model should extract.
@@ -81,8 +64,6 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use crate::{AppConfig, load_config};
-
-    use super::*;
 
     fn write_temp_config(content: &str) -> tempfile::NamedTempFile {
         use std::io::Write as _;
@@ -125,58 +106,23 @@ model = "default"
 "#,
         );
         assert_eq!(cfg.memory.extraction.model, "default");
-        assert!(matches!(
-            cfg.memory.extraction.default_tier,
-            ExtractionTierConfig::Candidate
-        ));
         assert!(cfg.memory.extraction.max_entries.is_none());
+        assert!(cfg.memory.extraction.min_confidence.is_none());
         assert!(cfg.memory.extraction.guidelines.is_none());
         assert!(cfg.memory.extraction.thinking.is_none());
         assert!(cfg.memory.extraction.chunking.is_none());
     }
 
     #[test]
-    fn default_tier_candidate_when_absent() {
+    fn min_confidence_is_parsed() {
         let cfg = config_with_extraction(
             r#"
 [memory.extraction]
 model = "default"
+min_confidence = 0.7
 "#,
         );
-        assert!(matches!(
-            cfg.memory.extraction.default_tier,
-            ExtractionTierConfig::Candidate
-        ));
-    }
-
-    #[test]
-    fn default_tier_stable_is_parsed() {
-        let cfg = config_with_extraction(
-            r#"
-[memory.extraction]
-model = "default"
-default_tier = "stable"
-"#,
-        );
-        assert!(matches!(
-            cfg.memory.extraction.default_tier,
-            ExtractionTierConfig::Stable
-        ));
-    }
-
-    #[test]
-    fn default_tier_core_is_parsed() {
-        let cfg = config_with_extraction(
-            r#"
-[memory.extraction]
-model = "default"
-default_tier = "core"
-"#,
-        );
-        assert!(matches!(
-            cfg.memory.extraction.default_tier,
-            ExtractionTierConfig::Core
-        ));
+        assert_eq!(cfg.memory.extraction.min_confidence, Some(0.7));
     }
 
     #[test]
@@ -290,7 +236,7 @@ overlap_size = 300
     #[test]
     fn missing_model_field_returns_parse_error() {
         let f = write_temp_config(&format!(
-            "{BASE}\n[memory.extraction]\ndefault_tier = \"stable\"\n"
+            "{BASE}\n[memory.extraction]\nmin_confidence = 0.7\n"
         ));
         let err = crate::load_config(f.path()).unwrap_err();
         assert!(

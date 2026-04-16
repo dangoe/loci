@@ -14,7 +14,7 @@ use std::path::Path;
 
 pub use embedding::EmbeddingModelConfig;
 pub use error::ConfigError;
-pub use extraction::{ChunkingConfig, ExtractionTierConfig, MemoryExtractionConfig};
+pub use extraction::{ChunkingConfig, MemoryExtractionConfig};
 pub use init::{ConfigInitError, DEFAULT_CONFIG_TEMPLATE, init_config};
 pub use memory::{MemoryConfig, MemorySection};
 pub use model::{
