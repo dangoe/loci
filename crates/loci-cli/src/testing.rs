@@ -157,6 +157,7 @@ pub fn minimal_ollama_config() -> AppConfig {
                 guidelines: None,
                 thinking: None,
                 chunking: None,
+                pipeline: None,
             },
         },
         routing: RoutingConfig {
@@ -225,6 +226,7 @@ pub fn mock_config() -> AppConfig {
                 guidelines: None,
                 thinking: None,
                 chunking: None,
+                pipeline: None,
             },
         },
         routing: RoutingConfig {

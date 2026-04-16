@@ -18,12 +18,14 @@ use loci_core::{
         ReviewState as CoreReviewState, Score as CoreScore,
     },
     memory_extraction::{
-        LlmMemoryExtractionStrategy, LlmMemoryExtractionStrategyParams, MemoryExtractionStrategy,
-        MemoryExtractor, llm::ChunkingConfig as CoreChunkingConfig,
+        LlmMemoryExtractionStrategy, LlmMemoryExtractionStrategyParams, MemoryExtractionPipeline,
+        MemoryExtractionStrategy, MemoryExtractor, PipelineConfig,
+        llm::ChunkingConfig as CoreChunkingConfig,
     },
     model_provider::text_generation::TextGenerationModelProvider,
     store::MemoryStore as CoreMemoryStore,
 };
+use loci_model_provider_ollama::classification::LlmClassificationModelProvider;
 use log::debug;
 
 use crate::{
@@ -300,6 +302,40 @@ where
                         })
                         .collect();
                     writeln!(out, "{}", serde_json::to_string_pretty(&json)?)?;
+                } else if let Some(pipeline_cfg) = &self.extraction_config.pipeline {
+                    let classification_provider = Arc::new(LlmClassificationModelProvider::new(
+                        Arc::clone(&self.provider),
+                        pipeline_cfg.classification_model.clone(),
+                    ));
+                    let pipeline_config = PipelineConfig {
+                        direct_search_max_results: pipeline_cfg.direct_search_max,
+                        direct_search_min_score: pipeline_cfg.direct_search_min_score,
+                        inverted_search_max_results: pipeline_cfg.inverted_search_max,
+                        inverted_search_min_score: pipeline_cfg.inverted_search_min_score,
+                        duplicate_alpha_weight: pipeline_cfg.duplicate_alpha_weight,
+                        complementary_alpha_weight: pipeline_cfg.complementary_alpha_weight,
+                        contradiction_beta_weight: pipeline_cfg.contradiction_beta_weight,
+                        decay_rate: pipeline_cfg.decay_rate,
+                    };
+                    let pipeline = MemoryExtractionPipeline::new(
+                        Arc::clone(&self.store),
+                        Arc::new(strategy),
+                        classification_provider,
+                        pipeline_config,
+                    );
+                    let result = pipeline
+                        .extract_and_store(&input, params)
+                        .await
+                        .map_err(|e| Box::new(e) as Box<dyn StdError>)?;
+                    writeln!(
+                        out,
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "inserted": result.inserted.len(),
+                            "merged": result.merged.len(),
+                            "pending_review": result.pending_review.len(),
+                        }))?
+                    )?;
                 } else {
                     let extractor =
                         MemoryExtractor::from_arcs(Arc::clone(&self.store), Arc::new(strategy));
@@ -369,6 +405,7 @@ mod tests {
                 guidelines: None,
                 thinking: None,
                 chunking: None,
+                pipeline: None,
             },
         )
     }
@@ -388,6 +425,7 @@ mod tests {
                 guidelines: None,
                 thinking: None,
                 chunking: None,
+                pipeline: None,
             },
         )
     }
@@ -589,6 +627,7 @@ mod tests {
                 guidelines: None,
                 thinking: None,
                 chunking: None,
+                pipeline: None,
             },
         );
         let mut out = Vec::new();
@@ -656,6 +695,7 @@ mod tests {
                 guidelines: None,
                 thinking: None,
                 chunking: None,
+                pipeline: None,
             },
         );
         let mut out = Vec::new();
@@ -738,6 +778,7 @@ mod tests {
                 guidelines: None,
                 thinking: None,
                 chunking: None,
+                pipeline: None,
             },
         );
         let mut out = Vec::new();
@@ -791,6 +832,7 @@ mod tests {
                 guidelines: None,
                 thinking: None,
                 chunking: None,
+                pipeline: None,
             },
         );
         let mut out = Vec::new();
@@ -1062,6 +1104,7 @@ mod tests {
                 guidelines: None,
                 thinking: None,
                 chunking: None,
+                pipeline: None,
             },
         );
         let mut out = Vec::new();
@@ -1108,6 +1151,7 @@ mod tests {
                 guidelines: None,
                 thinking: None,
                 chunking: None,
+                pipeline: None,
             },
         );
         let mut out = Vec::new();
