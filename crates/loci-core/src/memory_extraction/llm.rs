@@ -6,6 +6,8 @@ use std::{collections::HashMap, future::Future, sync::Arc};
 
 use futures::StreamExt as _;
 
+use serde::Deserialize as _;
+
 use crate::{
     error::MemoryExtractionError,
     memory::{MemoryInput, MemoryTier},
@@ -94,20 +96,17 @@ pub(super) fn parse_extraction_response(
     let start = response.find('[').ok_or_else(|| {
         MemoryExtractionError::Parse("no JSON array found in model response".to_string())
     })?;
-    let end = response.rfind(']').ok_or_else(|| {
-        MemoryExtractionError::Parse("no closing bracket found in model response".to_string())
-    })?;
 
-    if end < start {
-        return Err(MemoryExtractionError::Parse(
-            "malformed JSON array in model response".to_string(),
-        ));
-    }
-
-    let json_slice = &response[start..=end];
-    let raw: Vec<serde_json::Value> = serde_json::from_str(json_slice).map_err(|e| {
-        MemoryExtractionError::Parse(format!("failed to parse model response as JSON array: {e}"))
-    })?;
+    // Use a streaming deserializer so that any prose the model appends after
+    // the JSON array (e.g. footnotes) is silently ignored rather than causing
+    // a "trailing characters" parse error.
+    let mut de = serde_json::Deserializer::from_str(&response[start..]);
+    let raw: Vec<serde_json::Value> =
+        Vec::deserialize(&mut de).map_err(|e| {
+            MemoryExtractionError::Parse(format!(
+                "failed to parse model response as JSON array: {e}"
+            ))
+        })?;
 
     let mut entries: Vec<(String, f64)> = raw
         .into_iter()
@@ -332,5 +331,16 @@ mod tests {
         let result = parse_extraction_response(response, default_params()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].content, "valid");
+    }
+
+    #[test]
+    fn test_parse_ignores_trailing_prose_after_json_array() {
+        // Models sometimes append footnotes after the JSON; the Deserializer
+        // should parse the array and silently ignore the trailing text.
+        let response = r#"[{"content": "fact", "confidence": 0.9}]
+Note: [confidence values] are rough estimates."#;
+        let result = parse_extraction_response(response, default_params()).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].content, "fact");
     }
 }

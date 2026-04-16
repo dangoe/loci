@@ -165,6 +165,7 @@ pub fn minimal_app_config(
                 guidelines: None,
                 thinking: None,
                 chunking: None,
+                pipeline: None,
             },
         },
         routing: RoutingConfig {
