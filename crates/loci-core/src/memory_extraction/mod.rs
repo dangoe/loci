@@ -146,6 +146,7 @@ mod tests {
             metadata: HashMap::new(),
             tier: Some(MemoryTier::Candidate),
             confidence: None,
+            review: Default::default(),
         }
     }
 

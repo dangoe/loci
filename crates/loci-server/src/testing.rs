@@ -6,9 +6,9 @@ use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
 use connectrpc::client::{ClientConfig, HttpClient};
 use loci_config::{
-    AppConfig, EmbeddingModelConfig, EmbeddingRoutingConfig, MemoryConfig, MemoryRoutingConfig,
-    MemorySection, ModelProviderConfig, ModelProviderKind, ModelsConfig, RoutingConfig,
-    StoreConfig, TextModelConfig, TextRoutingConfig,
+    AppConfig, EmbeddingModelConfig, EmbeddingRoutingConfig, MemoryConfig, MemoryExtractionConfig,
+    MemoryRoutingConfig, MemorySection, ModelProviderConfig, ModelProviderKind, ModelsConfig,
+    RoutingConfig, StoreConfig, TextModelConfig, TextRoutingConfig,
 };
 use loci_core::{model_provider::text_generation::TextGenerationModelProvider, store::MemoryStore};
 
@@ -157,6 +157,14 @@ pub fn minimal_app_config(
                 backend: "qdrant".to_string(),
                 similarity_threshold: None,
                 promotion_source_threshold: 2,
+            },
+            extraction: MemoryExtractionConfig {
+                model: "default".to_string(),
+                max_entries: None,
+                min_confidence: None,
+                guidelines: None,
+                thinking: None,
+                chunking: None,
             },
         },
         routing: RoutingConfig {

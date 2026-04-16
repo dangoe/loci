@@ -507,6 +507,7 @@ impl<E: TextEmbedder> MemoryStore for QdrantMemoryStore<E> {
             expires_at,
             created_at: existing.created_at,
             confidence: input.confidence.or(existing.confidence),
+            review: input.review,
         };
 
         let embedding = self
@@ -749,6 +750,7 @@ fn parse_payload_to_memory(
         expires_at,
         created_at,
         confidence,
+        review: Default::default(),
     })
 }
 

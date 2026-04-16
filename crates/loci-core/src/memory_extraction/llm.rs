@@ -134,6 +134,7 @@ pub(super) fn parse_extraction_response(
             metadata: params.metadata.clone(),
             tier: Some(MemoryTier::Stable),
             confidence: Some(confidence),
+            review: Default::default(),
         })
         .collect())
 }

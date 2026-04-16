@@ -57,6 +57,8 @@ async fn prepare_expired_entry(
             content: "short-lived".to_string(),
             metadata: HashMap::new(),
             tier: Some(MemoryTier::Candidate),
+            confidence: None,
+            review: Default::default(),
         })
         .await
         .unwrap();
@@ -295,6 +297,8 @@ async fn test_prune_expired_memory_entries() {
             content: "long-lived".to_string(),
             metadata: HashMap::new(),
             tier: Some(MemoryTier::Core),
+            confidence: None,
+            review: Default::default(),
         })
         .await
         .unwrap();
@@ -386,6 +390,8 @@ async fn test_query_respects_expiration() {
                     content: tier.as_str().to_string(),
                     metadata: HashMap::new(),
                     tier: Some(tier),
+                    confidence: None,
+                    review: Default::default(),
                 })
                 .await
                 .unwrap(),
@@ -480,6 +486,8 @@ async fn test_add_entry_ephemeral_returns_error() {
             content: "ephemeral".to_string(),
             metadata: HashMap::new(),
             tier: Some(MemoryTier::Ephemeral),
+            confidence: None,
+            review: Default::default(),
         })
         .await;
 
@@ -570,6 +578,8 @@ async fn test_update_entry_to_ephemeral_returns_error() {
                 content: "content".to_string(),
                 metadata: HashMap::new(),
                 tier: Some(MemoryTier::Ephemeral),
+                confidence: None,
+                review: Default::default(),
             },
         )
         .await;

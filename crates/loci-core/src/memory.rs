@@ -8,6 +8,50 @@ use std::fmt;
 use chrono::{DateTime, Duration, Utc};
 use uuid::Uuid;
 
+/// Bayesian review state for a memory entry.
+///
+/// Tracks a Beta-distribution confidence estimate (`α / (α + β)`) alongside a
+/// manual-review quality factor.  Entries that have never been through the
+/// extraction pipeline carry the `Default` value (all fields `None` / `false`).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ReviewState {
+    /// Bayesian positive counter.  Together with `beta` derives the effective
+    /// confidence: `α / (α + β)`.
+    pub alpha: Option<f64>,
+    /// Bayesian negative counter.  Incremented on contradiction hits and
+    /// negative manual review outcomes.
+    pub beta: Option<f64>,
+    /// Manual-review quality factor in [0.0, 1.0].  A value of `1.0` is
+    /// equivalent to the `Core` tier: the entry is not subject to automatic
+    /// confidence decay.
+    pub score: Option<f64>,
+    /// `true` when this entry is awaiting manual review because it failed the
+    /// pipeline confidence gate.
+    pub pending: bool,
+}
+
+impl ReviewState {
+    /// Initialises counters from an LLM-assigned `confidence` value using the
+    /// rule `α = confidence × 10`, `β = (1 − confidence) × 10`.
+    pub fn from_confidence(confidence: f64) -> Self {
+        Self {
+            alpha: Some(confidence * 10.0),
+            beta: Some((1.0 - confidence) * 10.0),
+            score: None,
+            pending: false,
+        }
+    }
+
+    /// Returns the Bayesian mean `α / (α + β)`, or `None` when either counter
+    /// is absent.
+    pub fn bayesian_confidence(&self) -> Option<f64> {
+        match (self.alpha, self.beta) {
+            (Some(a), Some(b)) if a + b > 0.0 => Some(a / (a + b)),
+            _ => None,
+        }
+    }
+}
+
 /// Input passed to [`crate::MemoryStore::save`] and [`crate::MemoryStore::update`].
 #[derive(Debug, Clone)]
 pub struct MemoryInput {
@@ -17,6 +61,10 @@ pub struct MemoryInput {
     /// LLM-assigned confidence score in [0.0, 1.0]. Used for retrieval ranking.
     /// `None` when the entry was not produced by LLM extraction.
     pub confidence: Option<f64>,
+    /// Pipeline review state (Bayesian counters, manual score, pending flag).
+    /// Defaults to all-`None` / `false` for entries not processed by the
+    /// extraction pipeline.
+    pub review: ReviewState,
 }
 
 impl MemoryInput {
@@ -26,6 +74,7 @@ impl MemoryInput {
             metadata,
             tier: None,
             confidence: None,
+            review: ReviewState::default(),
         }
     }
 
@@ -39,6 +88,7 @@ impl MemoryInput {
             metadata,
             tier: Some(tier),
             confidence: None,
+            review: ReviewState::default(),
         }
     }
 }
@@ -162,6 +212,8 @@ pub struct MemoryEntry {
     /// LLM-assigned confidence score in [0.0, 1.0]. Used for retrieval ranking.
     /// `None` when the entry was not produced by LLM extraction.
     pub confidence: Option<f64>,
+    /// Pipeline review state (Bayesian counters, manual score, pending flag).
+    pub review: ReviewState,
 }
 
 impl MemoryEntry {
@@ -193,6 +245,7 @@ impl MemoryEntry {
             expires_at: tier.default_ttl().map(|ttl| now + ttl),
             created_at: now,
             confidence: None,
+            review: ReviewState::default(),
         }
     }
 }
@@ -265,6 +318,7 @@ mod tests {
         assert_eq!(input.content, "content");
         assert_eq!(input.metadata, metadata);
         assert_eq!(input.tier, None);
+        assert_eq!(input.review, ReviewState::default());
     }
 
     #[test]
@@ -272,6 +326,71 @@ mod tests {
         let input =
             MemoryInput::new_with_tier("content".to_string(), HashMap::new(), MemoryTier::Core);
         assert_eq!(input.tier, Some(MemoryTier::Core));
+        assert_eq!(input.review, ReviewState::default());
+    }
+
+    #[test]
+    fn test_review_state_default_is_all_none_not_pending() {
+        let r = ReviewState::default();
+        assert!(r.alpha.is_none());
+        assert!(r.beta.is_none());
+        assert!(r.score.is_none());
+        assert!(!r.pending);
+    }
+
+    #[test]
+    fn test_review_state_from_confidence_sets_counters() {
+        let r = ReviewState::from_confidence(0.8);
+        assert!((r.alpha.unwrap() - 8.0).abs() < 1e-10);
+        assert!((r.beta.unwrap() - 2.0).abs() < 1e-10);
+        assert!(r.score.is_none());
+        assert!(!r.pending);
+    }
+
+    #[test]
+    fn test_review_state_from_confidence_zero() {
+        let r = ReviewState::from_confidence(0.0);
+        assert_eq!(r.alpha, Some(0.0));
+        assert_eq!(r.beta, Some(10.0));
+    }
+
+    #[test]
+    fn test_review_state_from_confidence_one() {
+        let r = ReviewState::from_confidence(1.0);
+        assert_eq!(r.alpha, Some(10.0));
+        assert_eq!(r.beta, Some(0.0));
+    }
+
+    #[test]
+    fn test_bayesian_confidence_returns_mean() {
+        let r = ReviewState {
+            alpha: Some(8.0),
+            beta: Some(2.0),
+            ..Default::default()
+        };
+        let c = r.bayesian_confidence().unwrap();
+        assert!((c - 0.8).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_bayesian_confidence_none_when_counters_absent() {
+        assert!(ReviewState::default().bayesian_confidence().is_none());
+    }
+
+    #[test]
+    fn test_bayesian_confidence_none_when_sum_is_zero() {
+        let r = ReviewState {
+            alpha: Some(0.0),
+            beta: Some(0.0),
+            ..Default::default()
+        };
+        assert!(r.bayesian_confidence().is_none());
+    }
+
+    #[test]
+    fn test_memory_entry_new_has_default_review() {
+        let m = MemoryEntry::new("content".to_string(), HashMap::new());
+        assert_eq!(m.review, ReviewState::default());
     }
 
     #[test]
