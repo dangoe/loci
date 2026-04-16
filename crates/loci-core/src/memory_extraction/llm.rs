@@ -101,12 +101,9 @@ pub(super) fn parse_extraction_response(
     // the JSON array (e.g. footnotes) is silently ignored rather than causing
     // a "trailing characters" parse error.
     let mut de = serde_json::Deserializer::from_str(&response[start..]);
-    let raw: Vec<serde_json::Value> =
-        Vec::deserialize(&mut de).map_err(|e| {
-            MemoryExtractionError::Parse(format!(
-                "failed to parse model response as JSON array: {e}"
-            ))
-        })?;
+    let raw: Vec<serde_json::Value> = Vec::deserialize(&mut de).map_err(|e| {
+        MemoryExtractionError::Parse(format!("failed to parse model response as JSON array: {e}"))
+    })?;
 
     let mut entries: Vec<(String, f64)> = raw
         .into_iter()

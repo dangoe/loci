@@ -750,9 +750,7 @@ fn parse_payload_to_memory(
         .and_then(|value| serde_json::from_value(value).ok())
         .unwrap_or_default();
 
-    let confidence = payload
-        .get(FIELD_CONFIDENCE)
-        .and_then(|v| v.as_double());
+    let confidence = payload.get(FIELD_CONFIDENCE).and_then(|v| v.as_double());
 
     let review = loci_core::memory::ReviewState {
         alpha: payload.get(FIELD_REVIEW_ALPHA).and_then(|v| v.as_double()),

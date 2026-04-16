@@ -4,6 +4,15 @@
 
 use serde::Deserialize;
 
+/// Configuration for the multi-stage memory extraction pipeline, deserialized from `[memory.extraction.pipeline]`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PipelineExtractionSearchResultsConfig {
+    /// Maximum results for the semantic search.
+    pub max_results: usize,
+    /// Minimum score for semantic search results.
+    pub min_score: f64,
+}
+
 /// Pipeline-stage configuration, deserialized from `[memory.extraction.pipeline]`.
 ///
 /// When this section is absent, the legacy single-stage extraction path is used.
@@ -13,21 +22,13 @@ pub struct PipelineExtractionConfig {
     /// Intended to be a small, fast model (e.g. `"qwen2.5:0.5b"`).
     pub classification_model: String,
 
-    /// Maximum results for the direct semantic search. Default: 5
-    #[serde(default = "default_direct_max")]
-    pub direct_search_max: usize,
+    /// Configuration for the direct (supporting evidence) semantic search stage.
+    #[serde(default = "default_direct_search_config")]
+    pub direct_search: PipelineExtractionSearchResultsConfig,
 
-    /// Minimum score for direct search results. Default: 0.70
-    #[serde(default = "default_direct_min_score")]
-    pub direct_search_min_score: f64,
-
-    /// Maximum results for the inverted (contradiction) semantic search. Default: 3
-    #[serde(default = "default_inverted_max")]
-    pub inverted_search_max: usize,
-
-    /// Minimum score for inverted search results. Default: 0.60
-    #[serde(default = "default_inverted_min_score")]
-    pub inverted_search_min_score: f64,
+    /// Configuration for the inverted (contradiction evidence) semantic search stage.
+    #[serde(default = "default_inverted_search_config")]
+    pub inverted_search: PipelineExtractionSearchResultsConfig,
 
     /// Alpha increment for Duplicate classification. Default: 3.0
     #[serde(default = "default_duplicate_alpha_weight")]
@@ -46,17 +47,18 @@ pub struct PipelineExtractionConfig {
     pub decay_rate: f64,
 }
 
-fn default_direct_max() -> usize {
-    5
+fn default_direct_search_config() -> PipelineExtractionSearchResultsConfig {
+    PipelineExtractionSearchResultsConfig {
+        max_results: 5,
+        min_score: 0.70,
+    }
 }
-fn default_direct_min_score() -> f64 {
-    0.70
-}
-fn default_inverted_max() -> usize {
-    3
-}
-fn default_inverted_min_score() -> f64 {
-    0.60
+
+fn default_inverted_search_config() -> PipelineExtractionSearchResultsConfig {
+    PipelineExtractionSearchResultsConfig {
+        max_results: 3,
+        min_score: 0.60,
+    }
 }
 fn default_duplicate_alpha_weight() -> f64 {
     3.0
@@ -128,10 +130,10 @@ classification_model = "qwen2.5:0.5b"
         );
         let pipeline = cfg.memory.extraction.pipeline.as_ref().unwrap();
         assert_eq!(pipeline.classification_model, "qwen2.5:0.5b");
-        assert_eq!(pipeline.direct_search_max, 5);
-        assert_eq!(pipeline.direct_search_min_score, 0.70);
-        assert_eq!(pipeline.inverted_search_max, 3);
-        assert_eq!(pipeline.inverted_search_min_score, 0.60);
+        assert_eq!(pipeline.direct_search.max_results, 5);
+        assert_eq!(pipeline.direct_search.min_score, 0.70);
+        assert_eq!(pipeline.inverted_search.max_results, 3);
+        assert_eq!(pipeline.inverted_search.min_score, 0.60);
         assert_eq!(pipeline.duplicate_alpha_weight, 3.0);
         assert_eq!(pipeline.complementary_alpha_weight, 1.0);
         assert_eq!(pipeline.contradiction_beta_weight, 3.0);
@@ -147,22 +149,26 @@ model = "default"
 
 [memory.extraction.pipeline]
 classification_model       = "qwen2.5:1.5b"
-direct_search_max          = 10
-direct_search_min_score    = 0.80
-inverted_search_max        = 6
-inverted_search_min_score  = 0.55
 duplicate_alpha_weight     = 4.0
 complementary_alpha_weight = 2.0
 contradiction_beta_weight  = 5.0
 decay_rate                 = 0.95
+
+[memory.extraction.pipeline.direct_search]
+max_results = 10
+min_score   = 0.80
+
+[memory.extraction.pipeline.inverted_search]
+max_results = 6
+min_score   = 0.55
 "#,
         );
         let pipeline = cfg.memory.extraction.pipeline.as_ref().unwrap();
         assert_eq!(pipeline.classification_model, "qwen2.5:1.5b");
-        assert_eq!(pipeline.direct_search_max, 10);
-        assert_eq!(pipeline.direct_search_min_score, 0.80);
-        assert_eq!(pipeline.inverted_search_max, 6);
-        assert_eq!(pipeline.inverted_search_min_score, 0.55);
+        assert_eq!(pipeline.direct_search.max_results, 10);
+        assert_eq!(pipeline.direct_search.min_score, 0.80);
+        assert_eq!(pipeline.inverted_search.max_results, 6);
+        assert_eq!(pipeline.inverted_search.min_score, 0.55);
         assert_eq!(pipeline.duplicate_alpha_weight, 4.0);
         assert_eq!(pipeline.complementary_alpha_weight, 2.0);
         assert_eq!(pipeline.contradiction_beta_weight, 5.0);
@@ -182,10 +188,10 @@ classification_model = "x"
         );
         let pipeline = cfg.memory.extraction.pipeline.as_ref().unwrap();
         assert_eq!(pipeline.classification_model, "x");
-        assert_eq!(pipeline.direct_search_max, 5);
-        assert_eq!(pipeline.direct_search_min_score, 0.70);
-        assert_eq!(pipeline.inverted_search_max, 3);
-        assert_eq!(pipeline.inverted_search_min_score, 0.60);
+        assert_eq!(pipeline.direct_search.max_results, 5);
+        assert_eq!(pipeline.direct_search.min_score, 0.70);
+        assert_eq!(pipeline.inverted_search.max_results, 3);
+        assert_eq!(pipeline.inverted_search.min_score, 0.60);
         assert_eq!(pipeline.duplicate_alpha_weight, 3.0);
         assert_eq!(pipeline.complementary_alpha_weight, 1.0);
         assert_eq!(pipeline.contradiction_beta_weight, 3.0);

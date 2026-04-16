@@ -9,7 +9,9 @@ pub mod pipeline;
 pub use chunker::{Chunker, SentenceAwareChunker};
 pub use llm::{LlmMemoryExtractionStrategy, LlmMemoryExtractionStrategyParams};
 use log::info;
-pub use pipeline::{MemoryExtractionPipeline, PipelineConfig, PipelineResult};
+pub use pipeline::{
+    MemoryExtractionPipeline, PipelineConfig, PipelineResult, PipelineSearchResultsConfig,
+};
 
 use std::{future::Future, marker::PhantomData, sync::Arc};
 

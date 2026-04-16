@@ -9,24 +9,29 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::classification::{ClassificationModelProvider, HitClass};
-use crate::error::MemoryExtractionError;
+use crate::error::{MemoryExtractionError, MemoryStoreError};
 use crate::memory::{
     MemoryInput, MemoryQuery, MemoryQueryMode, MemoryQueryResult, ReviewState, Score,
 };
 use crate::memory_extraction::MemoryExtractionStrategy;
 use crate::store::MemoryStore;
 
-/// Configuration for the memory extraction pipeline (Stages 2–7).
+/// Configuration for the initial search stage.
+#[derive(Debug, Clone)]
+pub struct PipelineSearchResultsConfig {
+    /// Maximum number of results to retrieve in semanticsearch.
+    pub max_results: usize,
+    /// Minimum score threshold for direct search results.
+    pub min_score: f64,
+}
+
+/// Configuration for the memory extraction pipeline.
 #[derive(Debug, Clone)]
 pub struct PipelineConfig {
-    /// Maximum number of results to retrieve in direct semantic search. Default: 5
-    pub direct_search_max_results: usize,
-    /// Minimum score threshold for direct search results. Default: 0.70
-    pub direct_search_min_score: f64,
-    /// Maximum number of results to retrieve in inverted semantic search. Default: 3
-    pub inverted_search_max_results: usize,
-    /// Minimum score threshold for inverted search results. Default: 0.60
-    pub inverted_search_min_score: f64,
+    /// Configuration for direct semantic search stage.
+    pub direct_search: PipelineSearchResultsConfig,
+    /// Configuration for inverted semantic search stage.
+    pub inverted_search: PipelineSearchResultsConfig,
     /// Alpha increment for Duplicate hits. Default: 3.0
     pub duplicate_alpha_weight: f64,
     /// Alpha increment for Complementary hits. Default: 1.0
@@ -40,10 +45,14 @@ pub struct PipelineConfig {
 impl Default for PipelineConfig {
     fn default() -> Self {
         Self {
-            direct_search_max_results: 5,
-            direct_search_min_score: 0.70,
-            inverted_search_max_results: 3,
-            inverted_search_min_score: 0.60,
+            direct_search: PipelineSearchResultsConfig {
+                max_results: 5,
+                min_score: 0.70,
+            },
+            inverted_search: PipelineSearchResultsConfig {
+                max_results: 3,
+                min_score: 0.60,
+            },
             duplicate_alpha_weight: 3.0,
             complementary_alpha_weight: 1.0,
             contradiction_beta_weight: 3.0,
@@ -103,7 +112,6 @@ where
         input: &str,
         params: P,
     ) -> Result<PipelineResult, MemoryExtractionError> {
-        // Stage 1 — extract candidates
         let candidates = self.strategy.extract(input, params).await?;
 
         let mut result = PipelineResult {
@@ -113,149 +121,208 @@ where
         };
 
         for candidate in candidates {
-            // Stage 2 — dual search
-            let direct_query = MemoryQuery {
-                topic: candidate.content.clone(),
-                max_results: self.config.direct_search_max_results,
-                min_score: Score::new(self.config.direct_search_min_score).unwrap_or(Score::ZERO),
-                filters: HashMap::new(),
-                mode: MemoryQueryMode::Lookup,
-            };
-            let inverted_query = MemoryQuery {
-                topic: format!("the opposite of {}", candidate.content),
-                max_results: self.config.inverted_search_max_results,
-                min_score: Score::new(self.config.inverted_search_min_score).unwrap_or(Score::ZERO),
-                filters: HashMap::new(),
-                mode: MemoryQueryMode::Lookup,
-            };
+            let classified_hits = self.collect_classified_hits(&candidate).await?;
 
-            let direct_hits = self
-                .store
-                .query(direct_query)
-                .await
-                .map_err(MemoryExtractionError::MemoryStore)?;
-            let inverted_hits = self
-                .store
-                .query(inverted_query)
-                .await
-                .map_err(MemoryExtractionError::MemoryStore)?;
-
-            // Stage 3 — classify each hit
-            let mut classified_hits: Vec<(MemoryQueryResult, HitClass)> = Vec::new();
-            for hit in direct_hits {
-                let class = self
-                    .classifier
-                    .classify_hit(&candidate.content, &hit.memory_entry.content)
-                    .await
-                    .map_err(|e| MemoryExtractionError::Other(e.to_string()))?;
-                classified_hits.push((hit, class));
-            }
-            for hit in inverted_hits {
-                let class = self
-                    .classifier
-                    .classify_hit(&candidate.content, &hit.memory_entry.content)
-                    .await
-                    .map_err(|e| MemoryExtractionError::Other(e.to_string()))?;
-                classified_hits.push((hit, class));
-            }
-
-            // Stage 4 — update Bayesian counters
             let confidence = candidate.confidence.unwrap_or(0.0);
-            let mut review = ReviewState::from_confidence(confidence);
-            for (_, class) in &classified_hits {
-                match class {
-                    HitClass::Duplicate => {
-                        review.alpha =
-                            Some(review.alpha.unwrap_or(0.0) + self.config.duplicate_alpha_weight);
-                    }
-                    HitClass::Complementary => {
-                        review.alpha = Some(
-                            review.alpha.unwrap_or(0.0) + self.config.complementary_alpha_weight,
-                        );
-                    }
-                    HitClass::Contradiction => {
-                        review.beta = Some(
-                            review.beta.unwrap_or(0.0) + self.config.contradiction_beta_weight,
-                        );
-                    }
-                    HitClass::Unrelated => {}
-                }
-            }
-            review.score = review.bayesian_confidence();
+            let mut review_state = self.initialize_review_state(&classified_hits, confidence);
 
-            // Stage 5 — confidence gate
-            let c_new = review.bayesian_confidence().unwrap_or(0.0);
-            let c_initial = confidence;
+            let c_new = review_state.bayesian_confidence().unwrap_or(0.0);
 
-            if c_new >= c_initial {
-                let mut seen_ids: HashSet<Uuid> = HashSet::new();
-                let matching_ids: Vec<Uuid> = classified_hits
-                    .iter()
-                    .filter(|(_, class)| {
-                        matches!(class, HitClass::Duplicate | HitClass::Complementary)
-                    })
-                    .map(|(hit, _)| hit.memory_entry.id)
-                    .filter(|id| seen_ids.insert(*id))
-                    .collect();
+            if c_new >= confidence {
+                let match_ids = extract_match_ids(classified_hits);
 
-                if !matching_ids.is_empty() {
-                    // Stage 5a — merge-reinsert
-                    for id in &matching_ids {
-                        self.store
-                            .delete_entry(*id)
-                            .await
-                            .map_err(MemoryExtractionError::MemoryStore)?;
-                    }
-                    let merged_input = MemoryInput {
-                        content: candidate.content.clone(),
-                        metadata: candidate.metadata.clone(),
-                        tier: candidate.tier,
-                        confidence: Some(c_new),
-                        review: review.clone(),
-                    };
-                    let add_result = self
-                        .store
-                        .add_entries(vec![merged_input])
-                        .await
-                        .map_err(MemoryExtractionError::MemoryStore)?;
-                    result.merged.extend(add_result.added);
+                if !match_ids.is_empty() {
+                    result.merged.extend(
+                        self.merge_and_add(&candidate, &review_state, c_new, match_ids)
+                            .await?,
+                    );
                 } else {
-                    // Stage 5b — fresh insert
-                    let fresh_input = MemoryInput {
+                    let input = MemoryInput {
                         content: candidate.content.clone(),
                         metadata: candidate.metadata.clone(),
                         tier: candidate.tier,
                         confidence: Some(c_new),
-                        review: review.clone(),
+                        review: review_state.clone(),
                     };
-                    let add_result = self
-                        .store
-                        .add_entries(vec![fresh_input])
-                        .await
-                        .map_err(MemoryExtractionError::MemoryStore)?;
-                    result.inserted.extend(add_result.added);
+                    result
+                        .inserted
+                        .extend(self.add_entries_or_fail(vec![input]).await?);
                 }
             } else {
-                // Stage 5c — pending review
-                review.pending = true;
+                review_state.pending = true;
                 let pending_input = MemoryInput {
                     content: candidate.content.clone(),
                     metadata: candidate.metadata.clone(),
                     tier: candidate.tier,
                     confidence: candidate.confidence,
-                    review: review.clone(),
+                    review: review_state.clone(),
                 };
-                let add_result = self
-                    .store
-                    .add_entries(vec![pending_input])
-                    .await
-                    .map_err(MemoryExtractionError::MemoryStore)?;
-                result.pending_review.extend(add_result.added);
+
+                result.pending_review.extend(
+                    self.add_entries_or_fail(vec![pending_input.clone()])
+                        .await?,
+                );
             }
         }
 
         Ok(result)
     }
+
+    async fn merge_and_add(
+        &self,
+        candidate: &MemoryInput,
+        review_state: &ReviewState,
+        c_new: f64,
+        match_ids: Vec<Uuid>,
+    ) -> Result<Vec<MemoryQueryResult>, MemoryExtractionError> {
+        let merged_input = MemoryInput {
+            content: candidate.content.clone(),
+            metadata: candidate.metadata.clone(),
+            tier: candidate.tier,
+            confidence: Some(c_new),
+            review: review_state.clone(),
+        };
+
+        let add_result = self.add_entries_or_fail(vec![merged_input]).await?;
+
+        for id in &match_ids {
+            self.store
+                .delete_entry(*id)
+                .await
+                .map_err(MemoryExtractionError::MemoryStore)?;
+        }
+
+        Ok(add_result)
+    }
+
+    async fn add_entries_or_fail(
+        &self,
+        inputs: Vec<MemoryInput>,
+    ) -> Result<Vec<MemoryQueryResult>, MemoryExtractionError> {
+        let add_result = self
+            .store
+            .add_entries(inputs)
+            .await
+            .map_err(MemoryExtractionError::MemoryStore)?;
+
+        if !add_result.failures.is_empty() {
+            let msg = add_result
+                .failures
+                .into_iter()
+                .map(|f| f.error.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(MemoryExtractionError::MemoryStore(
+                MemoryStoreError::GenericSave(msg),
+            ))
+        } else {
+            Ok(add_result.added)
+        }
+    }
+
+    fn initialize_review_state(
+        &self,
+        classified_hits: &Vec<(MemoryQueryResult, HitClass)>,
+        confidence: f64,
+    ) -> ReviewState {
+        let mut review = ReviewState::from_confidence(confidence);
+
+        for (_, class) in classified_hits {
+            match class {
+                HitClass::Duplicate => {
+                    review.alpha =
+                        Some(review.alpha.unwrap_or(0.0) + self.config.duplicate_alpha_weight);
+                }
+                HitClass::Complementary => {
+                    review.alpha =
+                        Some(review.alpha.unwrap_or(0.0) + self.config.complementary_alpha_weight);
+                }
+                HitClass::Contradiction => {
+                    review.beta =
+                        Some(review.beta.unwrap_or(0.0) + self.config.contradiction_beta_weight);
+                }
+                HitClass::Unrelated => {}
+            }
+        }
+        review.score = review.bayesian_confidence();
+
+        review
+    }
+
+    async fn collect_classified_hits(
+        &self,
+        candidate: &MemoryInput,
+    ) -> Result<Vec<(MemoryQueryResult, HitClass)>, MemoryExtractionError> {
+        let mut classified_hits: Vec<(MemoryQueryResult, HitClass)> = Vec::new();
+
+        for direct_hit in self.query_direct_hits(&candidate).await? {
+            let class = self
+                .classifier
+                .classify_hit(&candidate.content, &direct_hit.memory_entry.content)
+                .await
+                .map_err(|e| MemoryExtractionError::Other(e.to_string()))?;
+            classified_hits.push((direct_hit, class));
+        }
+
+        for inverted_hit in self.query_inverted_hits(&candidate).await? {
+            let class = self
+                .classifier
+                .classify_hit(&candidate.content, &inverted_hit.memory_entry.content)
+                .await
+                .map_err(|e| MemoryExtractionError::Other(e.to_string()))?;
+            classified_hits.push((inverted_hit, class));
+        }
+
+        Ok(classified_hits)
+    }
+
+    async fn query_direct_hits(
+        &self,
+        candidate: &MemoryInput,
+    ) -> Result<Vec<MemoryQueryResult>, MemoryExtractionError> {
+        self.query_memory_store(MemoryQuery {
+            topic: candidate.content.clone(),
+            max_results: self.config.direct_search.max_results,
+            min_score: Score::new(self.config.direct_search.min_score).unwrap_or(Score::ZERO),
+            filters: HashMap::new(),
+            mode: MemoryQueryMode::Lookup,
+        })
+        .await
+    }
+
+    async fn query_inverted_hits(
+        &self,
+        candidate: &MemoryInput,
+    ) -> Result<Vec<MemoryQueryResult>, MemoryExtractionError> {
+        self.query_memory_store(MemoryQuery {
+            topic: format!("the opposite of {}", candidate.content),
+            max_results: self.config.inverted_search.max_results,
+            min_score: Score::new(self.config.inverted_search.min_score).unwrap_or(Score::ZERO),
+            filters: HashMap::new(),
+            mode: MemoryQueryMode::Lookup,
+        })
+        .await
+    }
+
+    async fn query_memory_store(
+        &self,
+        query: MemoryQuery,
+    ) -> Result<Vec<MemoryQueryResult>, MemoryExtractionError> {
+        self.store
+            .query(query)
+            .await
+            .map_err(MemoryExtractionError::MemoryStore)
+    }
+}
+
+fn extract_match_ids(classified_hits: Vec<(MemoryQueryResult, HitClass)>) -> Vec<Uuid> {
+    let mut seen_ids: HashSet<Uuid> = HashSet::new();
+    classified_hits
+        .iter()
+        .filter(|(_, class)| matches!(class, HitClass::Duplicate | HitClass::Complementary))
+        .map(|(hit, _)| hit.memory_entry.id)
+        .filter(|id| seen_ids.insert(*id))
+        .collect()
 }
 
 #[cfg(test)]
@@ -426,10 +493,10 @@ mod tests {
     #[test]
     fn test_pipeline_config_defaults() {
         let config = PipelineConfig::default();
-        assert_eq!(config.direct_search_max_results, 5);
-        assert!((config.direct_search_min_score - 0.70).abs() < f64::EPSILON);
-        assert_eq!(config.inverted_search_max_results, 3);
-        assert!((config.inverted_search_min_score - 0.60).abs() < f64::EPSILON);
+        assert_eq!(config.direct_search.max_results, 5);
+        assert!((config.direct_search.min_score - 0.70).abs() < f64::EPSILON);
+        assert_eq!(config.inverted_search.max_results, 3);
+        assert!((config.inverted_search.min_score - 0.60).abs() < f64::EPSILON);
         assert!((config.duplicate_alpha_weight - 3.0).abs() < f64::EPSILON);
         assert!((config.complementary_alpha_weight - 1.0).abs() < f64::EPSILON);
         assert!((config.contradiction_beta_weight - 3.0).abs() < f64::EPSILON);

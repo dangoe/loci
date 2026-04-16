@@ -19,7 +19,7 @@ use loci_core::{
     },
     memory_extraction::{
         LlmMemoryExtractionStrategy, LlmMemoryExtractionStrategyParams, MemoryExtractionPipeline,
-        MemoryExtractionStrategy, MemoryExtractor, PipelineConfig,
+        MemoryExtractionStrategy, MemoryExtractor, PipelineConfig, PipelineSearchResultsConfig,
         llm::ChunkingConfig as CoreChunkingConfig,
     },
     model_provider::text_generation::TextGenerationModelProvider,
@@ -307,16 +307,7 @@ where
                         Arc::clone(&self.provider),
                         pipeline_cfg.classification_model.clone(),
                     ));
-                    let pipeline_config = PipelineConfig {
-                        direct_search_max_results: pipeline_cfg.direct_search_max,
-                        direct_search_min_score: pipeline_cfg.direct_search_min_score,
-                        inverted_search_max_results: pipeline_cfg.inverted_search_max,
-                        inverted_search_min_score: pipeline_cfg.inverted_search_min_score,
-                        duplicate_alpha_weight: pipeline_cfg.duplicate_alpha_weight,
-                        complementary_alpha_weight: pipeline_cfg.complementary_alpha_weight,
-                        contradiction_beta_weight: pipeline_cfg.contradiction_beta_weight,
-                        decay_rate: pipeline_cfg.decay_rate,
-                    };
+                    let pipeline_config = config_pipeline_config_to_core(pipeline_cfg);
                     let pipeline = MemoryExtractionPipeline::new(
                         Arc::clone(&self.store),
                         Arc::new(strategy),
@@ -355,6 +346,23 @@ where
             }
         }
         Ok(())
+    }
+}
+
+fn config_pipeline_config_to_core(cfg: &loci_config::PipelineExtractionConfig) -> PipelineConfig {
+    PipelineConfig {
+        direct_search: PipelineSearchResultsConfig {
+            max_results: cfg.direct_search.max_results,
+            min_score: cfg.direct_search.min_score,
+        },
+        inverted_search: PipelineSearchResultsConfig {
+            max_results: cfg.inverted_search.max_results,
+            min_score: cfg.inverted_search.min_score,
+        },
+        duplicate_alpha_weight: cfg.duplicate_alpha_weight,
+        complementary_alpha_weight: cfg.complementary_alpha_weight,
+        contradiction_beta_weight: cfg.contradiction_beta_weight,
+        decay_rate: cfg.decay_rate,
     }
 }
 
