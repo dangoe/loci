@@ -20,6 +20,7 @@ pub use memory::{MemoryConfig, MemorySection};
 pub use model::{
     ModelThinkingConfig, ModelThinkingEffortLevel, ModelTuningConfig, ModelsConfig, TextModelConfig,
 };
+pub use pipeline::PipelineExtractionConfig;
 pub use provider::{ModelProviderConfig, ModelProviderKind};
 pub use routing::{EmbeddingRoutingConfig, MemoryRoutingConfig, RoutingConfig, TextRoutingConfig};
 pub use store::StoreConfig;
@@ -30,6 +31,7 @@ mod extraction;
 mod init;
 mod memory;
 mod model;
+mod pipeline;
 mod provider;
 mod resolve;
 mod routing;

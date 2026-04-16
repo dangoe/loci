@@ -5,6 +5,7 @@
 use serde::Deserialize;
 
 use crate::model::ModelThinkingConfig;
+use crate::pipeline::PipelineExtractionConfig;
 
 /// Chunking settings for splitting input text before LLM extraction,
 /// deserialized from `[memory.extraction.chunking]`.
@@ -57,6 +58,10 @@ pub struct MemoryExtractionConfig {
     /// Optional text chunking settings. When absent, the full input is sent
     /// to the model as a single call.
     pub chunking: Option<ChunkingConfig>,
+
+    /// Optional pipeline-stage settings. When absent, the legacy single-stage
+    /// extraction path is used.
+    pub pipeline: Option<PipelineExtractionConfig>,
 }
 
 #[cfg(test)]
