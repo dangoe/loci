@@ -4,21 +4,18 @@ package loci.memory.v1;
 
 import "google/protobuf/timestamp.proto";
 
-enum MemoryTier {
-  MEMORY_TIER_UNSPECIFIED = 0;
-  MEMORY_TIER_EPHEMERAL = 1;
-  MEMORY_TIER_CANDIDATE = 2;
-  MEMORY_TIER_STABLE = 3;
-  MEMORY_TIER_CORE = 4;
+enum MemoryKind {
+  MEMORY_KIND_UNSPECIFIED = 0;
+  MEMORY_KIND_FACT = 1;
+  MEMORY_KIND_EXTRACTED_MEMORY = 2;
 }
 
 message MemoryEntry {
   string id = 1;
   string content = 2;
   map<string, string> metadata = 3;
-  MemoryTier tier = 4;
+  MemoryKind kind = 4;
   uint32 seen_count = 5;
-  repeated string sources = 6;
   google.protobuf.Timestamp first_seen = 7;
   google.protobuf.Timestamp last_seen = 8;
   google.protobuf.Timestamp expires_at = 9;
@@ -29,7 +26,7 @@ message MemoryEntry {
 message MemoryServiceAddEntryRequest {
   string content = 1;
   map<string, string> metadata = 2;
-  MemoryTier tier = 3;
+  MemoryKind kind = 3;
 }
 
 message MemoryServiceAddEntryResponse {
@@ -59,19 +56,19 @@ message MemoryServiceUpdateEntryRequest {
   string id = 1;
   string content = 2;
   map<string, string> metadata = 3;
-  MemoryTier tier = 4;
+  MemoryKind kind = 4;
 }
 
 message MemoryServiceUpdateEntryResponse {
   MemoryEntry entry = 1;
 }
 
-message MemoryServiceSetEntryTierRequest {
+message MemoryServiceSetEntryKindRequest {
   string id = 1;
-  MemoryTier tier = 2;
+  MemoryKind kind = 2;
 }
 
-message MemoryServiceSetEntryTierResponse {
+message MemoryServiceSetEntryKindResponse {
   MemoryEntry entry = 1;
 }
 
@@ -94,7 +91,7 @@ service MemoryService {
   rpc GetEntry(MemoryServiceGetEntryRequest) returns (MemoryServiceGetEntryResponse);
   rpc Query(MemoryServiceQueryRequest) returns (MemoryServiceQueryResponse);
   rpc UpdateEntry(MemoryServiceUpdateEntryRequest) returns (MemoryServiceUpdateEntryResponse);
-  rpc SetEntryTier(MemoryServiceSetEntryTierRequest) returns (MemoryServiceSetEntryTierResponse);
+  rpc SetEntryKind(MemoryServiceSetEntryKindRequest) returns (MemoryServiceSetEntryKindResponse);
   rpc DeleteEntry(MemoryServiceDeleteEntryRequest) returns (MemoryServiceDeleteEntryResponse);
   rpc PruneExpired(MemoryServicePruneExpiredRequest) returns (MemoryServicePruneExpiredResponse);
 }

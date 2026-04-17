@@ -156,7 +156,6 @@ pub fn minimal_app_config(
             config: MemoryConfig {
                 backend: "qdrant".to_string(),
                 similarity_threshold: None,
-                promotion_source_threshold: 2,
             },
             extraction: MemoryExtractionConfig {
                 model: "default".to_string(),

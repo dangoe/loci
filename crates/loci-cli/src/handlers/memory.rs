@@ -13,8 +13,8 @@ use std::{
 use loci_config::MemoryExtractionConfig;
 use loci_core::{
     memory::{
-        MemoryInput as CoreMemoryInput, MemoryQuery as CoreMemoryQuery,
-        MemoryQueryMode as CoreMemoryQueryMode, MemoryTier as CoreMemoryTier,
+        MemoryInput as CoreMemoryInput, MemoryKind as CoreMemoryKind,
+        MemoryQuery as CoreMemoryQuery, MemoryQueryMode as CoreMemoryQueryMode,
         ReviewState as CoreReviewState, Score as CoreScore,
     },
     memory_extraction::{
@@ -31,18 +31,16 @@ use log::debug;
 use crate::{
     commands::{
         input::read_extraction_input,
-        memory::{MemoryCommand, MemoryTier},
+        memory::{MemoryCommand, MemoryKind},
     },
     handlers::{CommandHandler, json::entry_to_json, mapping::model_thinking_to_core},
 };
 
-impl From<MemoryTier> for CoreMemoryTier {
-    fn from(val: MemoryTier) -> Self {
+impl From<MemoryKind> for CoreMemoryKind {
+    fn from(val: MemoryKind) -> Self {
         match val {
-            MemoryTier::Ephemeral => CoreMemoryTier::Ephemeral,
-            MemoryTier::Candidate => CoreMemoryTier::Candidate,
-            MemoryTier::Stable => CoreMemoryTier::Stable,
-            MemoryTier::Core => CoreMemoryTier::Core,
+            MemoryKind::Fact => CoreMemoryKind::Fact,
+            MemoryKind::ExtractedMemory => CoreMemoryKind::ExtractedMemory,
         }
     }
 }
@@ -86,15 +84,15 @@ where
             MemoryCommand::Add {
                 content,
                 metadata,
-                tier,
+                kind,
             } => {
                 debug!(
-                    "add memory entry: content={content}, metadata={:?}, tier={:?}",
-                    metadata, tier
+                    "add memory entry: content={content}, metadata={:?}, kind={:?}",
+                    metadata, kind
                 );
-                let input = match tier {
-                    Some(tier) => {
-                        CoreMemoryInput::new_with_tier(content, pairs_to_map(metadata), tier.into())
+                let input = match kind {
+                    Some(kind) => {
+                        CoreMemoryInput::new_with_kind(content, pairs_to_map(metadata), kind.into())
                     }
                     None => CoreMemoryInput::new(content, pairs_to_map(metadata)),
                 };
@@ -136,36 +134,9 @@ where
                     serde_json::to_string_pretty(&entry_to_json(&entry))?
                 )?;
             }
-            MemoryCommand::Update {
-                id,
-                content,
-                metadata,
-                tier,
-            } => {
-                debug!(
-                    "update memory entry: id={id}, content={:?}, metadata={:?}, tier={:?}",
-                    content, metadata, tier
-                );
-                if content.is_none() && metadata.is_empty() && tier.is_none() {
-                    return Err(
-                        "nothing to update; provide content, --meta, and/or --tier to change a memory"
-                            .into(),
-                    );
-                }
-
-                let existing = self.store.get_entry(id).await?;
-                let content = content.unwrap_or(existing.memory_entry.content);
-                let metadata = if metadata.is_empty() {
-                    existing.memory_entry.metadata
-                } else {
-                    pairs_to_map(metadata)
-                };
-                let tier = tier
-                    .map(|tier| tier.into())
-                    .unwrap_or(existing.memory_entry.tier);
-
-                let input = CoreMemoryInput::new_with_tier(content, metadata, tier);
-                let entry = self.store.update_entry(id, input).await?;
+            MemoryCommand::Promote { id } => {
+                debug!("promote memory entry to Fact: id={id}");
+                let entry = self.store.set_entry_kind(id, CoreMemoryKind::Fact).await?;
                 writeln!(
                     out,
                     "{}",
@@ -221,13 +192,11 @@ where
                     let new_review = CoreReviewState {
                         alpha: Some(new_alpha),
                         beta: Some(beta),
-                        score: entry.review.score,
-                        pending: entry.review.pending,
                     };
                     let input = CoreMemoryInput {
                         content: entry.content.clone(),
                         metadata: entry.metadata.clone(),
-                        tier: Some(entry.tier),
+                        kind: Some(entry.kind),
                         confidence: Some(new_confidence),
                         review: new_review,
                     };
@@ -296,7 +265,7 @@ where
                             serde_json::json!({
                                 "content": e.content,
                                 "confidence": e.confidence,
-                                "tier": e.tier.map(|t: CoreMemoryTier| t.as_str()).unwrap_or("stable"),
+                                "kind": e.kind.map(|k: CoreMemoryKind| k.as_str()).unwrap_or("extracted_memory"),
                                 "metadata": e.metadata,
                             })
                         })
@@ -324,7 +293,8 @@ where
                         serde_json::to_string_pretty(&serde_json::json!({
                             "inserted": result.inserted.len(),
                             "merged": result.merged.len(),
-                            "pending_review": result.pending_review.len(),
+                            "promoted": result.promoted.len(),
+                            "discarded": result.discarded.len(),
                         }))?
                     )?;
                 } else {
@@ -359,9 +329,11 @@ fn config_pipeline_config_to_core(cfg: &loci_config::PipelineExtractionConfig) -
             max_results: cfg.inverted_search.max_results,
             min_score: cfg.inverted_search.min_score,
         },
-        duplicate_alpha_weight: cfg.duplicate_alpha_weight,
-        complementary_alpha_weight: cfg.complementary_alpha_weight,
-        contradiction_beta_weight: cfg.contradiction_beta_weight,
+        bayesian_seed_weight: cfg.bayesian_seed_weight,
+        max_counter_increment: cfg.max_counter_increment,
+        max_counter: cfg.max_counter,
+        auto_discard_threshold: cfg.auto_discard_threshold,
+        auto_promotion_threshold: cfg.auto_promotion_threshold,
         decay_rate: cfg.decay_rate,
     }
 }
@@ -380,8 +352,8 @@ mod tests {
     use loci_config::MemoryExtractionConfig;
     use loci_core::{
         memory::{
-            MemoryEntry as CoreMemoryEntry, MemoryQueryResult as CoreMemoryQueryResult,
-            MemoryTier as CoreMemoryTier, Score as CoreScore,
+            MemoryEntry as CoreMemoryEntry, MemoryKind as CoreMemoryKind,
+            MemoryQueryResult as CoreMemoryQueryResult, Score as CoreScore,
         },
         model_provider::text_generation::TextGenerationResponse,
         testing::{
@@ -391,7 +363,7 @@ mod tests {
     use serde_json::Value;
     use uuid::Uuid;
 
-    use crate::commands::memory::MemoryTier;
+    use crate::commands::memory::MemoryKind;
     use crate::handlers::CommandHandler;
 
     use crate::{
@@ -438,9 +410,9 @@ mod tests {
         )
     }
 
-    fn make_result(content: &str, tier: loci_core::memory::MemoryTier) -> CoreMemoryQueryResult {
+    fn make_result(content: &str, kind: CoreMemoryKind) -> CoreMemoryQueryResult {
         CoreMemoryQueryResult {
-            memory_entry: CoreMemoryEntry::new_with_tier(content.to_string(), HashMap::new(), tier),
+            memory_entry: CoreMemoryEntry::new_with_kind(content.to_string(), HashMap::new(), kind),
             score: CoreScore::ZERO,
         }
     }
@@ -461,7 +433,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_memory_add_outputs_json() {
-        let entry = make_result("hello world", CoreMemoryTier::Candidate);
+        let entry = make_result("hello world", CoreMemoryKind::ExtractedMemory);
         let id = entry.memory_entry.id;
         let handler = make_handler(MockStore::new().with_add(entry));
         let mut out = Vec::new();
@@ -471,7 +443,7 @@ mod tests {
                 MemoryCommand::Add {
                     content: "hello world".to_string(),
                     metadata: vec![],
-                    tier: None,
+                    kind: None,
                 },
                 &mut out,
             )
@@ -481,12 +453,12 @@ mod tests {
         let v = parse_json_output(&out);
         assert_eq!(v["id"].as_str().unwrap(), id.to_string().as_str());
         assert_eq!(v["content"].as_str().unwrap(), "hello world");
-        assert_eq!(v["tier"].as_str().unwrap(), "candidate");
+        assert_eq!(v["kind"].as_str().unwrap(), "extracted_memory");
     }
 
     #[tokio::test]
-    async fn test_memory_add_with_tier_outputs_tier_field() {
-        let entry = make_result("core fact", CoreMemoryTier::Core);
+    async fn test_memory_add_with_kind_outputs_kind_field() {
+        let entry = make_result("core fact", CoreMemoryKind::Fact);
         let handler = make_handler(MockStore::new().with_add(entry));
         let mut out = Vec::new();
 
@@ -495,7 +467,7 @@ mod tests {
                 MemoryCommand::Add {
                     content: "core fact".to_string(),
                     metadata: vec![],
-                    tier: Some(MemoryTier::Core),
+                    kind: Some(MemoryKind::Fact),
                 },
                 &mut out,
             )
@@ -503,7 +475,7 @@ mod tests {
             .unwrap();
 
         let v = parse_json_output(&out);
-        assert_eq!(v["tier"].as_str().unwrap(), "core");
+        assert_eq!(v["kind"].as_str().unwrap(), "fact");
     }
 
     #[tokio::test]
@@ -516,7 +488,7 @@ mod tests {
                 MemoryCommand::Add {
                     content: "x".to_string(),
                     metadata: vec![],
-                    tier: None,
+                    kind: None,
                 },
                 &mut out,
             )
@@ -528,8 +500,8 @@ mod tests {
     #[tokio::test]
     async fn test_memory_query_outputs_json_array() {
         let entries = vec![
-            make_result("first", CoreMemoryTier::Stable),
-            make_result("second", CoreMemoryTier::Core),
+            make_result("first", CoreMemoryKind::ExtractedMemory),
+            make_result("second", CoreMemoryKind::Fact),
         ];
         let handler = make_handler(MockStore::new().with_query(entries));
         let mut out = Vec::new();
@@ -582,7 +554,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_memory_get_outputs_json() {
-        let entry = make_result("specific entry", CoreMemoryTier::Stable);
+        let entry = make_result("specific entry", CoreMemoryKind::ExtractedMemory);
         let id = entry.memory_entry.id;
         let handler = make_handler(MockStore::new().with_get(entry));
         let mut out = Vec::new();
@@ -595,7 +567,7 @@ mod tests {
         let v = parse_json_output(&out);
         assert_eq!(v["id"].as_str().unwrap(), id.to_string().as_str());
         assert_eq!(v["content"].as_str().unwrap(), "specific entry");
-        assert_eq!(v["tier"].as_str().unwrap(), "stable");
+        assert_eq!(v["kind"].as_str().unwrap(), "extracted_memory");
     }
 
     #[tokio::test]
@@ -611,122 +583,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_memory_update_happy_path() {
-        let id = Uuid::new_v4();
-        let existing = CoreMemoryQueryResult {
-            memory_entry: CoreMemoryEntry::new_with_tier(
-                "old".to_string(),
-                HashMap::new(),
-                CoreMemoryTier::Candidate,
-            ),
-            score: CoreScore::ZERO,
-        };
-        let updated = make_result("new content", CoreMemoryTier::Stable);
-        let updated_id = updated.memory_entry.id;
-        let store = Arc::new(MockStore::new().with_get(existing).with_update(updated));
-        let handler = MemoryCommandHandler::new(
-            Arc::clone(&store),
-            Arc::new(MockTextGenerationModelProvider::ok()),
-            "test-model",
-            MemoryExtractionConfig {
-                model: "test-model".to_string(),
-                max_entries: None,
-                min_confidence: None,
-                guidelines: None,
-                thinking: None,
-                chunking: None,
-                pipeline: None,
-            },
-        );
+    async fn test_memory_promote_outputs_json() {
+        let entry = make_result("important fact", CoreMemoryKind::Fact);
+        let id = entry.memory_entry.id;
+        let handler = make_handler(MockStore::new().with_set_kind(entry));
         let mut out = Vec::new();
 
         handler
-            .handle(
-                MemoryCommand::Update {
-                    id,
-                    content: Some("new content".to_string()),
-                    metadata: vec![],
-                    tier: Some(MemoryTier::Stable),
-                },
-                &mut out,
-            )
+            .handle(MemoryCommand::Promote { id }, &mut out)
             .await
             .unwrap();
 
         let v = parse_json_output(&out);
-        assert_eq!(v["id"].as_str().unwrap(), updated_id.to_string().as_str());
-        assert_eq!(v["content"].as_str().unwrap(), "new content");
-    }
-
-    #[tokio::test]
-    async fn test_memory_update_nothing_to_update_returns_err() {
-        let handler = make_handler(MockStore::new());
-        let mut out = Vec::new();
-
-        let result = handler
-            .handle(
-                MemoryCommand::Update {
-                    id: Uuid::new_v4(),
-                    content: None,
-                    metadata: vec![],
-                    tier: None,
-                },
-                &mut out,
-            )
-            .await;
-
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("nothing to update"),
-            "expected 'nothing to update' error message"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_memory_update_preserves_existing_metadata_when_not_provided() {
-        let id = Uuid::new_v4();
-        let original_meta = HashMap::from([("source".to_string(), "original-source".to_string())]);
-        let existing = make_result_with_metadata("original", original_meta.clone());
-        let updated = make_result_with_metadata("updated", original_meta.clone());
-        let store = Arc::new(MockStore::new().with_get(existing).with_update(updated));
-        let handler = MemoryCommandHandler::new(
-            Arc::clone(&store),
-            Arc::new(MockTextGenerationModelProvider::ok()),
-            "test-model",
-            MemoryExtractionConfig {
-                model: "test-model".to_string(),
-                max_entries: None,
-                min_confidence: None,
-                guidelines: None,
-                thinking: None,
-                chunking: None,
-                pipeline: None,
-            },
-        );
-        let mut out = Vec::new();
-
-        handler
-            .handle(
-                MemoryCommand::Update {
-                    id,
-                    content: Some("updated".to_string()),
-                    metadata: vec![],
-                    tier: None,
-                },
-                &mut out,
-            )
-            .await
-            .unwrap();
-
-        let input = store.snapshot().update_input.unwrap();
-        assert_eq!(
-            input.metadata.get("source").unwrap(),
-            "original-source",
-            "existing metadata should be preserved when no --meta flags are given"
-        );
+        assert_eq!(v["id"].as_str().unwrap(), id.to_string().as_str());
+        assert_eq!(v["content"].as_str().unwrap(), "important fact");
+        assert_eq!(v["kind"].as_str().unwrap(), "fact");
     }
 
     #[tokio::test]
@@ -767,7 +638,7 @@ mod tests {
     fn make_extract_entries(contents: &[&str]) -> Vec<CoreMemoryQueryResult> {
         contents
             .iter()
-            .map(|c| make_result(c, CoreMemoryTier::Candidate))
+            .map(|c| make_result(c, CoreMemoryKind::ExtractedMemory))
             .collect()
     }
 
@@ -817,7 +688,7 @@ mod tests {
         let arr = v.as_array().unwrap();
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["content"].as_str().unwrap(), "extracted fact");
-        assert_eq!(arr[0]["tier"].as_str().unwrap(), "stable");
+        assert_eq!(arr[0]["kind"].as_str().unwrap(), "extracted_memory");
         assert!((arr[0]["confidence"].as_f64().unwrap() - 0.9).abs() < f64::EPSILON);
     }
 
@@ -875,7 +746,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_extract_entries_have_stable_tier() {
+    async fn test_extract_entries_have_extracted_memory_kind() {
         let provider = extraction_provider(r#"[{"content": "a fact", "confidence": 0.9}]"#);
         let stored = make_extract_entries(&["a fact"]);
         let store = MockStore::new().with_add_entries_behavior(AddEntriesBehavior::Ok(stored));
@@ -899,7 +770,7 @@ mod tests {
             .unwrap();
 
         let v = parse_json_output(&out);
-        assert_eq!(v[0]["tier"].as_str().unwrap(), "stable");
+        assert_eq!(v[0]["kind"].as_str().unwrap(), "extracted_memory");
     }
 
     #[tokio::test]
@@ -1040,15 +911,13 @@ mod tests {
     }
 
     #[rstest]
-    #[case(MemoryTier::Ephemeral, CoreMemoryTier::Ephemeral)]
-    #[case(MemoryTier::Candidate, CoreMemoryTier::Candidate)]
-    #[case(MemoryTier::Stable, CoreMemoryTier::Stable)]
-    #[case(MemoryTier::Core, CoreMemoryTier::Core)]
-    fn test_memory_tier_all_variants_convert(
-        #[case] input: MemoryTier,
-        #[case] expected: CoreMemoryTier,
+    #[case(MemoryKind::Fact, CoreMemoryKind::Fact)]
+    #[case(MemoryKind::ExtractedMemory, CoreMemoryKind::ExtractedMemory)]
+    fn test_memory_kind_all_variants_convert(
+        #[case] input: MemoryKind,
+        #[case] expected: CoreMemoryKind,
     ) {
-        let result: CoreMemoryTier = input.into();
+        let result: CoreMemoryKind = input.into();
         assert_eq!(result, expected);
     }
 
@@ -1065,7 +934,7 @@ mod tests {
                 MemoryCommand::Add {
                     content: "some fact".to_string(),
                     metadata: vec![("source".to_string(), "wiki".to_string())],
-                    tier: None,
+                    kind: None,
                 },
                 &mut out,
             )
@@ -1136,94 +1005,6 @@ mod tests {
         let captured = store.snapshot().query.unwrap();
         assert_eq!(captured.filters.get("lang").unwrap(), "rust");
         assert_eq!(captured.filters.get("env").unwrap(), "prod");
-    }
-
-    #[tokio::test]
-    async fn test_memory_update_replaces_metadata_when_provided() {
-        let id = Uuid::new_v4();
-        let original_meta = HashMap::from([("old_key".to_string(), "old_val".to_string())]);
-        let existing = make_result_with_metadata("original", original_meta);
-        let updated = make_result_with_metadata(
-            "original",
-            HashMap::from([("new_key".to_string(), "new_val".to_string())]),
-        );
-        let store = Arc::new(MockStore::new().with_get(existing).with_update(updated));
-        let handler = MemoryCommandHandler::new(
-            Arc::clone(&store),
-            Arc::new(MockTextGenerationModelProvider::ok()),
-            "test-model",
-            MemoryExtractionConfig {
-                model: "test-model".to_string(),
-                max_entries: None,
-                min_confidence: None,
-                guidelines: None,
-                thinking: None,
-                chunking: None,
-                pipeline: None,
-            },
-        );
-        let mut out = Vec::new();
-
-        handler
-            .handle(
-                MemoryCommand::Update {
-                    id,
-                    content: None,
-                    metadata: vec![("new_key".to_string(), "new_val".to_string())],
-                    tier: None,
-                },
-                &mut out,
-            )
-            .await
-            .unwrap();
-
-        let input = store.snapshot().update_input.unwrap();
-        assert!(
-            !input.metadata.contains_key("old_key"),
-            "old metadata should be replaced when --meta is provided"
-        );
-        assert_eq!(input.metadata.get("new_key").unwrap(), "new_val");
-    }
-
-    #[tokio::test]
-    async fn test_memory_update_get_not_found_propagates_error() {
-        let handler = make_handler(MockStore::new());
-        let mut out = Vec::new();
-
-        let result = handler
-            .handle(
-                MemoryCommand::Update {
-                    id: Uuid::new_v4(),
-                    content: Some("new".to_string()),
-                    metadata: vec![],
-                    tier: None,
-                },
-                &mut out,
-            )
-            .await;
-
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_memory_update_store_write_fails_propagates_error() {
-        let existing = make_result("existing", CoreMemoryTier::Candidate);
-        let handler = make_handler(MockStore::new().with_get(existing));
-        let mut out = Vec::new();
-
-        let result = handler
-            .handle(
-                MemoryCommand::Update {
-                    id: Uuid::new_v4(),
-                    content: Some("updated".to_string()),
-                    metadata: vec![],
-                    tier: None,
-                },
-                &mut out,
-            )
-            .await;
-
-        assert!(result.is_err());
     }
 
     #[tokio::test]

@@ -123,7 +123,7 @@ collection = "memory_entries"
 
 [memory.config]
 backend = "qdrant"
-promotion_source_threshold = 2
+
 
 [memory.extraction]
 model = "default"
@@ -151,7 +151,6 @@ default = "qdrant"
         assert!(config.models.text["default"].tuning.is_none());
         assert_eq!(config.models.embedding["default"].dimension, 768);
         assert_eq!(config.memory.config.backend, "qdrant");
-        assert_eq!(config.memory.config.promotion_source_threshold, 2);
         assert_eq!(config.routing.text.default, "default");
         assert_eq!(config.routing.embedding.default, "default");
         assert_eq!(config.routing.memory.default, "qdrant");
@@ -289,7 +288,6 @@ default = "qdrant"
         let f = write_temp_config(MINIMAL_CONFIG);
         let config = load_config(f.path()).unwrap();
         assert!(config.memory.config.similarity_threshold.is_none());
-        assert_eq!(config.memory.config.promotion_source_threshold, 2);
     }
 
     #[test]
@@ -306,7 +304,7 @@ collection = "memory_entries"
 
 [memory.config]
 backend = "qdrant"
-promotion_source_threshold = 2
+
 similarity_threshold = 0.92
 
 [memory.extraction]
@@ -658,7 +656,7 @@ collection = "memory_entries"
 
 [memory.config]
 backend = "qdrant"
-promotion_source_threshold = 2
+
 
 [memory.extraction]
 model = "default"

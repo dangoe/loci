@@ -67,8 +67,7 @@ collection = "memory_entries"
 ########################################
 [memory.config]
 backend = "qdrant"
-# similarity_threshold       = 0.95  # deduplication threshold (0.0–1.0)
-# promotion_source_threshold = 2     # Candidate → Stable after N independent sources
+# similarity_threshold = 0.95  # deduplication threshold (0.0–1.0)
 
 ########################################
 # Memory extraction — LLM-based extraction

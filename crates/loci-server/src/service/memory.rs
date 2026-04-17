@@ -14,20 +14,20 @@ use uuid::Uuid;
 
 use loci_core::error::MemoryStoreError;
 use loci_core::memory::{
-    MemoryInput, MemoryQuery, MemoryQueryMode, MemoryQueryResult, MemoryTier as CoreMemoryTier,
+    MemoryInput, MemoryKind as CoreMemoryKind, MemoryQuery, MemoryQueryMode, MemoryQueryResult,
     Score,
 };
 use loci_core::model_provider::text_generation::TextGenerationModelProvider;
 use loci_core::store::MemoryStore;
 
 use crate::loci::memory::v1::{
-    MemoryEntry, MemoryServiceAddEntryRequestView, MemoryServiceAddEntryResponse,
+    MemoryEntry, MemoryKind, MemoryServiceAddEntryRequestView, MemoryServiceAddEntryResponse,
     MemoryServiceDeleteEntryRequestView, MemoryServiceDeleteEntryResponse,
     MemoryServiceGetEntryRequestView, MemoryServiceGetEntryResponse,
     MemoryServicePruneExpiredRequestView, MemoryServicePruneExpiredResponse,
     MemoryServiceQueryRequestView, MemoryServiceQueryResponse,
-    MemoryServiceSetEntryTierRequestView, MemoryServiceSetEntryTierResponse,
-    MemoryServiceUpdateEntryRequestView, MemoryServiceUpdateEntryResponse, MemoryTier,
+    MemoryServiceSetEntryKindRequestView, MemoryServiceSetEntryKindResponse,
+    MemoryServiceUpdateEntryRequestView, MemoryServiceUpdateEntryResponse,
 };
 use crate::state::AppState;
 
@@ -59,9 +59,9 @@ where
         ctx: Context,
         request: OwnedView<MemoryServiceAddEntryRequestView<'static>>,
     ) -> Result<(MemoryServiceAddEntryResponse, Context), ConnectError> {
-        let tier = proto_tier_to_core(request.tier.as_known());
+        let kind = proto_kind_to_core(request.kind.as_known());
         let metadata = map_view_to_hashmap(&request.metadata);
-        let input = MemoryInput::new_with_tier(request.content.to_owned(), metadata, tier);
+        let input = MemoryInput::new_with_kind(request.content.to_owned(), metadata, kind);
 
         let result = self.state.store.add_entry(input).await.map_err(store_err)?;
         Ok((
@@ -119,11 +119,11 @@ where
         request: OwnedView<MemoryServiceUpdateEntryRequestView<'static>>,
     ) -> Result<(MemoryServiceUpdateEntryResponse, Context), ConnectError> {
         let id = parse_uuid(request.id)?;
-        let tier = proto_tier_to_core(request.tier.as_known());
-        let input = MemoryInput::new_with_tier(
+        let kind = proto_kind_to_core(request.kind.as_known());
+        let input = MemoryInput::new_with_kind(
             request.content.to_owned(),
             map_view_to_hashmap(&request.metadata),
-            tier,
+            kind,
         );
         let result = self
             .state
@@ -140,21 +140,21 @@ where
         ))
     }
 
-    async fn set_entry_tier(
+    async fn set_entry_kind(
         &self,
         ctx: Context,
-        request: OwnedView<MemoryServiceSetEntryTierRequestView<'static>>,
-    ) -> Result<(MemoryServiceSetEntryTierResponse, Context), ConnectError> {
+        request: OwnedView<MemoryServiceSetEntryKindRequestView<'static>>,
+    ) -> Result<(MemoryServiceSetEntryKindResponse, Context), ConnectError> {
         let id = parse_uuid(request.id)?;
-        let tier = proto_tier_to_core(request.tier.as_known());
+        let kind = proto_kind_to_core(request.kind.as_known());
         let result = self
             .state
             .store
-            .set_entry_tier(id, tier)
+            .set_entry_kind(id, kind)
             .await
             .map_err(store_err)?;
         Ok((
-            MemoryServiceSetEntryTierResponse {
+            MemoryServiceSetEntryKindResponse {
                 entry: MessageField::some(query_result_to_proto(&result)),
                 ..Default::default()
             },
@@ -209,21 +209,17 @@ fn store_err(e: MemoryStoreError) -> ConnectError {
     }
 }
 
-fn proto_tier_to_core(tier: Option<MemoryTier>) -> CoreMemoryTier {
-    match tier {
-        Some(MemoryTier::MEMORY_TIER_EPHEMERAL) => CoreMemoryTier::Ephemeral,
-        Some(MemoryTier::MEMORY_TIER_STABLE) => CoreMemoryTier::Stable,
-        Some(MemoryTier::MEMORY_TIER_CORE) => CoreMemoryTier::Core,
-        _ => CoreMemoryTier::Candidate,
+fn proto_kind_to_core(kind: Option<MemoryKind>) -> CoreMemoryKind {
+    match kind {
+        Some(MemoryKind::MEMORY_KIND_FACT) => CoreMemoryKind::Fact,
+        _ => CoreMemoryKind::ExtractedMemory,
     }
 }
 
-fn core_tier_to_proto(tier: CoreMemoryTier) -> MemoryTier {
-    match tier {
-        CoreMemoryTier::Ephemeral => MemoryTier::MEMORY_TIER_EPHEMERAL,
-        CoreMemoryTier::Candidate => MemoryTier::MEMORY_TIER_CANDIDATE,
-        CoreMemoryTier::Stable => MemoryTier::MEMORY_TIER_STABLE,
-        CoreMemoryTier::Core => MemoryTier::MEMORY_TIER_CORE,
+fn core_kind_to_proto(kind: CoreMemoryKind) -> MemoryKind {
+    match kind {
+        CoreMemoryKind::Fact => MemoryKind::MEMORY_KIND_FACT,
+        CoreMemoryKind::ExtractedMemory => MemoryKind::MEMORY_KIND_EXTRACTED_MEMORY,
     }
 }
 
@@ -247,9 +243,8 @@ fn query_result_to_proto(r: &MemoryQueryResult) -> MemoryEntry {
         id: e.id.to_string(),
         content: e.content.clone(),
         metadata: e.metadata.clone(),
-        tier: EnumValue::from(core_tier_to_proto(e.tier)),
+        kind: EnumValue::from(core_kind_to_proto(e.kind)),
         seen_count: e.seen_count,
-        sources: e.sources.clone(),
         first_seen: MessageField::some(datetime_to_timestamp(e.first_seen)),
         last_seen: MessageField::some(datetime_to_timestamp(e.last_seen)),
         expires_at: e

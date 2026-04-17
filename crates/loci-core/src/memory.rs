@@ -10,35 +10,26 @@ use uuid::Uuid;
 
 /// Bayesian review state for a memory entry.
 ///
-/// Tracks a Beta-distribution confidence estimate (`α / (α + β)`) alongside a
-/// manual-review quality factor.  Entries that have never been through the
-/// extraction pipeline carry the `Default` value (all fields `None` / `false`).
+/// Tracks a Beta-distribution confidence estimate (`α / (α + β)`). Entries
+/// that have never been through the extraction pipeline carry the `Default`
+/// value (all fields `None`).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ReviewState {
     /// Bayesian positive counter.  Together with `beta` derives the effective
     /// confidence: `α / (α + β)`.
     pub alpha: Option<f64>,
-    /// Bayesian negative counter.  Incremented on contradiction hits and
-    /// negative manual review outcomes.
+    /// Bayesian negative counter.  Incremented on contradiction hits.
     pub beta: Option<f64>,
-    /// Manual-review quality factor in [0.0, 1.0].  A value of `1.0` is
-    /// equivalent to the `Core` tier: the entry is not subject to automatic
-    /// confidence decay.
-    pub score: Option<f64>,
-    /// `true` when this entry is awaiting manual review because it failed the
-    /// pipeline confidence gate.
-    pub pending: bool,
 }
 
 impl ReviewState {
     /// Initialises counters from an LLM-assigned `confidence` value using the
-    /// rule `α = confidence × 10`, `β = (1 − confidence) × 10`.
-    pub fn from_confidence(confidence: f64) -> Self {
+    /// rule `α = confidence × W`, `β = (1 − confidence) × W`, where `W` is
+    /// the configurable `seed_weight`.
+    pub fn from_confidence(confidence: f64, seed_weight: f64) -> Self {
         Self {
-            alpha: Some(confidence * 10.0),
-            beta: Some((1.0 - confidence) * 10.0),
-            score: None,
-            pending: false,
+            alpha: Some(confidence * seed_weight),
+            beta: Some((1.0 - confidence) * seed_weight),
         }
     }
 
@@ -52,18 +43,25 @@ impl ReviewState {
     }
 }
 
-/// Input passed to [`crate::MemoryStore::save`] and [`crate::MemoryStore::update`].
+/// Clamps a confidence value to the open interval `(0.0, 1.0)`.
+///
+/// LLM-assigned values at or below `0.0` are raised to [`f64::MIN_POSITIVE`]
+/// and values at or above `1.0` are lowered to `1.0 - f64::EPSILON`.
+pub fn clamp_confidence(c: f64) -> f64 {
+    c.clamp(f64::MIN_POSITIVE, 1.0 - f64::EPSILON)
+}
+
+/// Input passed to [`crate::MemoryStore::add_entry`] and related methods.
 #[derive(Debug, Clone)]
 pub struct MemoryInput {
     pub content: String,
     pub metadata: HashMap<String, String>,
-    pub tier: Option<MemoryTier>,
-    /// LLM-assigned confidence score in [0.0, 1.0]. Used for retrieval ranking.
+    pub kind: Option<MemoryKind>,
+    /// LLM-assigned confidence score in (0.0, 1.0). Used for retrieval ranking.
     /// `None` when the entry was not produced by LLM extraction.
     pub confidence: Option<f64>,
-    /// Pipeline review state (Bayesian counters, manual score, pending flag).
-    /// Defaults to all-`None` / `false` for entries not processed by the
-    /// extraction pipeline.
+    /// Pipeline review state (Bayesian counters).
+    /// Defaults to all-`None` for entries not processed by the extraction pipeline.
     pub review: ReviewState,
 }
 
@@ -72,76 +70,65 @@ impl MemoryInput {
         Self {
             content,
             metadata,
-            tier: None,
+            kind: None,
             confidence: None,
             review: ReviewState::default(),
         }
     }
 
-    pub fn new_with_tier(
+    pub fn new_with_kind(
         content: String,
         metadata: HashMap<String, String>,
-        tier: MemoryTier,
+        kind: MemoryKind,
     ) -> Self {
         Self {
             content,
             metadata,
-            tier: Some(tier),
+            kind: Some(kind),
             confidence: None,
             review: ReviewState::default(),
         }
     }
 }
 
-/// A semantic memory tier.
+/// The kind of a memory entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum MemoryTier {
-    /// Request-scoped only, not persisted.
-    Ephemeral,
-    /// New persisted memory with shorter TTL and lower retrieval priority.
-    Candidate,
-    /// Promoted memory with longer TTL and higher retrieval priority.
-    Stable,
-    /// Manually curated long-term memory that does not expire.
-    Core,
+pub enum MemoryKind {
+    /// Confidence 1.0, not subject to decay, can only be removed manually.
+    Fact,
+    /// Extracted memory with Bayesian confidence in (0.0, 1.0), subject to
+    /// decay, auto-discard, and auto-promotion.
+    ExtractedMemory,
 }
 
-impl MemoryTier {
+impl MemoryKind {
     /// Default retrieval weight used for score blending.
     pub fn retrieval_weight(self) -> f64 {
         match self {
-            Self::Ephemeral => 0.0,
-            Self::Candidate => 0.6,
-            Self::Stable => 0.9,
-            Self::Core => 1.0,
+            Self::Fact => 1.0,
+            Self::ExtractedMemory => 0.8,
         }
     }
 
-    /// Default expiry horizon by tier.
+    /// Default expiry horizon by kind.
     pub fn default_ttl(self) -> Option<Duration> {
         match self {
-            Self::Ephemeral => Some(Duration::zero()),
-            Self::Candidate => Some(Duration::days(30)),
-            Self::Stable => Some(Duration::days(365)),
-            Self::Core => None,
+            Self::Fact => None,
+            Self::ExtractedMemory => Some(Duration::days(365)),
         }
     }
 
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Ephemeral => "ephemeral",
-            Self::Candidate => "candidate",
-            Self::Stable => "stable",
-            Self::Core => "core",
+            Self::Fact => "fact",
+            Self::ExtractedMemory => "extracted_memory",
         }
     }
 
     pub fn parse(s: &str) -> Option<Self> {
         match s {
-            "ephemeral" => Some(Self::Ephemeral),
-            "candidate" => Some(Self::Candidate),
-            "stable" => Some(Self::Stable),
-            "core" => Some(Self::Core),
+            "fact" => Some(Self::Fact),
+            "extracted_memory" => Some(Self::ExtractedMemory),
             _ => None,
         }
     }
@@ -200,49 +187,41 @@ pub struct MemoryEntry {
     pub id: Uuid,
     pub content: String,
     pub metadata: HashMap<String, String>,
-    pub tier: MemoryTier,
+    pub kind: MemoryKind,
     pub seen_count: u32,
-    /// Distinct source identifiers that have contributed to this memory.
-    /// Used for source-corroboration promotion (Candidate -> Stable).
-    pub sources: Vec<String>,
     pub first_seen: DateTime<Utc>,
     pub last_seen: DateTime<Utc>,
     pub expires_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
-    /// LLM-assigned confidence score in [0.0, 1.0]. Used for retrieval ranking.
+    /// LLM-assigned confidence score in (0.0, 1.0). Used for retrieval ranking.
     /// `None` when the entry was not produced by LLM extraction.
     pub confidence: Option<f64>,
-    /// Pipeline review state (Bayesian counters, manual score, pending flag).
+    /// Pipeline review state (Bayesian counters).
     pub review: ReviewState,
 }
 
 impl MemoryEntry {
-    /// Creates a new `MemoryEntry` defaulting to `Candidate` tier.
+    /// Creates a new `MemoryEntry` defaulting to `ExtractedMemory` kind.
     pub fn new(content: String, metadata: HashMap<String, String>) -> Self {
-        Self::new_with_tier(content, metadata, MemoryTier::Candidate)
+        Self::new_with_kind(content, metadata, MemoryKind::ExtractedMemory)
     }
 
-    /// Creates a new `MemoryEntry` for a specific tier with default lifecycle fields.
-    pub fn new_with_tier(
+    /// Creates a new `MemoryEntry` for a specific kind with default lifecycle fields.
+    pub fn new_with_kind(
         content: String,
         metadata: HashMap<String, String>,
-        tier: MemoryTier,
+        kind: MemoryKind,
     ) -> Self {
         let now = Utc::now();
-        let sources = metadata
-            .get("source")
-            .map(|source| vec![source.clone()])
-            .unwrap_or_default();
         Self {
             id: Uuid::new_v4(),
             content,
             metadata,
-            tier,
+            kind,
             seen_count: 1,
-            sources,
             first_seen: now,
             last_seen: now,
-            expires_at: tier.default_ttl().map(|ttl| now + ttl),
+            expires_at: kind.default_ttl().map(|ttl| now + ttl),
             created_at: now,
             confidence: None,
             review: ReviewState::default(),
@@ -317,48 +296,37 @@ mod tests {
         let input = MemoryInput::new("content".to_string(), metadata.clone());
         assert_eq!(input.content, "content");
         assert_eq!(input.metadata, metadata);
-        assert_eq!(input.tier, None);
+        assert_eq!(input.kind, None);
         assert_eq!(input.review, ReviewState::default());
     }
 
     #[test]
-    fn test_memory_input_new_with_tier_stores_tier() {
+    fn test_memory_input_new_with_kind_stores_kind() {
         let input =
-            MemoryInput::new_with_tier("content".to_string(), HashMap::new(), MemoryTier::Core);
-        assert_eq!(input.tier, Some(MemoryTier::Core));
+            MemoryInput::new_with_kind("content".to_string(), HashMap::new(), MemoryKind::Fact);
+        assert_eq!(input.kind, Some(MemoryKind::Fact));
         assert_eq!(input.review, ReviewState::default());
     }
 
     #[test]
-    fn test_review_state_default_is_all_none_not_pending() {
+    fn test_review_state_default_is_all_none() {
         let r = ReviewState::default();
         assert!(r.alpha.is_none());
         assert!(r.beta.is_none());
-        assert!(r.score.is_none());
-        assert!(!r.pending);
     }
 
     #[test]
     fn test_review_state_from_confidence_sets_counters() {
-        let r = ReviewState::from_confidence(0.8);
+        let r = ReviewState::from_confidence(0.8, 10.0);
         assert!((r.alpha.unwrap() - 8.0).abs() < 1e-10);
         assert!((r.beta.unwrap() - 2.0).abs() < 1e-10);
-        assert!(r.score.is_none());
-        assert!(!r.pending);
     }
 
     #[test]
-    fn test_review_state_from_confidence_zero() {
-        let r = ReviewState::from_confidence(0.0);
-        assert_eq!(r.alpha, Some(0.0));
-        assert_eq!(r.beta, Some(10.0));
-    }
-
-    #[test]
-    fn test_review_state_from_confidence_one() {
-        let r = ReviewState::from_confidence(1.0);
-        assert_eq!(r.alpha, Some(10.0));
-        assert_eq!(r.beta, Some(0.0));
+    fn test_review_state_from_confidence_respects_seed_weight() {
+        let r = ReviewState::from_confidence(0.8, 5.0);
+        assert!((r.alpha.unwrap() - 4.0).abs() < 1e-10);
+        assert!((r.beta.unwrap() - 1.0).abs() < 1e-10);
     }
 
     #[test]
@@ -366,7 +334,6 @@ mod tests {
         let r = ReviewState {
             alpha: Some(8.0),
             beta: Some(2.0),
-            ..Default::default()
         };
         let c = r.bayesian_confidence().unwrap();
         assert!((c - 0.8).abs() < f64::EPSILON);
@@ -382,9 +349,35 @@ mod tests {
         let r = ReviewState {
             alpha: Some(0.0),
             beta: Some(0.0),
-            ..Default::default()
         };
         assert!(r.bayesian_confidence().is_none());
+    }
+
+    #[test]
+    fn test_clamp_confidence_below_zero() {
+        assert!(clamp_confidence(-1.0) > 0.0);
+        assert_eq!(clamp_confidence(-1.0), f64::MIN_POSITIVE);
+    }
+
+    #[test]
+    fn test_clamp_confidence_above_one() {
+        assert!(clamp_confidence(2.0) < 1.0);
+        assert_eq!(clamp_confidence(2.0), 1.0 - f64::EPSILON);
+    }
+
+    #[test]
+    fn test_clamp_confidence_at_zero() {
+        assert_eq!(clamp_confidence(0.0), f64::MIN_POSITIVE);
+    }
+
+    #[test]
+    fn test_clamp_confidence_at_one() {
+        assert_eq!(clamp_confidence(1.0), 1.0 - f64::EPSILON);
+    }
+
+    #[test]
+    fn test_clamp_confidence_passthrough_interior() {
+        assert_eq!(clamp_confidence(0.5), 0.5);
     }
 
     #[test]
@@ -406,21 +399,34 @@ mod tests {
         let m = MemoryEntry::new("my content".to_string(), metadata.clone());
         assert_eq!(m.content, "my content");
         assert_eq!(m.metadata, metadata);
-        assert_eq!(m.tier, MemoryTier::Candidate);
+        assert_eq!(m.kind, MemoryKind::ExtractedMemory);
         assert_eq!(m.seen_count, 1);
         assert_eq!(m.first_seen, m.last_seen);
         assert!(m.expires_at.is_some());
     }
 
     #[test]
-    fn test_core_default_ttl_is_none() {
-        assert_eq!(MemoryTier::Core.default_ttl(), None);
+    fn test_fact_default_ttl_is_none() {
+        assert_eq!(MemoryKind::Fact.default_ttl(), None);
     }
 
     #[test]
-    fn test_memory_tier_roundtrip_str() {
-        assert_eq!(MemoryTier::parse("candidate"), Some(MemoryTier::Candidate));
-        assert_eq!(MemoryTier::Candidate.as_str(), "candidate");
-        assert_eq!(MemoryTier::parse("unknown"), None);
+    fn test_extracted_memory_default_ttl_is_one_year() {
+        assert_eq!(
+            MemoryKind::ExtractedMemory.default_ttl(),
+            Some(Duration::days(365))
+        );
+    }
+
+    #[test]
+    fn test_memory_kind_roundtrip_str() {
+        assert_eq!(MemoryKind::parse("fact"), Some(MemoryKind::Fact));
+        assert_eq!(MemoryKind::Fact.as_str(), "fact");
+        assert_eq!(
+            MemoryKind::parse("extracted_memory"),
+            Some(MemoryKind::ExtractedMemory)
+        );
+        assert_eq!(MemoryKind::ExtractedMemory.as_str(), "extracted_memory");
+        assert_eq!(MemoryKind::parse("unknown"), None);
     }
 }

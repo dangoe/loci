@@ -11,7 +11,8 @@ use uuid::Uuid;
 use crate::classification::{ClassificationModelProvider, HitClass};
 use crate::error::{MemoryExtractionError, MemoryStoreError};
 use crate::memory::{
-    MemoryInput, MemoryQuery, MemoryQueryMode, MemoryQueryResult, ReviewState, Score,
+    MemoryInput, MemoryKind, MemoryQuery, MemoryQueryMode, MemoryQueryResult, ReviewState, Score,
+    clamp_confidence,
 };
 use crate::memory_extraction::MemoryExtractionStrategy;
 use crate::store::MemoryStore;
@@ -19,9 +20,9 @@ use crate::store::MemoryStore;
 /// Configuration for the initial search stage.
 #[derive(Debug, Clone)]
 pub struct PipelineSearchResultsConfig {
-    /// Maximum number of results to retrieve in semanticsearch.
+    /// Maximum number of results to retrieve in semantic search.
     pub max_results: usize,
-    /// Minimum score threshold for direct search results.
+    /// Minimum score threshold for search results.
     pub min_score: f64,
 }
 
@@ -32,13 +33,18 @@ pub struct PipelineConfig {
     pub direct_search: PipelineSearchResultsConfig,
     /// Configuration for inverted semantic search stage.
     pub inverted_search: PipelineSearchResultsConfig,
-    /// Alpha increment for Duplicate hits. Default: 3.0
-    pub duplicate_alpha_weight: f64,
-    /// Alpha increment for Complementary hits. Default: 1.0
-    pub complementary_alpha_weight: f64,
-    /// Beta increment for Contradiction hits. Default: 3.0
-    pub contradiction_beta_weight: f64,
-    /// Per-day exponential decay rate applied to alpha. Default: 0.99
+    /// Seed weight `W` used to initialise Bayesian counters from LLM confidence.
+    /// `α = confidence × W`, `β = (1 − confidence) × W`. Default: 10.0.
+    pub bayesian_seed_weight: f64,
+    /// Maximum increment applied to a counter per evidence event. Default: 5.0.
+    pub max_counter_increment: f64,
+    /// Upper bound for each Bayesian counter (α and β). Default: 100.0.
+    pub max_counter: f64,
+    /// Score at or below which an entry is automatically discarded. Default: 0.1.
+    pub auto_discard_threshold: f64,
+    /// Score at or above which an entry is automatically promoted to Fact. Default: 0.9.
+    pub auto_promotion_threshold: f64,
+    /// Per-day exponential decay rate applied to alpha. Default: 0.99.
     pub decay_rate: f64,
 }
 
@@ -53,30 +59,57 @@ impl Default for PipelineConfig {
                 max_results: 3,
                 min_score: 0.60,
             },
-            duplicate_alpha_weight: 3.0,
-            complementary_alpha_weight: 1.0,
-            contradiction_beta_weight: 3.0,
+            bayesian_seed_weight: 10.0,
+            max_counter_increment: 5.0,
+            max_counter: 100.0,
+            auto_discard_threshold: 0.1,
+            auto_promotion_threshold: 0.9,
             decay_rate: 0.99,
         }
     }
 }
 
-/// Outcome of a [`MemoryExtractionPipeline::extract_and_store`] call.
-pub struct PipelineResult {
-    pub inserted: Vec<MemoryQueryResult>,
-    pub merged: Vec<MemoryQueryResult>,
-    pub pending_review: Vec<MemoryQueryResult>,
+/// An entry that was discarded during the pipeline, with its content and reason.
+#[derive(Debug, Clone)]
+pub struct DiscardedEntry {
+    pub content: String,
+    pub reason: DiscardReason,
 }
 
-/// Orchestrates the 7-stage memory extraction pipeline.
+/// Why a candidate was discarded by the pipeline.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiscardReason {
+    /// The candidate's Bayesian score fell at or below `auto_discard_threshold`.
+    LowScore,
+    /// The candidate contradicted an existing Fact.
+    ContradictsAFact,
+}
+
+/// Outcome of a [`MemoryExtractionPipeline::extract_and_store`] call.
+pub struct PipelineResult {
+    /// Newly inserted entries (no prior match).
+    pub inserted: Vec<MemoryQueryResult>,
+    /// Entries that replaced existing duplicates/complements.
+    pub merged: Vec<MemoryQueryResult>,
+    /// Entries whose score reached `auto_promotion_threshold` and were stored as Facts.
+    pub promoted: Vec<MemoryQueryResult>,
+    /// Entries that were discarded (low score or contradicts a Fact).
+    pub discarded: Vec<DiscardedEntry>,
+}
+
+/// Orchestrates the memory extraction pipeline.
 ///
-/// - Stage 1: extract candidates via `E`
-/// - Stage 2: dual semantic search (direct + inverted) per candidate
-/// - Stage 3: classify each hit via `C`
-/// - Stage 4: update Bayesian counters
-/// - Stage 5: confidence gate — insert, merge, or defer to pending review
-/// - Stage 6: persist (via `add_entries` calls in Stage 5)
-/// - Stage 7: decay (handled by a separate CLI command)
+/// Stages:
+/// 1. Extract candidates via `E`
+/// 2. Clamp candidate confidence to the open interval (0.0, 1.0)
+/// 3. Dual semantic search (direct + inverted) per candidate
+/// 4. Classify each hit via `C`
+/// 5. Fact-contradiction check — discard immediately if any Fact is contradicted
+/// 6. Update Bayesian counters: α += min(c, max_increment) for same/complementary;
+///    β += min(c, max_increment) for contradictions; each counter capped at max_counter
+/// 7. Auto-discard (score ≤ threshold) or auto-promote (score ≥ threshold) or insert/merge
+/// 8. Persist
+/// 9. Decay (handled by a separate CLI command)
 pub struct MemoryExtractionPipeline<S, E, C, P> {
     store: Arc<S>,
     strategy: Arc<E>,
@@ -117,51 +150,81 @@ where
         let mut result = PipelineResult {
             inserted: Vec::new(),
             merged: Vec::new(),
-            pending_review: Vec::new(),
+            promoted: Vec::new(),
+            discarded: Vec::new(),
         };
 
         for candidate in candidates {
+            // Stage 2: clamp confidence to open interval (0.0, 1.0).
+            let confidence = clamp_confidence(candidate.confidence.unwrap_or(0.5));
+
+            // Stages 3-4: dual semantic search + classify hits.
             let classified_hits = self.collect_classified_hits(&candidate).await?;
 
-            let confidence = candidate.confidence.unwrap_or(0.0);
-            let mut review_state = self.initialize_review_state(&classified_hits, confidence);
+            // Stage 5: Fact-contradiction check.
+            let contradicts_fact = classified_hits.iter().any(|(hit, class)| {
+                hit.memory_entry.kind == MemoryKind::Fact && *class == HitClass::Contradiction
+            });
 
-            let c_new = review_state.bayesian_confidence().unwrap_or(0.0);
+            if contradicts_fact {
+                result.discarded.push(DiscardedEntry {
+                    content: candidate.content.clone(),
+                    reason: DiscardReason::ContradictsAFact,
+                });
+                continue;
+            }
 
-            if c_new >= confidence {
-                let match_ids = extract_match_ids(classified_hits);
+            // Stage 6: update Bayesian counters.
+            let review_state = self.compute_review_state(&classified_hits, confidence);
 
-                if !match_ids.is_empty() {
-                    result.merged.extend(
-                        self.merge_and_add(&candidate, &review_state, c_new, match_ids)
-                            .await?,
-                    );
+            let score = review_state.bayesian_confidence().unwrap_or(0.0);
+
+            // Stage 7: auto-discard, auto-promote, or insert/merge.
+            if score <= self.config.auto_discard_threshold {
+                result.discarded.push(DiscardedEntry {
+                    content: candidate.content.clone(),
+                    reason: DiscardReason::LowScore,
+                });
+                continue;
+            }
+
+            let (final_kind, final_confidence) = if score >= self.config.auto_promotion_threshold {
+                (MemoryKind::Fact, 1.0_f64)
+            } else {
+                (MemoryKind::ExtractedMemory, score)
+            };
+
+            let match_ids = extract_match_ids(&classified_hits);
+
+            if !match_ids.is_empty() {
+                let merged = self
+                    .merge_and_add(
+                        &candidate,
+                        &review_state,
+                        final_kind,
+                        final_confidence,
+                        match_ids,
+                    )
+                    .await?;
+                if final_kind == MemoryKind::Fact {
+                    result.promoted.extend(merged);
                 } else {
-                    let input = MemoryInput {
-                        content: candidate.content.clone(),
-                        metadata: candidate.metadata.clone(),
-                        tier: candidate.tier,
-                        confidence: Some(c_new),
-                        review: review_state.clone(),
-                    };
-                    result
-                        .inserted
-                        .extend(self.add_entries_or_fail(vec![input]).await?);
+                    result.merged.extend(merged);
                 }
             } else {
-                review_state.pending = true;
-                let pending_input = MemoryInput {
+                let input = MemoryInput {
                     content: candidate.content.clone(),
                     metadata: candidate.metadata.clone(),
-                    tier: candidate.tier,
-                    confidence: candidate.confidence,
+                    kind: Some(final_kind),
+                    confidence: Some(final_confidence),
                     review: review_state.clone(),
                 };
-
-                result.pending_review.extend(
-                    self.add_entries_or_fail(vec![pending_input.clone()])
-                        .await?,
-                );
+                let added = self.add_entries_or_fail(vec![input]).await?;
+                if final_kind == MemoryKind::Fact {
+                    result.promoted.extend(added);
+                } else {
+                    result.inserted.extend(added);
+                }
             }
         }
 
@@ -172,14 +235,15 @@ where
         &self,
         candidate: &MemoryInput,
         review_state: &ReviewState,
-        c_new: f64,
+        kind: MemoryKind,
+        confidence: f64,
         match_ids: Vec<Uuid>,
     ) -> Result<Vec<MemoryQueryResult>, MemoryExtractionError> {
         let merged_input = MemoryInput {
             content: candidate.content.clone(),
             metadata: candidate.metadata.clone(),
-            tier: candidate.tier,
-            confidence: Some(c_new),
+            kind: Some(kind),
+            confidence: Some(confidence),
             review: review_state.clone(),
         };
 
@@ -220,31 +284,34 @@ where
         }
     }
 
-    fn initialize_review_state(
+    /// Computes the updated Bayesian review state for a candidate given its
+    /// classified hits.
+    ///
+    /// Uses the incoming extraction confidence `c` (already clamped) to
+    /// increment α (for Duplicate/Complementary hits) or β (for Contradiction
+    /// hits), each bounded by `max_counter_increment` and `max_counter`.
+    fn compute_review_state(
         &self,
-        classified_hits: &Vec<(MemoryQueryResult, HitClass)>,
+        classified_hits: &[(MemoryQueryResult, HitClass)],
         confidence: f64,
     ) -> ReviewState {
-        let mut review = ReviewState::from_confidence(confidence);
+        let mut review = ReviewState::from_confidence(confidence, self.config.bayesian_seed_weight);
+
+        let increment = confidence.min(self.config.max_counter_increment);
 
         for (_, class) in classified_hits {
             match class {
-                HitClass::Duplicate => {
-                    review.alpha =
-                        Some(review.alpha.unwrap_or(0.0) + self.config.duplicate_alpha_weight);
-                }
-                HitClass::Complementary => {
-                    review.alpha =
-                        Some(review.alpha.unwrap_or(0.0) + self.config.complementary_alpha_weight);
+                HitClass::Duplicate | HitClass::Complementary => {
+                    let alpha = review.alpha.unwrap_or(0.0);
+                    review.alpha = Some((alpha + increment).min(self.config.max_counter));
                 }
                 HitClass::Contradiction => {
-                    review.beta =
-                        Some(review.beta.unwrap_or(0.0) + self.config.contradiction_beta_weight);
+                    let beta = review.beta.unwrap_or(0.0);
+                    review.beta = Some((beta + increment).min(self.config.max_counter));
                 }
                 HitClass::Unrelated => {}
             }
         }
-        review.score = review.bayesian_confidence();
 
         review
     }
@@ -255,7 +322,7 @@ where
     ) -> Result<Vec<(MemoryQueryResult, HitClass)>, MemoryExtractionError> {
         let mut classified_hits: Vec<(MemoryQueryResult, HitClass)> = Vec::new();
 
-        for direct_hit in self.query_direct_hits(&candidate).await? {
+        for direct_hit in self.query_direct_hits(candidate).await? {
             let class = self
                 .classifier
                 .classify_hit(&candidate.content, &direct_hit.memory_entry.content)
@@ -264,7 +331,7 @@ where
             classified_hits.push((direct_hit, class));
         }
 
-        for inverted_hit in self.query_inverted_hits(&candidate).await? {
+        for inverted_hit in self.query_inverted_hits(candidate).await? {
             let class = self
                 .classifier
                 .classify_hit(&candidate.content, &inverted_hit.memory_entry.content)
@@ -315,7 +382,7 @@ where
     }
 }
 
-fn extract_match_ids(classified_hits: Vec<(MemoryQueryResult, HitClass)>) -> Vec<Uuid> {
+fn extract_match_ids(classified_hits: &[(MemoryQueryResult, HitClass)]) -> Vec<Uuid> {
     let mut seen_ids: HashSet<Uuid> = HashSet::new();
     classified_hits
         .iter()
@@ -335,14 +402,14 @@ mod tests {
 
     use crate::classification::HitClass;
     use crate::error::MemoryExtractionError;
-    use crate::memory::{MemoryInput, MemoryTier, Score};
+    use crate::memory::{MemoryInput, MemoryKind, Score};
     use crate::memory_extraction::MemoryExtractionStrategy;
     use crate::testing::{
         AddEntriesBehavior, ClassifyBehavior, MockClassificationModelProvider, MockStore,
         QueryBehavior, make_result,
     };
 
-    use super::{MemoryExtractionPipeline, PipelineConfig};
+    use super::{DiscardReason, MemoryExtractionPipeline, PipelineConfig};
 
     struct FixedStrategy(Vec<MemoryInput>);
 
@@ -361,7 +428,7 @@ mod tests {
         MemoryInput {
             content: content.to_string(),
             metadata: HashMap::new(),
-            tier: Some(MemoryTier::Candidate),
+            kind: Some(MemoryKind::ExtractedMemory),
             confidence: Some(confidence),
             review: Default::default(),
         }
@@ -378,11 +445,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_fresh_insert_path() {
+        // No existing hits → candidate is inserted as ExtractedMemory.
         let candidate = make_candidate("the sky is blue", 0.8);
         let inserted_result = make_result(
             uuid::Uuid::new_v4(),
             "the sky is blue",
-            MemoryTier::Candidate,
+            MemoryKind::ExtractedMemory,
             0.8,
         );
 
@@ -401,67 +469,148 @@ mod tests {
 
         assert_eq!(result.inserted.len(), 1);
         assert!(result.merged.is_empty());
-        assert!(result.pending_review.is_empty());
+        assert!(result.promoted.is_empty());
+        assert!(result.discarded.is_empty());
     }
 
     #[tokio::test]
-    async fn test_gate_fail_path() {
+    async fn test_auto_discard_path() {
+        // Two Contradiction hits lower the score enough to trigger auto-discard.
         // confidence = 0.7 → alpha=7.0, beta=3.0
-        // two Contradiction hits (direct + inverted query return same hit)
-        // → beta += 3.0 * 2 = 9.0  → alpha=7.0, beta=9.0 → c_new ≈ 0.4375 < 0.7
-        let candidate = make_candidate("the sky is green", 0.7);
+        // increment = min(0.7, 5.0) = 0.7
+        // two Contradiction hits → beta += 0.7 * 2 = 4.4 → alpha=7.0, beta=7.4
+        // score ≈ 0.486 — well above auto_discard_threshold of 0.1
+        // To guarantee discard we need a very low confidence with many contradictions.
+        // Use a very tight config: auto_discard_threshold = 0.5.
+        let candidate = make_candidate("the sky is green", 0.1);
         let hit = make_result(
             uuid::Uuid::new_v4(),
             "the sky is blue",
-            MemoryTier::Candidate,
+            MemoryKind::ExtractedMemory,
             0.9,
         );
-        let pending_result = make_result(
-            uuid::Uuid::new_v4(),
-            "the sky is green",
-            MemoryTier::Candidate,
-            0.7,
+
+        let store = Arc::new(MockStore::new().with_query_behavior(QueryBehavior::Ok(vec![hit])));
+        let strategy = Arc::new(FixedStrategy(vec![candidate.clone()]));
+        let classifier = Arc::new(
+            MockClassificationModelProvider::new()
+                .with_behavior(ClassifyBehavior::Ok(HitClass::Contradiction)),
         );
 
-        let store = Arc::new(
-            MockStore::new()
-                .with_query_behavior(QueryBehavior::Ok(vec![hit]))
-                .with_add_entries_behavior(AddEntriesBehavior::Ok(vec![pending_result])),
+        // confidence = 0.1 → alpha=1.0, beta=9.0; increment = min(0.1, 5.0) = 0.1
+        // 1 contradiction → beta = 9.0 + 0.1 = 9.1 → score ≈ 0.099 ≤ 0.1 → discard
+        let config = PipelineConfig {
+            auto_discard_threshold: 0.1,
+            ..PipelineConfig::default()
+        };
+
+        let pipeline =
+            MemoryExtractionPipeline::new(Arc::clone(&store), strategy, classifier, config);
+        let result = pipeline.extract_and_store("ignored", ()).await.unwrap();
+
+        assert_eq!(result.discarded.len(), 1);
+        assert_eq!(result.discarded[0].reason, DiscardReason::LowScore);
+        assert!(result.inserted.is_empty());
+        assert!(result.merged.is_empty());
+        assert!(result.promoted.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_fact_contradiction_discards_candidate() {
+        // Candidate contradicts an existing Fact → immediately discarded.
+        let candidate = make_candidate("the sky is green", 0.9);
+        let fact_hit = make_result(
+            uuid::Uuid::new_v4(),
+            "the sky is blue",
+            MemoryKind::Fact,
+            0.9,
         );
+
+        let store =
+            Arc::new(MockStore::new().with_query_behavior(QueryBehavior::Ok(vec![fact_hit])));
         let strategy = Arc::new(FixedStrategy(vec![candidate]));
         let classifier = Arc::new(
             MockClassificationModelProvider::new()
                 .with_behavior(ClassifyBehavior::Ok(HitClass::Contradiction)),
         );
 
-        let pipeline = pipeline(Arc::clone(&store), strategy, classifier);
-        let result = pipeline.extract_and_store("ignored", ()).await.unwrap();
+        let result = pipeline(Arc::clone(&store), strategy, classifier)
+            .extract_and_store("ignored", ())
+            .await
+            .unwrap();
 
-        assert_eq!(result.pending_review.len(), 1);
+        assert_eq!(result.discarded.len(), 1);
+        assert_eq!(result.discarded[0].reason, DiscardReason::ContradictsAFact);
+        assert!(result.inserted.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_auto_promotion_path() {
+        // Many Duplicate hits boost alpha enough to trigger auto-promotion to Fact.
+        // confidence = 0.9 → alpha=9.0, beta=1.0; increment = min(0.9, 5.0) = 0.9
+        // 5 duplicate hits → alpha = min(9.0 + 0.9*5, 100) = 13.5 → score ≈ 0.931 ≥ 0.9 → promote
+        let candidate = make_candidate("cats have nine lives", 0.9);
+        let hit_id = uuid::Uuid::new_v4();
+        let hit = make_result(
+            hit_id,
+            "cats have nine lives",
+            MemoryKind::ExtractedMemory,
+            0.9,
+        );
+        let hits = vec![
+            hit.clone(),
+            hit.clone(),
+            hit.clone(),
+            hit.clone(),
+            hit.clone(),
+        ];
+        let promoted_result = make_result(
+            uuid::Uuid::new_v4(),
+            "cats have nine lives",
+            MemoryKind::Fact,
+            1.0,
+        );
+
+        let store = Arc::new(
+            MockStore::new()
+                .with_query_behavior(QueryBehavior::Ok(hits))
+                .with_add_entries_behavior(AddEntriesBehavior::Ok(vec![promoted_result])),
+        );
+        let strategy = Arc::new(FixedStrategy(vec![candidate]));
+        let classifier = Arc::new(
+            MockClassificationModelProvider::new()
+                .with_behavior(ClassifyBehavior::Ok(HitClass::Duplicate)),
+        );
+
+        let result = pipeline(Arc::clone(&store), strategy, classifier)
+            .extract_and_store("ignored", ())
+            .await
+            .unwrap();
+
+        assert_eq!(result.promoted.len(), 1);
         assert!(result.inserted.is_empty());
         assert!(result.merged.is_empty());
-
-        let state = store.snapshot();
-        let inputs = state
-            .add_inputs
-            .expect("add_entries should have been called");
-        assert!(inputs[0].review.pending, "entry must be marked pending");
+        assert!(result.discarded.is_empty());
     }
 
     #[tokio::test]
     async fn test_merge_path() {
-        // confidence = 0.7 → alpha=7.0, beta=3.0
-        // two Duplicate hits (direct + inverted return the same entry)
-        // → alpha += 3.0 * 2 = 13.0 → c_new ≈ 0.8125 > 0.7 → gate passes
-        // same ID deduplicated → 1 delete, 1 merged insert
+        // Duplicate hit → same ID deduplicated → 1 delete, 1 merged insert.
+        // confidence = 0.7 → alpha=7.0, beta=3.0; increment = min(0.7, 5.0) = 0.7
+        // 1 duplicate → alpha = 7.7 → score ≈ 0.72 (between thresholds → merged)
         let hit_id = uuid::Uuid::new_v4();
         let candidate = make_candidate("cats have nine lives", 0.7);
-        let hit = make_result(hit_id, "cats have nine lives", MemoryTier::Candidate, 0.9);
+        let hit = make_result(
+            hit_id,
+            "cats have nine lives",
+            MemoryKind::ExtractedMemory,
+            0.9,
+        );
         let merged_result = make_result(
             uuid::Uuid::new_v4(),
             "cats have nine lives",
-            MemoryTier::Candidate,
-            Score::new(0.8125).unwrap().value(),
+            MemoryKind::ExtractedMemory,
+            Score::new(0.72).unwrap().value(),
         );
 
         let store = Arc::new(
@@ -480,7 +629,8 @@ mod tests {
 
         assert_eq!(result.merged.len(), 1);
         assert!(result.inserted.is_empty());
-        assert!(result.pending_review.is_empty());
+        assert!(result.promoted.is_empty());
+        assert!(result.discarded.is_empty());
 
         let state = store.snapshot();
         assert_eq!(
@@ -497,9 +647,64 @@ mod tests {
         assert!((config.direct_search.min_score - 0.70).abs() < f64::EPSILON);
         assert_eq!(config.inverted_search.max_results, 3);
         assert!((config.inverted_search.min_score - 0.60).abs() < f64::EPSILON);
-        assert!((config.duplicate_alpha_weight - 3.0).abs() < f64::EPSILON);
-        assert!((config.complementary_alpha_weight - 1.0).abs() < f64::EPSILON);
-        assert!((config.contradiction_beta_weight - 3.0).abs() < f64::EPSILON);
+        assert!((config.bayesian_seed_weight - 10.0).abs() < f64::EPSILON);
+        assert!((config.max_counter_increment - 5.0).abs() < f64::EPSILON);
+        assert!((config.max_counter - 100.0).abs() < f64::EPSILON);
+        assert!((config.auto_discard_threshold - 0.1).abs() < f64::EPSILON);
+        assert!((config.auto_promotion_threshold - 0.9).abs() < f64::EPSILON);
         assert!((config.decay_rate - 0.99).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_counter_caps_are_respected() {
+        // Verify that max_counter_increment and max_counter are honoured.
+        // confidence = 0.9, seed = 10 → alpha=9.0, beta=1.0
+        // max_counter_increment = 1.0, max_counter = 9.5
+        // 1 duplicate → increment = min(0.9, 1.0) = 0.9 → alpha = min(9.9, 9.5) = 9.5
+        let store = Arc::new(
+            MockStore::new()
+                .with_query_behavior(QueryBehavior::Ok(vec![make_result(
+                    uuid::Uuid::new_v4(),
+                    "hit",
+                    MemoryKind::ExtractedMemory,
+                    0.9,
+                )]))
+                .with_add_entries_behavior(AddEntriesBehavior::Ok(vec![make_result(
+                    uuid::Uuid::new_v4(),
+                    "hit",
+                    MemoryKind::ExtractedMemory,
+                    0.9,
+                )])),
+        );
+        let strategy = Arc::new(FixedStrategy(vec![make_candidate("hit", 0.9)]));
+        let classifier = Arc::new(
+            MockClassificationModelProvider::new()
+                .with_behavior(ClassifyBehavior::Ok(HitClass::Duplicate)),
+        );
+
+        let config = PipelineConfig {
+            bayesian_seed_weight: 10.0,
+            max_counter_increment: 1.0,
+            max_counter: 9.5,
+            // Below promotion threshold so we can inspect the add input
+            auto_promotion_threshold: 0.99,
+            auto_discard_threshold: 0.0,
+            ..PipelineConfig::default()
+        };
+
+        let pipeline =
+            MemoryExtractionPipeline::new(Arc::clone(&store), strategy, classifier, config);
+
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            pipeline.extract_and_store("ignored", ()).await.unwrap();
+        });
+
+        let state = store.snapshot();
+        let inputs = state
+            .add_inputs
+            .expect("add_entries should have been called");
+        let alpha = inputs[0].review.alpha.expect("alpha should be set");
+        // alpha must not exceed max_counter = 9.5
+        assert!(alpha <= 9.5, "alpha {alpha} exceeded max_counter 9.5");
     }
 }

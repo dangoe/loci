@@ -7,7 +7,7 @@ mod support;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use loci_core::memory::{MemoryQuery, MemoryQueryMode, MemoryTier, Score};
+use loci_core::memory::{MemoryKind, MemoryQuery, MemoryQueryMode, Score};
 use loci_core::memory_extraction::{
     LlmMemoryExtractionStrategy, LlmMemoryExtractionStrategyParams, MemoryExtractionStrategy,
     MemoryExtractor,
@@ -74,7 +74,7 @@ async fn test_extract_yields_entries_from_fact_rich_text() {
 
 #[tokio::test]
 #[cfg_attr(not(feature = "e2e"), ignore)]
-async fn test_extracted_entries_carry_stable_tier() {
+async fn test_extracted_entries_carry_extracted_memory_kind() {
     ensure_ollama_available().await;
 
     let provider = Arc::new(ollama_provider());
@@ -85,16 +85,16 @@ async fn test_extracted_entries_carry_stable_tier() {
         .await
         .expect("extraction should succeed");
 
-    // If the model returned nothing we cannot validate tiers, so fail loudly.
+    // If the model returned nothing we cannot validate kinds, so fail loudly.
     assert!(
         !entries.is_empty(),
-        "extraction should yield entries to validate tier propagation"
+        "extraction should yield entries to validate kind propagation"
     );
     for entry in &entries {
         assert_eq!(
-            entry.tier,
-            Some(MemoryTier::Stable),
-            "every extracted entry must carry the hardcoded Stable tier"
+            entry.kind,
+            Some(MemoryKind::ExtractedMemory),
+            "every extracted entry must carry the hardcoded ExtractedMemory kind"
         );
     }
 }
@@ -336,7 +336,7 @@ async fn test_stored_entries_have_configured_metadata() {
 
 #[tokio::test]
 #[cfg_attr(not(feature = "e2e"), ignore)]
-async fn test_stored_entries_have_stable_tier() {
+async fn test_stored_entries_have_extracted_memory_kind() {
     ensure_ollama_available().await;
 
     let provider = Arc::new(ollama_provider());
@@ -354,13 +354,13 @@ async fn test_stored_entries_have_stable_tier() {
 
     assert!(
         !result.added.is_empty(),
-        "extraction should yield entries to validate tier persistence"
+        "extraction should yield entries to validate kind persistence"
     );
     for added in &result.added {
         assert_eq!(
-            added.memory_entry.tier,
-            MemoryTier::Stable,
-            "stored entry must carry the hardcoded Stable tier, entry id: {}",
+            added.memory_entry.kind,
+            MemoryKind::ExtractedMemory,
+            "stored entry must carry the ExtractedMemory kind, entry id: {}",
             added.memory_entry.id
         );
     }

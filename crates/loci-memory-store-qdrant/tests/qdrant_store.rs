@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use chrono::{Duration, Utc};
 use loci_core::error::MemoryStoreError;
 use loci_core::memory::{
-    MemoryInput, MemoryQuery, MemoryQueryMode, MemoryQueryResult, MemoryTier, Score,
+    MemoryInput, MemoryKind, MemoryQuery, MemoryQueryMode, MemoryQueryResult, Score,
 };
 use loci_core::store::MemoryStore;
 use loci_core::testing::MockTextEmbedder;
@@ -56,7 +56,7 @@ async fn prepare_expired_entry(
         .add_entry(MemoryInput {
             content: "short-lived".to_string(),
             metadata: HashMap::new(),
-            tier: Some(MemoryTier::Candidate),
+            kind: Some(MemoryKind::ExtractedMemory),
             confidence: None,
             review: Default::default(),
         })
@@ -87,38 +87,6 @@ async fn prepare_expired_entry(
 
 fn extract_ids(results: &[MemoryQueryResult]) -> Vec<Uuid> {
     results.iter().map(|e| e.memory_entry.id).collect()
-}
-
-#[tokio::test]
-async fn test_candidate_promotes_when_same_fact_arrives_from_different_source() {
-    let embedder = MockTextEmbedder::new(DIM)
-        .with("fact from source a", unit_vec(0))
-        .with("fact from source b", unit_vec(0));
-    let (store, _container) = start_store(embedder, Some(0.9)).await;
-
-    let first = store
-        .add_entry(input_with_metadata(
-            "fact from source a",
-            HashMap::from([("source".to_string(), "https://a.example".to_string())]),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(first.memory_entry.tier, MemoryTier::Candidate);
-
-    let second = store
-        .add_entry(input_with_metadata(
-            "fact from source b",
-            HashMap::from([("source".to_string(), "https://b.example".to_string())]),
-        ))
-        .await
-        .unwrap();
-
-    assert_eq!(second.memory_entry.id, first.memory_entry.id);
-    assert_eq!(second.memory_entry.tier, MemoryTier::Stable);
-
-    // Verify the promotion is persisted in the store.
-    let fetched = store.get_entry(first.memory_entry.id).await.unwrap();
-    assert_eq!(fetched.memory_entry.tier, MemoryTier::Stable);
 }
 
 #[tokio::test]
@@ -226,7 +194,7 @@ async fn test_get_entry_returns_added_entry() {
 
     assert_eq!(fetched.memory_entry.id, saved.memory_entry.id);
     assert_eq!(fetched.memory_entry.content, "fetch me");
-    assert_eq!(fetched.memory_entry.tier, MemoryTier::Candidate);
+    assert_eq!(fetched.memory_entry.kind, MemoryKind::ExtractedMemory);
     assert_eq!(fetched.memory_entry.seen_count, 1);
 }
 
@@ -249,7 +217,7 @@ async fn test_metadata_is_persisted_and_restored() {
     let results = store.query(query("tagged content query", 1)).await.unwrap();
 
     assert_eq!(results[0].memory_entry.metadata, metadata);
-    assert_eq!(results[0].memory_entry.tier, MemoryTier::Candidate);
+    assert_eq!(results[0].memory_entry.kind, MemoryKind::ExtractedMemory);
 }
 
 #[tokio::test]
@@ -296,7 +264,7 @@ async fn test_prune_expired_memory_entries() {
         .add_entry(MemoryInput {
             content: "long-lived".to_string(),
             metadata: HashMap::new(),
-            tier: Some(MemoryTier::Core),
+            kind: Some(MemoryKind::Fact),
             confidence: None,
             review: Default::default(),
         })
@@ -375,21 +343,20 @@ async fn test_query_ranks_results_by_similarity() {
 async fn test_query_respects_expiration() {
     let embedder = MockTextEmbedder::new(DIM)
         .with("short-lived", unit_vec(0))
-        .with("core", unit_vec(0))
-        .with("stable", unit_vec(0))
-        .with("candidate", unit_vec(0))
+        .with("fact", unit_vec(0))
+        .with("extracted", unit_vec(0))
         .with("query", unit_vec(0));
     let (store, container) = start_store(embedder, None).await;
 
     let mut valid_entries: Vec<MemoryQueryResult> = Vec::new();
 
-    for tier in vec![MemoryTier::Core, MemoryTier::Stable, MemoryTier::Candidate] {
+    for kind in [MemoryKind::Fact, MemoryKind::ExtractedMemory] {
         valid_entries.push(
             store
                 .add_entry(MemoryInput {
-                    content: tier.as_str().to_string(),
+                    content: kind.as_str().to_string(),
                     metadata: HashMap::new(),
-                    tier: Some(tier),
+                    kind: Some(kind),
                     confidence: None,
                     review: Default::default(),
                 })
@@ -473,64 +440,27 @@ async fn test_added_memory_is_returned_by_query() {
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].memory_entry.id, entry.memory_entry.id);
     assert_eq!(results[0].memory_entry.content, "hello world");
-    assert!(results[0].score.value() > 0.5);
+    assert!(results[0].score.value() >= 0.5);
 }
 
 #[tokio::test]
-async fn test_add_entry_ephemeral_returns_error() {
-    let embedder = MockTextEmbedder::new(DIM);
-    let (store, _container) = start_store(embedder, None).await;
-
-    let result = store
-        .add_entry(MemoryInput {
-            content: "ephemeral".to_string(),
-            metadata: HashMap::new(),
-            tier: Some(MemoryTier::Ephemeral),
-            confidence: None,
-            review: Default::default(),
-        })
-        .await;
-
-    assert!(
-        matches!(result, Err(MemoryStoreError::GenericSave(_))),
-        "saving an ephemeral entry must return a GenericSave error"
-    );
-}
-
-#[tokio::test]
-async fn test_set_entry_tier_promotes_to_core() {
+async fn test_set_entry_kind_promotes_to_fact() {
     let embedder = MockTextEmbedder::new(DIM).with("curate me", unit_vec(0));
     let (store, _container) = start_store(embedder, None).await;
 
     let saved = store.add_entry(input("curate me")).await.unwrap();
     let updated = store
-        .set_entry_tier(saved.memory_entry.id, MemoryTier::Core)
+        .set_entry_kind(saved.memory_entry.id, MemoryKind::Fact)
         .await
         .unwrap();
 
-    assert_eq!(updated.memory_entry.tier, MemoryTier::Core);
+    assert_eq!(updated.memory_entry.kind, MemoryKind::Fact);
     assert_eq!(updated.memory_entry.expires_at, None);
 
-    // Verify the tier change is persisted in the store.
+    // Verify the kind change is persisted in the store.
     let fetched = store.get_entry(saved.memory_entry.id).await.unwrap();
-    assert_eq!(fetched.memory_entry.tier, MemoryTier::Core);
+    assert_eq!(fetched.memory_entry.kind, MemoryKind::Fact);
     assert_eq!(fetched.memory_entry.expires_at, None);
-}
-
-#[tokio::test]
-async fn test_set_entry_tier_to_ephemeral_returns_error() {
-    let embedder = MockTextEmbedder::new(DIM).with("content", unit_vec(0));
-    let (store, _container) = start_store(embedder, None).await;
-
-    let saved = store.add_entry(input("content")).await.unwrap();
-    let result = store
-        .set_entry_tier(saved.memory_entry.id, MemoryTier::Ephemeral)
-        .await;
-
-    assert!(
-        matches!(result, Err(MemoryStoreError::Query(_))),
-        "setting tier to ephemeral must return a Query error"
-    );
 }
 
 #[tokio::test]
@@ -563,29 +493,4 @@ async fn test_update_entry_returns_not_found_for_unknown_id() {
     let result = store.update_entry(unknown_id, input("anything")).await;
 
     assert!(matches!(result, Err(MemoryStoreError::NotFound(id)) if id == unknown_id));
-}
-
-#[tokio::test]
-async fn test_update_entry_to_ephemeral_returns_error() {
-    let embedder = MockTextEmbedder::new(DIM).with("content", unit_vec(0));
-    let (store, _container) = start_store(embedder, None).await;
-
-    let saved = store.add_entry(input("content")).await.unwrap();
-    let result = store
-        .update_entry(
-            saved.memory_entry.id,
-            MemoryInput {
-                content: "content".to_string(),
-                metadata: HashMap::new(),
-                tier: Some(MemoryTier::Ephemeral),
-                confidence: None,
-                review: Default::default(),
-            },
-        )
-        .await;
-
-    assert!(
-        matches!(result, Err(MemoryStoreError::Query(_))),
-        "updating to ephemeral tier must return a Query error"
-    );
 }

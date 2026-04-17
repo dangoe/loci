@@ -9,7 +9,7 @@ mod common;
 use pretty_assertions::assert_eq;
 use uuid::Uuid;
 
-use loci_core::memory::MemoryTier;
+use loci_core::memory::MemoryKind;
 use loci_core::model_provider::text_generation::TextGenerationResponse;
 use loci_core::testing::AddEntriesBehavior;
 
@@ -26,14 +26,14 @@ fn default_provider() -> MockTextGenerationModelProvider {
 #[tokio::test]
 async fn test_memory_add_outputs_json_with_entry_fields() {
     let id = Uuid::new_v4();
-    let entry = make_result(id, "hello world", MemoryTier::Candidate, 0.0);
+    let entry = make_result(id, "hello world", MemoryKind::ExtractedMemory, 0.0);
     let cli = TestCli::new(MockStore::new().with_add(entry), default_provider());
 
     let output = cli
         .memory(MemoryCommand::Add {
             content: "hello world".to_string(),
             metadata: vec![],
-            tier: None,
+            kind: None,
         })
         .await
         .expect("add should succeed");
@@ -41,12 +41,17 @@ async fn test_memory_add_outputs_json_with_entry_fields() {
     let v: serde_json::Value = serde_json::from_str(&output).expect("output should be valid JSON");
     assert_eq!(v["id"].as_str().unwrap(), id.to_string());
     assert_eq!(v["content"].as_str().unwrap(), "hello world");
-    assert_eq!(v["tier"].as_str().unwrap(), "candidate");
+    assert_eq!(v["kind"].as_str().unwrap(), "extracted_memory");
 }
 
 #[tokio::test]
 async fn test_memory_query_outputs_json_array() {
-    let result = make_result(Uuid::new_v4(), "remembered fact", MemoryTier::Stable, 0.88);
+    let result = make_result(
+        Uuid::new_v4(),
+        "remembered fact",
+        MemoryKind::ExtractedMemory,
+        0.88,
+    );
     let cli = TestCli::new(
         MockStore::new().with_query(vec![result]),
         default_provider(),
@@ -66,13 +71,13 @@ async fn test_memory_query_outputs_json_array() {
     let arr = v.as_array().expect("output should be a JSON array");
     assert_eq!(arr.len(), 1);
     assert_eq!(arr[0]["content"].as_str().unwrap(), "remembered fact");
-    assert_eq!(arr[0]["tier"].as_str().unwrap(), "stable");
+    assert_eq!(arr[0]["kind"].as_str().unwrap(), "extracted_memory");
 }
 
 #[tokio::test]
 async fn test_memory_get_outputs_json() {
     let id = Uuid::new_v4();
-    let entry = make_result(id, "found entry", MemoryTier::Core, 0.95);
+    let entry = make_result(id, "found entry", MemoryKind::Fact, 0.95);
     let cli = TestCli::new(MockStore::new().with_get(entry), default_provider());
 
     let output = cli
@@ -83,33 +88,24 @@ async fn test_memory_get_outputs_json() {
     let v: serde_json::Value = serde_json::from_str(&output).expect("output should be valid JSON");
     assert_eq!(v["id"].as_str().unwrap(), id.to_string());
     assert_eq!(v["content"].as_str().unwrap(), "found entry");
-    assert_eq!(v["tier"].as_str().unwrap(), "core");
+    assert_eq!(v["kind"].as_str().unwrap(), "fact");
 }
 
 #[tokio::test]
-async fn test_memory_update_outputs_json() {
+async fn test_memory_promote_outputs_json() {
     let id = Uuid::new_v4();
-    let updated = make_result(id, "updated content", MemoryTier::Stable, 0.85);
-    let cli = TestCli::new(
-        MockStore::new()
-            .with_get(updated.clone())
-            .with_update(updated),
-        default_provider(),
-    );
+    let promoted = make_result(id, "important fact", MemoryKind::Fact, 1.0);
+    let cli = TestCli::new(MockStore::new().with_set_kind(promoted), default_provider());
 
     let output = cli
-        .memory(MemoryCommand::Update {
-            id,
-            content: Some("updated content".to_string()),
-            metadata: vec![],
-            tier: None,
-        })
+        .memory(MemoryCommand::Promote { id })
         .await
-        .expect("update should succeed");
+        .expect("promote should succeed");
 
     let v: serde_json::Value = serde_json::from_str(&output).expect("output should be valid JSON");
     assert_eq!(v["id"].as_str().unwrap(), id.to_string());
-    assert_eq!(v["content"].as_str().unwrap(), "updated content");
+    assert_eq!(v["content"].as_str().unwrap(), "important fact");
+    assert_eq!(v["kind"].as_str().unwrap(), "fact");
 }
 
 #[tokio::test]
@@ -154,7 +150,7 @@ async fn test_memory_add_propagates_store_errors() {
         .memory(MemoryCommand::Add {
             content: "will fail".to_string(),
             metadata: vec![],
-            tier: None,
+            kind: None,
         })
         .await;
 
@@ -173,7 +169,7 @@ async fn test_memory_extract_dry_run_outputs_candidates_without_persisting() {
     let stored = vec![make_result(
         id,
         "extracted fact",
-        MemoryTier::Candidate,
+        MemoryKind::ExtractedMemory,
         0.0,
     )];
     let store = MockStore::new().with_add_entries_behavior(AddEntriesBehavior::Ok(stored));
@@ -197,13 +193,13 @@ async fn test_memory_extract_dry_run_outputs_candidates_without_persisting() {
     let arr = v.as_array().expect("output should be a JSON array");
     assert_eq!(arr.len(), 1);
     assert_eq!(arr[0]["content"].as_str().unwrap(), "extracted fact");
-    assert_eq!(arr[0]["tier"].as_str().unwrap(), "stable");
+    assert_eq!(arr[0]["kind"].as_str().unwrap(), "extracted_memory");
 }
 
 #[tokio::test]
 async fn test_memory_extract_persists_and_outputs_added_result() {
     let id = uuid::Uuid::new_v4();
-    let stored = vec![make_result(id, "a fact", MemoryTier::Candidate, 0.0)];
+    let stored = vec![make_result(id, "a fact", MemoryKind::ExtractedMemory, 0.0)];
     let store = MockStore::new().with_add_entries_behavior(AddEntriesBehavior::Ok(stored));
     let provider = extraction_provider(r#"[{"content": "a fact", "confidence": 0.9}]"#);
     let cli = TestCli::new(store, provider);

@@ -148,7 +148,6 @@ pub fn minimal_ollama_config() -> AppConfig {
             config: MemoryConfig {
                 backend: "qdrant".to_string(),
                 similarity_threshold: None,
-                promotion_source_threshold: 2,
             },
             extraction: MemoryExtractionConfig {
                 model: "default".to_string(),
@@ -217,7 +216,6 @@ pub fn mock_config() -> AppConfig {
             config: MemoryConfig {
                 backend: "qdrant".to_string(),
                 similarity_threshold: None,
-                promotion_source_threshold: 2,
             },
             extraction: MemoryExtractionConfig {
                 model: "default".to_string(),

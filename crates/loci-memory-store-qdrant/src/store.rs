@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use loci_core::embedding::{Embedding, TextEmbedder};
 use loci_core::error::MemoryStoreError;
 use loci_core::memory::{
-    MemoryEntry, MemoryInput, MemoryQuery, MemoryQueryMode, MemoryQueryResult, MemoryTier, Score,
+    MemoryEntry, MemoryInput, MemoryKind, MemoryQuery, MemoryQueryMode, MemoryQueryResult, Score,
 };
 use loci_core::store::{AddEntriesResult, MemoryStore, PerEntryFailure};
 use qdrant_client::Payload;
@@ -30,17 +30,14 @@ use crate::config::QdrantConfig;
 const FIELD_CONTENT: &str = "content";
 const FIELD_METADATA: &str = "metadata";
 const FIELD_CREATED_AT: &str = "created_at";
-const FIELD_TIER: &str = "tier";
+const FIELD_KIND: &str = "kind";
 const FIELD_SEEN_COUNT: &str = "seen_count";
 const FIELD_FIRST_SEEN: &str = "first_seen";
 const FIELD_LAST_SEEN: &str = "last_seen";
 const FIELD_EXPIRES_AT: &str = "expires_at";
-const FIELD_SOURCES: &str = "sources";
 const FIELD_CONFIDENCE: &str = "confidence";
 const FIELD_REVIEW_ALPHA: &str = "review_alpha";
 const FIELD_REVIEW_BETA: &str = "review_beta";
-const FIELD_REVIEW_SCORE: &str = "review_score";
-const FIELD_REVIEW_PENDING: &str = "review_pending";
 
 const SOURCE_METADATA_KEY: &str = "source";
 
@@ -131,16 +128,13 @@ impl<E: TextEmbedder> QdrantMemoryStore<E> {
         payload.insert(FIELD_CONTENT, memory.content.clone());
         payload.insert(FIELD_METADATA, metadata_value);
         payload.insert(FIELD_CREATED_AT, memory.created_at.timestamp());
-        payload.insert(FIELD_TIER, memory.tier.as_str());
+        payload.insert(FIELD_KIND, memory.kind.as_str());
         payload.insert(FIELD_SEEN_COUNT, i64::from(memory.seen_count));
         payload.insert(FIELD_FIRST_SEEN, memory.first_seen.timestamp());
         payload.insert(FIELD_LAST_SEEN, memory.last_seen.timestamp());
         if let Some(expires_at) = memory.expires_at {
             payload.insert(FIELD_EXPIRES_AT, expires_at.timestamp());
         }
-        let sources_value = serde_json::to_value(&memory.sources)
-            .map_err(|e| MemoryStoreError::Query(e.to_string()))?;
-        payload.insert(FIELD_SOURCES, sources_value);
         if let Some(confidence) = memory.confidence {
             payload.insert(FIELD_CONFIDENCE, confidence);
         }
@@ -149,12 +143,6 @@ impl<E: TextEmbedder> QdrantMemoryStore<E> {
         }
         if let Some(beta) = memory.review.beta {
             payload.insert(FIELD_REVIEW_BETA, beta);
-        }
-        if let Some(score) = memory.review.score {
-            payload.insert(FIELD_REVIEW_SCORE, score);
-        }
-        if memory.review.pending {
-            payload.insert(FIELD_REVIEW_PENDING, true);
         }
 
         let point = PointStruct::new(
@@ -240,7 +228,7 @@ impl<E: TextEmbedder> QdrantMemoryStore<E> {
         let mut entries = Vec::new();
         for point in response.result {
             let candidate = Self::parse_scored_point(&point)?;
-            let weighted = blend_score(candidate.similarity, candidate.memory_entry.tier)?;
+            let weighted = blend_score(candidate.similarity, &candidate.memory_entry)?;
 
             if weighted.value() < min_score {
                 continue;
@@ -287,7 +275,7 @@ impl<E: TextEmbedder> QdrantMemoryStore<E> {
                 continue;
             }
 
-            let weighted = blend_score(candidate.similarity, candidate.memory_entry.tier)?;
+            let weighted = blend_score(candidate.similarity, &candidate.memory_entry)?;
             return Ok(Some(MemoryQueryResult {
                 memory_entry: candidate.memory_entry,
                 score: weighted,
@@ -295,27 +283,6 @@ impl<E: TextEmbedder> QdrantMemoryStore<E> {
         }
 
         Ok(None)
-    }
-
-    fn maybe_promote_from_source(
-        &self,
-        memory: &mut MemoryEntry,
-        incoming_metadata: &HashMap<String, String>,
-    ) {
-        if memory.tier != MemoryTier::Candidate {
-            return;
-        }
-
-        if let Some(incoming_source) = incoming_metadata.get(SOURCE_METADATA_KEY) {
-            if !memory.sources.contains(incoming_source) {
-                memory.sources.push(incoming_source.clone());
-            }
-
-            if memory.sources.len() >= self.config.promotion_source_threshold as usize {
-                memory.tier = MemoryTier::Stable;
-                memory.expires_at = memory.tier.default_ttl().map(|ttl| Utc::now() + ttl);
-            }
-        }
     }
 
     fn parse_scored_point(
@@ -377,19 +344,11 @@ impl<E: TextEmbedder> MemoryStore for QdrantMemoryStore<E> {
         let mut failures: Vec<PerEntryFailure> = Vec::new();
 
         for (idx, input) in inputs.into_iter().enumerate() {
-            let tier = input.tier.unwrap_or(MemoryTier::Candidate);
-            if tier == MemoryTier::Ephemeral {
-                failures.push(PerEntryFailure {
-                    index: idx,
-                    error: MemoryStoreError::Query(
-                        "ephemeral memory entries are request-scoped and cannot be persisted"
-                            .to_string(),
-                    ),
-                });
-                continue;
-            }
+            let kind = input.kind.unwrap_or(MemoryKind::ExtractedMemory);
 
-            let memory = MemoryEntry::new_with_tier(input.content, input.metadata, tier);
+            let mut memory = MemoryEntry::new_with_kind(input.content, input.metadata, kind);
+            memory.confidence = input.confidence;
+            memory.review = input.review;
 
             let embedding = match self.embedder.embed(&memory.content).await {
                 Ok(e) => e,
@@ -408,10 +367,6 @@ impl<E: TextEmbedder> MemoryStore for QdrantMemoryStore<E> {
                     .await
                 {
                     Ok(Some(mut existing)) => {
-                        self.maybe_promote_from_source(
-                            &mut existing.memory_entry,
-                            &memory.metadata,
-                        );
                         existing.memory_entry.last_seen = Utc::now();
                         existing.memory_entry.seen_count =
                             existing.memory_entry.seen_count.saturating_add(1);
@@ -497,27 +452,21 @@ impl<E: TextEmbedder> MemoryStore for QdrantMemoryStore<E> {
         input: MemoryInput,
     ) -> Result<MemoryQueryResult, MemoryStoreError> {
         let existing = self.load_memory(id).await?;
-        let tier = input.tier.unwrap_or(existing.tier);
-        if tier == MemoryTier::Ephemeral {
-            return Err(MemoryStoreError::Query(
-                "ephemeral tier cannot be set on persisted memory entries".to_string(),
-            ));
-        }
+        let kind = input.kind.unwrap_or(existing.kind);
 
         let now = Utc::now();
-        let expires_at = if tier == existing.tier {
+        let expires_at = if kind == existing.kind {
             existing.expires_at
         } else {
-            tier.default_ttl().map(|ttl| now + ttl)
+            kind.default_ttl().map(|ttl| now + ttl)
         };
 
         let memory = MemoryEntry {
             id,
             content: input.content,
             metadata: input.metadata,
-            tier,
+            kind,
             seen_count: existing.seen_count,
-            sources: existing.sources,
             first_seen: existing.first_seen,
             last_seen: existing.last_seen,
             expires_at,
@@ -539,20 +488,14 @@ impl<E: TextEmbedder> MemoryStore for QdrantMemoryStore<E> {
         })
     }
 
-    async fn set_entry_tier(
+    async fn set_entry_kind(
         &self,
         id: Uuid,
-        tier: MemoryTier,
+        kind: MemoryKind,
     ) -> Result<MemoryQueryResult, MemoryStoreError> {
-        if tier == MemoryTier::Ephemeral {
-            return Err(MemoryStoreError::Query(
-                "ephemeral tier cannot be set on persisted memory entries".to_string(),
-            ));
-        }
-
         let mut memory = self.load_memory(id).await?;
-        memory.tier = tier;
-        memory.expires_at = tier.default_ttl().map(|ttl| Utc::now() + ttl);
+        memory.kind = kind;
+        memory.expires_at = kind.default_ttl().map(|ttl| Utc::now() + ttl);
 
         let embedding = self
             .embedder
@@ -713,23 +656,23 @@ fn parse_payload_to_memory(
 
     let metadata: HashMap<String, String> = payload
         .get(FIELD_METADATA)
-        .and_then(|v| serde_json::to_value(v).ok()) // get the nested JSON object
+        .and_then(|v| serde_json::to_value(v).ok())
         .and_then(|v| serde_json::from_value(v).ok())
         .unwrap_or_default();
 
     let created_at = parse_mandatory_value(payload, FIELD_CREATED_AT, parse_timestamp)?;
-    let tier = payload
-        .get(FIELD_TIER)
+    let kind = payload
+        .get(FIELD_KIND)
         .and_then(|value| value.as_str())
         .and_then(|value_as_string| {
-            MemoryTier::parse(value_as_string).or_else(|| {
+            MemoryKind::parse(value_as_string).or_else(|| {
                 log::warn!(
-                    "unknown tier value '{value_as_string}' for entry {id}, defaulting to Candidate"
+                    "unknown kind value '{value_as_string}' for entry {id}, defaulting to ExtractedMemory"
                 );
                 None
             })
         })
-        .unwrap_or(MemoryTier::Candidate);
+        .unwrap_or(MemoryKind::ExtractedMemory);
 
     let seen_count = payload
         .get(FIELD_SEEN_COUNT)
@@ -742,33 +685,21 @@ fn parse_payload_to_memory(
     let last_seen =
         parse_optional_value(payload, FIELD_LAST_SEEN, parse_timestamp)?.unwrap_or(created_at);
     let expires_at = parse_optional_value(payload, FIELD_EXPIRES_AT, parse_timestamp)?
-        .or_else(|| tier.default_ttl().map(|ttl| created_at + ttl));
-
-    let sources: Vec<String> = payload
-        .get(FIELD_SOURCES)
-        .and_then(|value| serde_json::to_value(value).ok())
-        .and_then(|value| serde_json::from_value(value).ok())
-        .unwrap_or_default();
+        .or_else(|| kind.default_ttl().map(|ttl| created_at + ttl));
 
     let confidence = payload.get(FIELD_CONFIDENCE).and_then(|v| v.as_double());
 
     let review = loci_core::memory::ReviewState {
         alpha: payload.get(FIELD_REVIEW_ALPHA).and_then(|v| v.as_double()),
         beta: payload.get(FIELD_REVIEW_BETA).and_then(|v| v.as_double()),
-        score: payload.get(FIELD_REVIEW_SCORE).and_then(|v| v.as_double()),
-        pending: payload
-            .get(FIELD_REVIEW_PENDING)
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
     };
 
     Ok(MemoryEntry {
         id,
         content,
         metadata,
-        tier,
+        kind,
         seen_count,
-        sources,
         first_seen,
         last_seen,
         expires_at,
@@ -778,8 +709,23 @@ fn parse_payload_to_memory(
     })
 }
 
-fn blend_score(similarity: f64, tier: MemoryTier) -> Result<Score, MemoryStoreError> {
-    let weighted = (similarity * tier.retrieval_weight()).clamp(0.0, 1.0);
+fn effective_confidence(entry: &MemoryEntry) -> f64 {
+    match entry.kind {
+        MemoryKind::Fact => 1.0,
+        MemoryKind::ExtractedMemory => {
+            let alpha = entry.review.alpha.unwrap_or(0.0);
+            let beta = entry.review.beta.unwrap_or(0.0);
+            if alpha + beta > 0.0 {
+                alpha / (alpha + beta)
+            } else {
+                entry.confidence.unwrap_or(0.5)
+            }
+        }
+    }
+}
+
+fn blend_score(similarity: f64, entry: &MemoryEntry) -> Result<Score, MemoryStoreError> {
+    let weighted = (similarity * effective_confidence(entry)).clamp(0.0, 1.0);
     Score::new(weighted).map_err(|e| MemoryStoreError::Query(e.to_string()))
 }
 
@@ -807,56 +753,92 @@ mod tests {
 
     use chrono::Utc;
 
-    use loci_core::memory::MemoryTier;
+    use loci_core::memory::{MemoryEntry, MemoryKind, ReviewState};
 
-    use super::{blend_score, is_expired, metadata_matches_for_dedup};
+    use super::{blend_score, effective_confidence, is_expired, metadata_matches_for_dedup};
 
-    #[test]
-    fn blend_score_candidate_at_full_similarity() {
-        // Candidate weight is 0.6; 1.0 * 0.6 = 0.6
-        let score = blend_score(1.0, MemoryTier::Candidate).unwrap();
-        assert!((score.value() - 0.6).abs() < 1e-9);
+    fn extracted_memory_with_review(alpha: f64, beta: f64) -> MemoryEntry {
+        let mut e = MemoryEntry::new("".to_string(), HashMap::new());
+        e.review = ReviewState {
+            alpha: Some(alpha),
+            beta: Some(beta),
+        };
+        e
+    }
+
+    fn extracted_memory_with_confidence(confidence: f64) -> MemoryEntry {
+        let mut e = MemoryEntry::new("".to_string(), HashMap::new());
+        e.confidence = Some(confidence);
+        e
+    }
+
+    fn fact_entry() -> MemoryEntry {
+        MemoryEntry::new_with_kind("".to_string(), HashMap::new(), MemoryKind::Fact)
     }
 
     #[test]
-    fn blend_score_stable_at_full_similarity() {
-        // Stable weight is 0.9
-        let score = blend_score(1.0, MemoryTier::Stable).unwrap();
-        assert!((score.value() - 0.9).abs() < 1e-9);
-    }
-
-    #[test]
-    fn blend_score_core_at_full_similarity() {
-        // Core weight is 1.0
-        let score = blend_score(1.0, MemoryTier::Core).unwrap();
+    fn blend_score_fact_uses_full_confidence() {
+        let score = blend_score(1.0, &fact_entry()).unwrap();
         assert!((score.value() - 1.0).abs() < 1e-9);
     }
 
     #[test]
-    fn blend_score_ephemeral_is_zero_regardless_of_similarity() {
-        // Ephemeral weight is 0.0
-        let score = blend_score(1.0, MemoryTier::Ephemeral).unwrap();
-        assert_eq!(score.value(), 0.0);
+    fn blend_score_extracted_memory_uses_bayesian_confidence() {
+        // alpha=9, beta=1 → confidence = 0.9
+        let entry = extracted_memory_with_review(9.0, 1.0);
+        let score = blend_score(1.0, &entry).unwrap();
+        assert!((score.value() - 0.9).abs() < 1e-9);
+    }
+
+    #[test]
+    fn blend_score_extracted_memory_falls_back_to_stored_confidence() {
+        let entry = extracted_memory_with_confidence(0.7);
+        let score = blend_score(1.0, &entry).unwrap();
+        assert!((score.value() - 0.7).abs() < 1e-9);
+    }
+
+    #[test]
+    fn blend_score_extracted_memory_defaults_to_half_when_no_confidence() {
+        let entry = MemoryEntry::new("".to_string(), HashMap::new());
+        let score = blend_score(1.0, &entry).unwrap();
+        assert!((score.value() - 0.5).abs() < 1e-9);
     }
 
     #[test]
     fn blend_score_zero_similarity_yields_zero() {
-        for tier in [
-            MemoryTier::Candidate,
-            MemoryTier::Stable,
-            MemoryTier::Core,
-            MemoryTier::Ephemeral,
+        for entry in [
+            fact_entry(),
+            extracted_memory_with_review(9.0, 1.0),
+            extracted_memory_with_confidence(0.8),
         ] {
-            let score = blend_score(0.0, tier).unwrap();
-            assert_eq!(score.value(), 0.0, "expected 0.0 for tier {tier:?}");
+            let score = blend_score(0.0, &entry).unwrap();
+            assert_eq!(
+                score.value(),
+                0.0,
+                "expected 0.0 for entry kind {:?}",
+                entry.kind
+            );
         }
     }
 
     #[test]
-    fn blend_score_partial_similarity_is_scaled() {
-        // Stable weight 0.9 * similarity 0.5 = 0.45
-        let score = blend_score(0.5, MemoryTier::Stable).unwrap();
-        assert!((score.value() - 0.45).abs() < 1e-9);
+    fn blend_score_scales_similarity_by_confidence() {
+        // alpha=8, beta=2 → confidence = 0.8; similarity = 0.5 → score = 0.4
+        let entry = extracted_memory_with_review(8.0, 2.0);
+        let score = blend_score(0.5, &entry).unwrap();
+        assert!((score.value() - 0.4).abs() < 1e-9);
+    }
+
+    #[test]
+    fn effective_confidence_fact_is_always_one() {
+        assert!((effective_confidence(&fact_entry()) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn effective_confidence_extracted_prefers_bayesian_over_stored() {
+        let mut entry = extracted_memory_with_review(9.0, 1.0);
+        entry.confidence = Some(0.2); // stored confidence should be ignored when counters exist
+        assert!((effective_confidence(&entry) - 0.9).abs() < 1e-9);
     }
 
     #[test]

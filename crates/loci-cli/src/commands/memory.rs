@@ -20,9 +20,9 @@ pub enum MemoryCommand {
         /// Metadata as key=value pairs (repeatable).
         #[arg(long = "meta", value_parser = parse_key_value)]
         metadata: Vec<(String, String)>,
-        /// Optional tier (candidate|stable|core).
+        /// Optional kind (fact|extracted-memory).
         #[arg(long)]
-        tier: Option<MemoryTier>,
+        kind: Option<MemoryKind>,
     },
     /// Query memory entries by semantic similarity.
     #[command(name = "query")]
@@ -45,19 +45,11 @@ pub enum MemoryCommand {
         /// Memory entry ID.
         id: Uuid,
     },
-    /// Update an existing memory entry by ID.
-    #[command(name = "update")]
-    Update {
+    /// Promote a memory entry to Fact (confidence 1.0, no expiry).
+    #[command(name = "promote")]
+    Promote {
         /// Memory entry ID.
         id: Uuid,
-        /// New content (optional).
-        content: Option<String>,
-        /// New metadata as key=value pairs (repeatable).
-        #[arg(long = "meta", value_parser = parse_key_value)]
-        metadata: Vec<(String, String)>,
-        /// Optional tier override (candidate|stable|core).
-        #[arg(long)]
-        tier: Option<MemoryTier>,
     },
     /// Delete a memory entry by ID.
     #[command(name = "delete")]
@@ -109,15 +101,11 @@ pub enum MemoryCommand {
     },
 }
 
-/// A semantic memory tier.
+/// The kind of a memory entry.
 #[derive(clap::ValueEnum, PartialEq, Eq, Clone, Debug)]
-pub enum MemoryTier {
-    /// Request-scoped only, not persisted.
-    Ephemeral,
-    /// New persisted memory with shorter TTL and lower retrieval priority.
-    Candidate,
-    /// Promoted memory with longer TTL and higher retrieval priority.
-    Stable,
-    /// Manually curated long-term memory that does not expire.
-    Core,
+pub enum MemoryKind {
+    /// Confidence 1.0, no decay, manual removal only.
+    Fact,
+    /// Bayesian confidence in (0.0, 1.0), subject to decay/discard/promotion.
+    ExtractedMemory,
 }

@@ -15,7 +15,7 @@ use loci_core::testing::AddEntriesBehavior;
 use pretty_assertions::assert_eq;
 use uuid::Uuid;
 
-use loci_core::memory::{MemoryQueryMode, MemoryTier};
+use loci_core::memory::{MemoryKind, MemoryQueryMode};
 use loci_core::model_provider::text_generation::{TextGenerationResponse, TokenUsage};
 use loci_server::loci::generate::v1::{GenerateServiceGenerateRequest, MemoryMode, SystemMode};
 
@@ -29,7 +29,7 @@ async fn test_generate_streams_chunks_and_uses_configured_defaults() {
     let memory = make_result(
         Uuid::new_v4(),
         "Use concise explanations",
-        MemoryTier::Stable,
+        MemoryKind::ExtractedMemory,
         0.84,
     );
     let store = Arc::new(
@@ -124,7 +124,7 @@ async fn test_generate_streams_chunks_and_uses_configured_defaults() {
 
 #[tokio::test]
 async fn test_generate_respects_memory_and_system_modes() {
-    let memory = make_result(Uuid::new_v4(), "unused memory", MemoryTier::Core, 0.77);
+    let memory = make_result(Uuid::new_v4(), "unused memory", MemoryKind::Fact, 0.77);
     let store = Arc::new(
         MockStore::new()
             .with_add_entries_behavior(AddEntriesBehavior::Ok(vec![memory.clone()]))
@@ -175,7 +175,7 @@ async fn test_generate_respects_memory_and_system_modes() {
 
 #[tokio::test]
 async fn test_generate_rejects_invalid_min_score_before_calling_dependencies() {
-    let result = make_result(Uuid::new_v4(), "unused", MemoryTier::Candidate, 0.42);
+    let result = make_result(Uuid::new_v4(), "unused", MemoryKind::ExtractedMemory, 0.42);
     let store = Arc::new(
         MockStore::new()
             .with_add_entries_behavior(AddEntriesBehavior::Ok(vec![result.clone()]))
@@ -217,7 +217,7 @@ async fn test_generate_rejects_invalid_min_score_before_calling_dependencies() {
 
 #[tokio::test]
 async fn test_generate_returns_internal_error_when_default_model_is_missing() {
-    let result = make_result(Uuid::new_v4(), "unused", MemoryTier::Candidate, 0.42);
+    let result = make_result(Uuid::new_v4(), "unused", MemoryKind::ExtractedMemory, 0.42);
     let store = Arc::new(
         MockStore::new()
             .with_add_entries_behavior(AddEntriesBehavior::Ok(vec![result.clone()]))

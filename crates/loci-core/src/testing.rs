@@ -17,7 +17,7 @@ use uuid::Uuid;
 use crate::classification::{ClassificationError, ClassificationModelProvider, HitClass};
 use crate::embedding::{Embedding, TextEmbedder};
 use crate::error::{EmbeddingError, MemoryStoreError};
-use crate::memory::{MemoryEntry, MemoryInput, MemoryQuery, MemoryQueryResult, MemoryTier, Score};
+use crate::memory::{MemoryEntry, MemoryInput, MemoryKind, MemoryQuery, MemoryQueryResult, Score};
 use crate::model_provider::{
     common::ModelProviderResult,
     text_generation::{TextGenerationModelProvider, TextGenerationRequest, TextGenerationResponse},
@@ -77,8 +77,8 @@ pub struct MockStoreState {
     pub delete_id: Option<Uuid>,
     pub update_id: Option<Uuid>,
     pub update_input: Option<MemoryInput>,
-    pub set_tier_id: Option<Uuid>,
-    pub set_tier_tier: Option<MemoryTier>,
+    pub set_kind_id: Option<Uuid>,
+    pub set_kind_kind: Option<MemoryKind>,
     pub query: Option<MemoryQuery>,
     pub query_calls: usize,
 }
@@ -107,7 +107,7 @@ pub struct MockStore {
     get_behavior: EntryBehavior,
     query_behavior: QueryBehavior,
     update_behavior: EntryBehavior,
-    set_tier_behavior: EntryBehavior,
+    set_kind_behavior: EntryBehavior,
     delete_behavior: UnitBehavior,
     prune_behavior: UnitBehavior,
 }
@@ -137,7 +137,7 @@ impl MockStore {
             get_behavior: EntryBehavior::Err(MockStoreErrorKind::NotFound(Uuid::nil())),
             query_behavior: QueryBehavior::Ok(vec![]),
             update_behavior: EntryBehavior::Err(MockStoreErrorKind::NotFound(Uuid::nil())),
-            set_tier_behavior: EntryBehavior::Err(MockStoreErrorKind::NotFound(Uuid::nil())),
+            set_kind_behavior: EntryBehavior::Err(MockStoreErrorKind::NotFound(Uuid::nil())),
             delete_behavior: UnitBehavior::Ok,
             prune_behavior: UnitBehavior::Ok,
         }
@@ -177,9 +177,9 @@ impl MockStore {
         self
     }
 
-    /// Configures `set_entry_tier` to return the given result.
-    pub fn with_set_tier(mut self, result: MemoryQueryResult) -> Self {
-        self.set_tier_behavior = EntryBehavior::Ok(result);
+    /// Configures `set_entry_kind` to return the given result.
+    pub fn with_set_kind(mut self, result: MemoryQueryResult) -> Self {
+        self.set_kind_behavior = EntryBehavior::Ok(result);
         self
     }
 
@@ -209,9 +209,9 @@ impl MockStore {
         self
     }
 
-    /// Configures the behavior of `set_entry_tier`.
-    pub fn with_set_tier_behavior(mut self, behavior: EntryBehavior) -> Self {
-        self.set_tier_behavior = behavior;
+    /// Configures the behavior of `set_entry_kind`.
+    pub fn with_set_kind_behavior(mut self, behavior: EntryBehavior) -> Self {
+        self.set_kind_behavior = behavior;
         self
     }
 
@@ -300,17 +300,17 @@ impl MemoryStore for MockStore {
         }
     }
 
-    async fn set_entry_tier(
+    async fn set_entry_kind(
         &self,
         id: Uuid,
-        tier: MemoryTier,
+        kind: MemoryKind,
     ) -> Result<MemoryQueryResult, MemoryStoreError> {
         let mut state = self.state.lock().expect("mock store mutex poisoned");
-        state.set_tier_id = Some(id);
-        state.set_tier_tier = Some(tier);
+        state.set_kind_id = Some(id);
+        state.set_kind_kind = Some(kind);
         drop(state);
 
-        let behavior = self.set_tier_behavior.clone();
+        let behavior = self.set_kind_behavior.clone();
         match behavior {
             EntryBehavior::Ok(result) => Ok(result),
             EntryBehavior::Err(error) => Err(error.into_memory_store_error()),
@@ -484,16 +484,15 @@ impl TextEmbedder for MockTextEmbedder {
 
 /// Builds a [`MemoryQueryResult`] with sensible defaults for common test
 /// scenarios.
-pub fn make_result(id: Uuid, content: &str, tier: MemoryTier, score: f64) -> MemoryQueryResult {
+pub fn make_result(id: Uuid, content: &str, kind: MemoryKind, score: f64) -> MemoryQueryResult {
     let now = Utc::now();
     MemoryQueryResult {
         memory_entry: MemoryEntry {
             id,
             content: content.to_string(),
             metadata: HashMap::from([("source".to_string(), "test".to_string())]),
-            tier,
+            kind,
             seen_count: 2,
-            sources: vec!["user".to_string()],
             first_seen: now,
             last_seen: now,
             expires_at: None,

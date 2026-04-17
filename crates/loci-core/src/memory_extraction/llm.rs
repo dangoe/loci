@@ -10,7 +10,7 @@ use serde::Deserialize as _;
 
 use crate::{
     error::MemoryExtractionError,
-    memory::{MemoryInput, MemoryTier},
+    memory::{MemoryInput, MemoryKind, clamp_confidence},
     model_provider::text_generation::{
         TextGenerationModelProvider, TextGenerationRequest, ThinkingMode,
     },
@@ -109,7 +109,11 @@ pub(super) fn parse_extraction_response(
         .into_iter()
         .filter_map(|v| {
             let content = v.get("content")?.as_str()?.to_owned();
-            let confidence = v.get("confidence").and_then(|c| c.as_f64()).unwrap_or(1.0);
+            let confidence = v
+                .get("confidence")
+                .and_then(|c| c.as_f64())
+                .map(clamp_confidence)
+                .unwrap_or(0.5);
             Some((content, confidence))
         })
         .collect();
@@ -128,7 +132,7 @@ pub(super) fn parse_extraction_response(
         .map(|(content, confidence)| MemoryInput {
             content,
             metadata: params.metadata.clone(),
-            tier: Some(MemoryTier::Stable),
+            kind: Some(MemoryKind::ExtractedMemory),
             confidence: Some(confidence),
             review: Default::default(),
         })
@@ -199,7 +203,7 @@ mod tests {
 
     use pretty_assertions::assert_eq;
 
-    use crate::memory::MemoryTier;
+    use crate::memory::MemoryKind;
 
     use super::{LlmMemoryExtractionStrategyParams, parse_extraction_response};
 
@@ -239,10 +243,10 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_hardcodes_stable_tier() {
+    fn test_parse_uses_extracted_memory_kind() {
         let response = r#"[{"content": "a fact", "confidence": 0.9}]"#;
         let result = parse_extraction_response(response, default_params()).unwrap();
-        assert_eq!(result[0].tier, Some(MemoryTier::Stable));
+        assert_eq!(result[0].kind, Some(MemoryKind::ExtractedMemory));
     }
 
     #[test]
@@ -253,10 +257,18 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_missing_confidence_defaults_to_1_0() {
+    fn test_parse_missing_confidence_defaults_to_0_5() {
         let response = r#"[{"content": "a fact"}]"#;
         let result = parse_extraction_response(response, default_params()).unwrap();
-        assert_eq!(result[0].confidence, Some(1.0));
+        assert_eq!(result[0].confidence, Some(0.5));
+    }
+
+    #[test]
+    fn test_parse_clamps_confidence_at_boundary() {
+        let response = r#"[{"content": "fact at one", "confidence": 1.0}, {"content": "fact at zero", "confidence": 0.0}]"#;
+        let result = parse_extraction_response(response, default_params()).unwrap();
+        assert!(result[0].confidence.unwrap() < 1.0);
+        assert!(result[1].confidence.unwrap() > 0.0);
     }
 
     #[test]

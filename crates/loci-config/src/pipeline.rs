@@ -30,17 +30,26 @@ pub struct PipelineExtractionConfig {
     #[serde(default = "default_inverted_search_config")]
     pub inverted_search: PipelineExtractionSearchResultsConfig,
 
-    /// Alpha increment for Duplicate classification. Default: 3.0
-    #[serde(default = "default_duplicate_alpha_weight")]
-    pub duplicate_alpha_weight: f64,
+    /// Seed weight `W` used to initialise Bayesian counters from LLM confidence.
+    /// `α = confidence × W`, `β = (1 − confidence) × W`. Default: 10.0
+    #[serde(default = "default_bayesian_seed_weight")]
+    pub bayesian_seed_weight: f64,
 
-    /// Alpha increment for Complementary classification. Default: 1.0
-    #[serde(default = "default_complementary_alpha_weight")]
-    pub complementary_alpha_weight: f64,
+    /// Maximum increment applied to a counter per evidence event. Default: 5.0
+    #[serde(default = "default_max_counter_increment")]
+    pub max_counter_increment: f64,
 
-    /// Beta increment for Contradiction classification. Default: 3.0
-    #[serde(default = "default_contradiction_beta_weight")]
-    pub contradiction_beta_weight: f64,
+    /// Upper bound for each Bayesian counter (α and β). Default: 100.0
+    #[serde(default = "default_max_counter")]
+    pub max_counter: f64,
+
+    /// Score at or below which an entry is automatically discarded. Default: 0.1
+    #[serde(default = "default_auto_discard_threshold")]
+    pub auto_discard_threshold: f64,
+
+    /// Score at or above which an entry is automatically promoted to Fact. Default: 0.9
+    #[serde(default = "default_auto_promotion_threshold")]
+    pub auto_promotion_threshold: f64,
 
     /// Per-day exponential decay rate for alpha. Default: 0.99
     #[serde(default = "default_decay_rate")]
@@ -60,14 +69,20 @@ fn default_inverted_search_config() -> PipelineExtractionSearchResultsConfig {
         min_score: 0.60,
     }
 }
-fn default_duplicate_alpha_weight() -> f64 {
-    3.0
+fn default_bayesian_seed_weight() -> f64 {
+    10.0
 }
-fn default_complementary_alpha_weight() -> f64 {
-    1.0
+fn default_max_counter_increment() -> f64 {
+    5.0
 }
-fn default_contradiction_beta_weight() -> f64 {
-    3.0
+fn default_max_counter() -> f64 {
+    100.0
+}
+fn default_auto_discard_threshold() -> f64 {
+    0.1
+}
+fn default_auto_promotion_threshold() -> f64 {
+    0.9
 }
 fn default_decay_rate() -> f64 {
     0.99
@@ -134,9 +149,11 @@ classification_model = "qwen2.5:0.5b"
         assert_eq!(pipeline.direct_search.min_score, 0.70);
         assert_eq!(pipeline.inverted_search.max_results, 3);
         assert_eq!(pipeline.inverted_search.min_score, 0.60);
-        assert_eq!(pipeline.duplicate_alpha_weight, 3.0);
-        assert_eq!(pipeline.complementary_alpha_weight, 1.0);
-        assert_eq!(pipeline.contradiction_beta_weight, 3.0);
+        assert_eq!(pipeline.bayesian_seed_weight, 10.0);
+        assert_eq!(pipeline.max_counter_increment, 5.0);
+        assert_eq!(pipeline.max_counter, 100.0);
+        assert_eq!(pipeline.auto_discard_threshold, 0.1);
+        assert_eq!(pipeline.auto_promotion_threshold, 0.9);
         assert_eq!(pipeline.decay_rate, 0.99);
     }
 
@@ -148,11 +165,13 @@ classification_model = "qwen2.5:0.5b"
 model = "default"
 
 [memory.extraction.pipeline]
-classification_model       = "qwen2.5:1.5b"
-duplicate_alpha_weight     = 4.0
-complementary_alpha_weight = 2.0
-contradiction_beta_weight  = 5.0
-decay_rate                 = 0.95
+classification_model      = "qwen2.5:1.5b"
+bayesian_seed_weight      = 20.0
+max_counter_increment     = 3.0
+max_counter               = 50.0
+auto_discard_threshold    = 0.05
+auto_promotion_threshold  = 0.95
+decay_rate                = 0.95
 
 [memory.extraction.pipeline.direct_search]
 max_results = 10
@@ -169,9 +188,11 @@ min_score   = 0.55
         assert_eq!(pipeline.direct_search.min_score, 0.80);
         assert_eq!(pipeline.inverted_search.max_results, 6);
         assert_eq!(pipeline.inverted_search.min_score, 0.55);
-        assert_eq!(pipeline.duplicate_alpha_weight, 4.0);
-        assert_eq!(pipeline.complementary_alpha_weight, 2.0);
-        assert_eq!(pipeline.contradiction_beta_weight, 5.0);
+        assert_eq!(pipeline.bayesian_seed_weight, 20.0);
+        assert_eq!(pipeline.max_counter_increment, 3.0);
+        assert_eq!(pipeline.max_counter, 50.0);
+        assert_eq!(pipeline.auto_discard_threshold, 0.05);
+        assert_eq!(pipeline.auto_promotion_threshold, 0.95);
         assert_eq!(pipeline.decay_rate, 0.95);
     }
 
@@ -192,9 +213,11 @@ classification_model = "x"
         assert_eq!(pipeline.direct_search.min_score, 0.70);
         assert_eq!(pipeline.inverted_search.max_results, 3);
         assert_eq!(pipeline.inverted_search.min_score, 0.60);
-        assert_eq!(pipeline.duplicate_alpha_weight, 3.0);
-        assert_eq!(pipeline.complementary_alpha_weight, 1.0);
-        assert_eq!(pipeline.contradiction_beta_weight, 3.0);
+        assert_eq!(pipeline.bayesian_seed_weight, 10.0);
+        assert_eq!(pipeline.max_counter_increment, 5.0);
+        assert_eq!(pipeline.max_counter, 100.0);
+        assert_eq!(pipeline.auto_discard_threshold, 0.1);
+        assert_eq!(pipeline.auto_promotion_threshold, 0.9);
         assert_eq!(pipeline.decay_rate, 0.99);
 
         // Smoke-check the file round-trip produces a valid config overall.

@@ -42,7 +42,6 @@ pub async fn start_qdrant_store(
     let config = QdrantConfig {
         collection_name: "memory_entries".to_string(),
         similarity_threshold,
-        promotion_source_threshold: 2,
     };
 
     let store =

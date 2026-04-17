@@ -16,12 +16,12 @@ use pretty_assertions::assert_eq;
 use rstest::rstest;
 use uuid::Uuid;
 
-use loci_core::memory::{MemoryQueryMode, MemoryTier};
+use loci_core::memory::{MemoryKind, MemoryQueryMode};
 use loci_core::model_provider::text_generation::TextGenerationResponse;
 use loci_server::loci::memory::v1::{
-    MemoryServiceAddEntryRequest, MemoryServiceDeleteEntryRequest, MemoryServiceGetEntryRequest,
-    MemoryServicePruneExpiredRequest, MemoryServiceQueryRequest, MemoryServiceSetEntryTierRequest,
-    MemoryServiceUpdateEntryRequest, MemoryTier as ProtoMemoryTier,
+    MemoryKind as ProtoMemoryKind, MemoryServiceAddEntryRequest, MemoryServiceDeleteEntryRequest,
+    MemoryServiceGetEntryRequest, MemoryServicePruneExpiredRequest, MemoryServiceQueryRequest,
+    MemoryServiceSetEntryKindRequest, MemoryServiceUpdateEntryRequest,
 };
 
 use common::{
@@ -42,7 +42,7 @@ fn default_provider() -> Arc<MockTextGenerationModelProvider> {
 #[tokio::test]
 async fn test_memory_add_entry_uses_real_server_and_preserves_request_mapping() {
     let id = Uuid::new_v4();
-    let stored = make_result(id, "stored content", MemoryTier::Stable, 0.73);
+    let stored = make_result(id, "stored content", MemoryKind::ExtractedMemory, 0.73);
     let store = Arc::new(MockStore::new().with_add(stored.clone()).with_get(stored));
     let server =
         TestServer::start_with_components(mock_config(), Arc::clone(&store), default_provider())
@@ -53,7 +53,7 @@ async fn test_memory_add_entry_uses_real_server_and_preserves_request_mapping() 
         .add_entry(MemoryServiceAddEntryRequest {
             content: "remember this".to_string(),
             metadata: HashMap::from([("kind".to_string(), "fact".to_string())]),
-            tier: EnumValue::from(ProtoMemoryTier::MEMORY_TIER_STABLE),
+            kind: EnumValue::from(ProtoMemoryKind::MEMORY_KIND_EXTRACTED_MEMORY),
             ..Default::default()
         })
         .await
@@ -67,8 +67,8 @@ async fn test_memory_add_entry_uses_real_server_and_preserves_request_mapping() 
     assert_eq!(entry.id, id.to_string());
     assert_eq!(entry.content, "stored content");
     assert_eq!(
-        entry.tier.as_known(),
-        Some(ProtoMemoryTier::MEMORY_TIER_STABLE)
+        entry.kind.as_known(),
+        Some(ProtoMemoryKind::MEMORY_KIND_EXTRACTED_MEMORY)
     );
     assert_eq!(entry.score, 0.73);
 
@@ -78,12 +78,12 @@ async fn test_memory_add_entry_uses_real_server_and_preserves_request_mapping() 
         .expect("store should capture add_entry input");
     assert_eq!(input.content, "remember this");
     assert_eq!(input.metadata.get("kind"), Some(&"fact".to_string()));
-    assert_eq!(input.tier, Some(MemoryTier::Stable));
+    assert_eq!(input.kind, Some(MemoryKind::ExtractedMemory));
 }
 
 #[tokio::test]
 async fn test_memory_query_uses_lookup_mode_and_preserves_filters() {
-    let result = make_result(Uuid::new_v4(), "User name is Bob", MemoryTier::Core, 0.91);
+    let result = make_result(Uuid::new_v4(), "User name is Bob", MemoryKind::Fact, 0.91);
     let store = Arc::new(
         MockStore::new()
             .with_add(result.clone())
@@ -109,8 +109,8 @@ async fn test_memory_query_uses_lookup_mode_and_preserves_filters() {
     assert_eq!(response.view().entries.len(), 1);
     assert_eq!(response.view().entries[0].content, "User name is Bob");
     assert_eq!(
-        response.view().entries[0].tier.as_known(),
-        Some(ProtoMemoryTier::MEMORY_TIER_CORE)
+        response.view().entries[0].kind.as_known(),
+        Some(ProtoMemoryKind::MEMORY_KIND_FACT)
     );
 
     let captured = store.snapshot();
@@ -157,10 +157,10 @@ async fn test_memory_get_entry_translates_not_found_errors() {
 #[case("get")]
 #[case("delete")]
 #[case("update")]
-#[case("set_tier")]
+#[case("set_kind")]
 #[tokio::test]
 async fn test_memory_rpcs_reject_invalid_ids(#[case] method: &str) {
-    let result = make_result(Uuid::new_v4(), "unused", MemoryTier::Candidate, 0.12);
+    let result = make_result(Uuid::new_v4(), "unused", MemoryKind::ExtractedMemory, 0.12);
     let store = Arc::new(MockStore::new().with_add(result.clone()).with_get(result));
     let server =
         TestServer::start_with_components(mock_config(), Arc::clone(&store), default_provider())
@@ -190,14 +190,14 @@ async fn test_memory_rpcs_reject_invalid_ids(#[case] method: &str) {
             })
             .await
             .expect_err("update_entry should reject invalid ids"),
-        "set_tier" => client
-            .set_entry_tier(MemoryServiceSetEntryTierRequest {
+        "set_kind" => client
+            .set_entry_kind(MemoryServiceSetEntryKindRequest {
                 id: "not-a-uuid".to_string(),
-                tier: EnumValue::from(ProtoMemoryTier::MEMORY_TIER_CORE),
+                kind: EnumValue::from(ProtoMemoryKind::MEMORY_KIND_FACT),
                 ..Default::default()
             })
             .await
-            .expect_err("set_entry_tier should reject invalid ids"),
+            .expect_err("set_entry_kind should reject invalid ids"),
         _ => unreachable!(),
     };
 
@@ -214,13 +214,13 @@ async fn test_memory_rpcs_reject_invalid_ids(#[case] method: &str) {
     assert_eq!(captured.get_id, None);
     assert_eq!(captured.delete_id, None);
     assert_eq!(captured.update_id, None);
-    assert_eq!(captured.set_tier_id, None);
+    assert_eq!(captured.set_kind_id, None);
 }
 
 #[tokio::test]
 async fn test_memory_update_entry_preserves_request_mapping() {
     let id = Uuid::new_v4();
-    let updated = make_result(id, "updated content", MemoryTier::Stable, 0.85);
+    let updated = make_result(id, "updated content", MemoryKind::ExtractedMemory, 0.85);
     let store = Arc::new(MockStore::new().with_update(updated));
     let server =
         TestServer::start_with_components(mock_config(), Arc::clone(&store), default_provider())
@@ -232,7 +232,7 @@ async fn test_memory_update_entry_preserves_request_mapping() {
             id: id.to_string(),
             content: "new content".to_string(),
             metadata: HashMap::from([("source".to_string(), "test".to_string())]),
-            tier: EnumValue::from(ProtoMemoryTier::MEMORY_TIER_STABLE),
+            kind: EnumValue::from(ProtoMemoryKind::MEMORY_KIND_EXTRACTED_MEMORY),
             ..Default::default()
         })
         .await
@@ -246,8 +246,8 @@ async fn test_memory_update_entry_preserves_request_mapping() {
     assert_eq!(entry.id, id.to_string());
     assert_eq!(entry.content, "updated content");
     assert_eq!(
-        entry.tier.as_known(),
-        Some(ProtoMemoryTier::MEMORY_TIER_STABLE)
+        entry.kind.as_known(),
+        Some(ProtoMemoryKind::MEMORY_KIND_EXTRACTED_MEMORY)
     );
 
     let captured = store.snapshot();
@@ -257,27 +257,27 @@ async fn test_memory_update_entry_preserves_request_mapping() {
         .expect("store should capture update_entry input");
     assert_eq!(input.content, "new content");
     assert_eq!(input.metadata.get("source"), Some(&"test".to_string()));
-    assert_eq!(input.tier, Some(MemoryTier::Stable));
+    assert_eq!(input.kind, Some(MemoryKind::ExtractedMemory));
 }
 
 #[tokio::test]
-async fn test_memory_set_entry_tier_returns_updated_entry() {
+async fn test_memory_set_entry_kind_returns_updated_entry() {
     let id = Uuid::new_v4();
-    let result = make_result(id, "promoted content", MemoryTier::Core, 0.95);
-    let store = Arc::new(MockStore::new().with_set_tier(result));
+    let result = make_result(id, "promoted content", MemoryKind::Fact, 0.95);
+    let store = Arc::new(MockStore::new().with_set_kind(result));
     let server =
         TestServer::start_with_components(mock_config(), Arc::clone(&store), default_provider())
             .await;
 
     let response = server
         .memory_client()
-        .set_entry_tier(MemoryServiceSetEntryTierRequest {
+        .set_entry_kind(MemoryServiceSetEntryKindRequest {
             id: id.to_string(),
-            tier: EnumValue::from(ProtoMemoryTier::MEMORY_TIER_CORE),
+            kind: EnumValue::from(ProtoMemoryKind::MEMORY_KIND_FACT),
             ..Default::default()
         })
         .await
-        .expect("set_entry_tier should succeed");
+        .expect("set_entry_kind should succeed");
 
     let entry = response
         .view()
@@ -286,13 +286,13 @@ async fn test_memory_set_entry_tier_returns_updated_entry() {
         .expect("response should contain entry");
     assert_eq!(entry.id, id.to_string());
     assert_eq!(
-        entry.tier.as_known(),
-        Some(ProtoMemoryTier::MEMORY_TIER_CORE)
+        entry.kind.as_known(),
+        Some(ProtoMemoryKind::MEMORY_KIND_FACT)
     );
 
     let captured = store.snapshot();
-    assert_eq!(captured.set_tier_id, Some(id));
-    assert_eq!(captured.set_tier_tier, Some(MemoryTier::Core));
+    assert_eq!(captured.set_kind_id, Some(id));
+    assert_eq!(captured.set_kind_kind, Some(MemoryKind::Fact));
 }
 
 #[tokio::test]
@@ -399,23 +399,23 @@ async fn test_memory_update_entry_translates_not_found_errors() {
 }
 
 #[tokio::test]
-async fn test_memory_set_entry_tier_translates_not_found_errors() {
+async fn test_memory_set_entry_kind_translates_not_found_errors() {
     let missing_id = Uuid::new_v4();
     let store = Arc::new(
         MockStore::new()
-            .with_set_tier_behavior(EntryBehavior::Err(MockStoreErrorKind::NotFound(missing_id))),
+            .with_set_kind_behavior(EntryBehavior::Err(MockStoreErrorKind::NotFound(missing_id))),
     );
     let server = TestServer::start_with_components(mock_config(), store, default_provider()).await;
 
     let error = server
         .memory_client()
-        .set_entry_tier(MemoryServiceSetEntryTierRequest {
+        .set_entry_kind(MemoryServiceSetEntryKindRequest {
             id: missing_id.to_string(),
-            tier: EnumValue::from(ProtoMemoryTier::MEMORY_TIER_CORE),
+            kind: EnumValue::from(ProtoMemoryKind::MEMORY_KIND_FACT),
             ..Default::default()
         })
         .await
-        .expect_err("set_entry_tier should return not found");
+        .expect_err("set_entry_kind should return not found");
 
     assert_eq!(error.code, ErrorCode::NotFound);
     assert_eq!(

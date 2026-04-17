@@ -102,7 +102,6 @@ pub async fn build_store(
             let qdrant_config = QdrantConfig {
                 collection_name: collection.clone(),
                 similarity_threshold: config.memory.config.similarity_threshold,
-                promotion_source_threshold: config.memory.config.promotion_source_threshold,
             };
 
             info!("Connecting to Qdrant at {url}");

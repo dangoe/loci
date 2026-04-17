@@ -8,10 +8,9 @@ pub fn entry_to_json(e: &loci_core::memory::MemoryQueryResult) -> serde_json::Va
         "id": e.memory_entry.id.to_string(),
         "content": e.memory_entry.content,
         "metadata": e.memory_entry.metadata,
-        "tier": e.memory_entry.tier.as_str(),
+        "kind": e.memory_entry.kind.as_str(),
         "confidence": e.memory_entry.confidence,
         "seen_count": e.memory_entry.seen_count,
-        "sources": e.memory_entry.sources,
         "first_seen": e.memory_entry.first_seen.to_rfc3339(),
         "last_seen": e.memory_entry.last_seen.to_rfc3339(),
         "expires_at": e.memory_entry.expires_at.map(|dt| dt.to_rfc3339()),
@@ -25,7 +24,7 @@ mod tests {
     use std::collections::HashMap;
 
     use loci_core::memory::{
-        MemoryEntry as CoreMemoryEntry, MemoryQueryResult as CoreMemoryQueryResult,
+        MemoryEntry as CoreMemoryEntry, MemoryKind, MemoryQueryResult as CoreMemoryQueryResult,
         Score as CoreScore,
     };
     use serde_json::Value as JsonValue;
@@ -37,10 +36,10 @@ mod tests {
         let mut metadata = HashMap::new();
         metadata.insert("source".to_string(), "unit-test".to_string());
 
-        let entry = CoreMemoryEntry::new_with_tier(
+        let entry = CoreMemoryEntry::new_with_kind(
             "my content".to_string(),
             metadata.clone(),
-            loci_core::memory::MemoryTier::Core,
+            MemoryKind::Fact,
         );
         let mq = CoreMemoryQueryResult {
             memory_entry: entry.clone(),
@@ -52,7 +51,7 @@ mod tests {
         assert_eq!(v["id"].as_str().unwrap(), entry.id.to_string().as_str());
         assert_eq!(v["content"].as_str().unwrap(), "my content");
         assert_eq!(v["metadata"]["source"].as_str().unwrap(), "unit-test");
-        assert_eq!(v["tier"].as_str().unwrap(), "core");
+        assert_eq!(v["kind"].as_str().unwrap(), "fact");
         assert_eq!(v["seen_count"].as_u64().unwrap(), entry.seen_count as u64);
         assert!(v.get("expires_at").unwrap().is_null());
         assert_eq!(v["score"].as_f64().unwrap(), 0.75);
