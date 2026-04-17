@@ -10,8 +10,8 @@ use loci_core::model_provider::{
     embedding::{EmbeddingModelProvider, EmbeddingRequest, EmbeddingResponse},
     error::ModelProviderError,
     text_generation::{
-        TextGenerationModelProvider, TextGenerationRequest, TextGenerationResponse,
-        ThinkingEffortLevel, ThinkingMode, TokenUsage,
+        ResponseFormat, TextGenerationModelProvider, TextGenerationRequest,
+        TextGenerationResponse, ThinkingEffortLevel, ThinkingMode, TokenUsage,
     },
 };
 use log::debug;
@@ -65,9 +65,18 @@ struct ChatCompletionRequest<'a> {
     /// Request usage statistics in the final streaming chunk.
     #[serde(skip_serializing_if = "Option::is_none")]
     stream_options: Option<StreamOptions>,
+    /// Structured-output constraint (`{"type": "json_object"}`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_format: Option<OpenAiResponseFormat>,
     /// Pass-through extra params (e.g. `presence_penalty`, `seed`).
     #[serde(flatten)]
     extra: serde_json::Map<String, Value>,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAiResponseFormat {
+    #[serde(rename = "type")]
+    kind: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -209,6 +218,13 @@ impl OpenAIModelProvider {
             _ => None,
         };
 
+        let response_format = match req.response_format {
+            Some(ResponseFormat::Json) => Some(OpenAiResponseFormat {
+                kind: "json_object",
+            }),
+            None => None,
+        };
+
         ChatCompletionRequest {
             model: &req.model,
             messages,
@@ -226,6 +242,7 @@ impl OpenAIModelProvider {
             } else {
                 None
             },
+            response_format,
             extra,
         }
     }

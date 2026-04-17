@@ -10,6 +10,10 @@ pub fn entry_to_json(e: &loci_core::memory::MemoryQueryResult) -> serde_json::Va
         "metadata": e.memory_entry.metadata,
         "kind": e.memory_entry.kind.as_str(),
         "confidence": e.memory_entry.confidence,
+        "review": {
+            "alpha": e.memory_entry.review.alpha,
+            "beta": e.memory_entry.review.beta,
+        },
         "seen_count": e.memory_entry.seen_count,
         "first_seen": e.memory_entry.first_seen.to_rfc3339(),
         "last_seen": e.memory_entry.last_seen.to_rfc3339(),

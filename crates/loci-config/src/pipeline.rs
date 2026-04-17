@@ -51,6 +51,13 @@ pub struct PipelineExtractionConfig {
     #[serde(default = "default_auto_promotion_threshold")]
     pub auto_promotion_threshold: f64,
 
+    /// Minimum accumulated `α` (evidence weight) required for auto-promotion
+    /// to Fact — even when the Bayesian score clears `auto_promotion_threshold`.
+    /// Prevents a single high-confidence observation from being promoted in
+    /// isolation. Default: 12.0 (seed weight + one strong corroborating observation).
+    #[serde(default = "default_min_alpha_for_promotion")]
+    pub min_alpha_for_promotion: f64,
+
     /// Per-day exponential decay rate for alpha. Default: 0.99
     #[serde(default = "default_decay_rate")]
     pub decay_rate: f64,
@@ -83,6 +90,9 @@ fn default_auto_discard_threshold() -> f64 {
 }
 fn default_auto_promotion_threshold() -> f64 {
     0.9
+}
+fn default_min_alpha_for_promotion() -> f64 {
+    12.0
 }
 fn default_decay_rate() -> f64 {
     0.99
@@ -154,6 +164,7 @@ classification_model = "qwen2.5:0.5b"
         assert_eq!(pipeline.max_counter, 100.0);
         assert_eq!(pipeline.auto_discard_threshold, 0.1);
         assert_eq!(pipeline.auto_promotion_threshold, 0.9);
+        assert_eq!(pipeline.min_alpha_for_promotion, 12.0);
         assert_eq!(pipeline.decay_rate, 0.99);
     }
 
@@ -171,6 +182,7 @@ max_counter_increment     = 3.0
 max_counter               = 50.0
 auto_discard_threshold    = 0.05
 auto_promotion_threshold  = 0.95
+min_alpha_for_promotion   = 25.0
 decay_rate                = 0.95
 
 [memory.extraction.pipeline.direct_search]
@@ -193,6 +205,7 @@ min_score   = 0.55
         assert_eq!(pipeline.max_counter, 50.0);
         assert_eq!(pipeline.auto_discard_threshold, 0.05);
         assert_eq!(pipeline.auto_promotion_threshold, 0.95);
+        assert_eq!(pipeline.min_alpha_for_promotion, 25.0);
         assert_eq!(pipeline.decay_rate, 0.95);
     }
 
@@ -218,6 +231,7 @@ classification_model = "x"
         assert_eq!(pipeline.max_counter, 100.0);
         assert_eq!(pipeline.auto_discard_threshold, 0.1);
         assert_eq!(pipeline.auto_promotion_threshold, 0.9);
+        assert_eq!(pipeline.min_alpha_for_promotion, 12.0);
         assert_eq!(pipeline.decay_rate, 0.99);
 
         // Smoke-check the file round-trip produces a valid config overall.

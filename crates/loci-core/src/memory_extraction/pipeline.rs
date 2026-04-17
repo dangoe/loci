@@ -44,6 +44,12 @@ pub struct PipelineConfig {
     pub auto_discard_threshold: f64,
     /// Score at or above which an entry is automatically promoted to Fact. Default: 0.9.
     pub auto_promotion_threshold: f64,
+    /// Minimum accumulated `α` (evidence weight) required for auto-promotion
+    /// to Fact — even when the Bayesian score clears `auto_promotion_threshold`.
+    /// Prevents a single high-confidence observation from being promoted in
+    /// isolation: a Fact should be corroborated, not just asserted once.
+    /// Default: 12.0 (seed weight 10 + one strong corroborating observation).
+    pub min_alpha_for_promotion: f64,
     /// Per-day exponential decay rate applied to alpha. Default: 0.99.
     pub decay_rate: f64,
 }
@@ -64,6 +70,7 @@ impl Default for PipelineConfig {
             max_counter: 100.0,
             auto_discard_threshold: 0.1,
             auto_promotion_threshold: 0.9,
+            min_alpha_for_promotion: 12.0,
             decay_rate: 0.99,
         }
     }
@@ -188,7 +195,10 @@ where
                 continue;
             }
 
-            let (final_kind, final_confidence) = if score >= self.config.auto_promotion_threshold {
+            let alpha = review_state.alpha.unwrap_or(0.0);
+            let eligible_for_promotion = score >= self.config.auto_promotion_threshold
+                && alpha >= self.config.min_alpha_for_promotion;
+            let (final_kind, final_confidence) = if eligible_for_promotion {
                 (MemoryKind::Fact, 1.0_f64)
             } else {
                 (MemoryKind::ExtractedMemory, score)
@@ -652,6 +662,7 @@ mod tests {
         assert!((config.max_counter - 100.0).abs() < f64::EPSILON);
         assert!((config.auto_discard_threshold - 0.1).abs() < f64::EPSILON);
         assert!((config.auto_promotion_threshold - 0.9).abs() < f64::EPSILON);
+        assert!((config.min_alpha_for_promotion - 12.0).abs() < f64::EPSILON);
         assert!((config.decay_rate - 0.99).abs() < f64::EPSILON);
     }
 

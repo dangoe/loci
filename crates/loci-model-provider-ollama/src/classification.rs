@@ -80,9 +80,12 @@ impl<P: TextGenerationModelProvider> ClassificationModelProvider
                 )
             })?;
 
-            parse_hit_class(class_str).ok_or_else(|| {
-                ClassificationError::Parse(format!("unknown hit class value: {class_str:?}"))
-            })
+            Ok(parse_hit_class(class_str).unwrap_or_else(|| {
+                log::warn!(
+                    "classifier returned unknown hit class {class_str:?}; defaulting to Unrelated"
+                );
+                HitClass::Unrelated
+            }))
         }
     }
 }
@@ -153,18 +156,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_unknown_class_returns_parse_error() {
+    async fn test_unknown_class_falls_back_to_unrelated() {
+        // An unrecognised class label should soft-fail to Unrelated rather
+        // than abort the whole extraction pipeline. Parse errors are reserved
+        // for responses we cannot read at all.
         let p = provider_with(r#"{"class": "blorp"}"#);
         let result = p.classify_hit("a", "b").await;
-        match result {
-            Err(ClassificationError::Parse(msg)) => {
-                assert!(
-                    msg.contains("blorp"),
-                    "expected message to contain 'blorp', got: {msg}"
-                );
-            }
-            other => panic!("expected Parse error, got: {other:?}"),
-        }
+        assert_eq!(result.unwrap(), HitClass::Unrelated);
     }
 
     #[tokio::test]

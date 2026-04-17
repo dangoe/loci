@@ -8,8 +8,8 @@ use loci_core::model_provider::{
     embedding::{EmbeddingModelProvider, EmbeddingRequest, EmbeddingResponse},
     error::ModelProviderError,
     text_generation::{
-        TextGenerationModelProvider, TextGenerationRequest, TextGenerationResponse,
-        ThinkingEffortLevel, ThinkingMode, TokenUsage,
+        ResponseFormat, TextGenerationModelProvider, TextGenerationRequest,
+        TextGenerationResponse, ThinkingEffortLevel, ThinkingMode, TokenUsage,
     },
 };
 use log::debug;
@@ -50,6 +50,10 @@ struct OllamaTextGenerationRequest<'a> {
     system: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     options: Option<Value>,
+    /// Structured-output constraint. When set to `"json"`, Ollama rejects
+    /// non-JSON output server-side rather than letting the model drift into prose.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    format: Option<&'static str>,
     /// keep_alive accepts a duration string like "5m" or an integer (seconds).
     #[serde(skip_serializing_if = "Option::is_none")]
     keep_alive: Option<String>,
@@ -188,6 +192,11 @@ impl OllamaModelProvider {
             }
         });
 
+        let format = match req.response_format {
+            Some(ResponseFormat::Json) => Some("json"),
+            None => None,
+        };
+
         OllamaTextGenerationRequest {
             model: &req.model,
             prompt: &req.prompt,
@@ -195,6 +204,7 @@ impl OllamaModelProvider {
             think,
             system: req.system.as_deref(),
             options,
+            format,
             keep_alive,
         }
     }

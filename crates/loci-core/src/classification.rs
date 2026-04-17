@@ -50,12 +50,23 @@ pub trait ClassificationModelProvider: Send + Sync {
 }
 
 /// Maps a string label to a [`HitClass`] variant (case-insensitive, trimmed).
+///
+/// Accepts the four canonical labels plus a small set of synonyms that local
+/// models commonly emit even when asked for the canonical set. Anything else
+/// returns `None` — callers should decide whether to treat that as a hard
+/// failure or a soft fallback.
 pub fn parse_hit_class(s: &str) -> Option<HitClass> {
     match s.trim().to_ascii_lowercase().as_str() {
-        "duplicate" => Some(HitClass::Duplicate),
-        "complementary" => Some(HitClass::Complementary),
-        "contradiction" => Some(HitClass::Contradiction),
-        "unrelated" => Some(HitClass::Unrelated),
+        "duplicate" | "same" | "identical" | "equivalent" => Some(HitClass::Duplicate),
+        "complementary" | "complement" | "related" | "supplementary" => {
+            Some(HitClass::Complementary)
+        }
+        "contradiction" | "contradictory" | "contradicts" | "conflict" | "conflicting" => {
+            Some(HitClass::Contradiction)
+        }
+        "unrelated" | "none" | "irrelevant" | "no_relation" | "no relation" => {
+            Some(HitClass::Unrelated)
+        }
         _ => None,
     }
 }
@@ -99,6 +110,16 @@ mod tests {
         assert_eq!(parse_hit_class("unknown"), None);
         assert_eq!(parse_hit_class(""), None);
         assert_eq!(parse_hit_class("partial"), None);
+    }
+
+    #[test]
+    fn test_hit_class_parse_accepts_common_synonyms() {
+        assert_eq!(parse_hit_class("same"), Some(HitClass::Duplicate));
+        assert_eq!(parse_hit_class("related"), Some(HitClass::Complementary));
+        assert_eq!(parse_hit_class("contradicts"), Some(HitClass::Contradiction));
+        assert_eq!(parse_hit_class("conflict"), Some(HitClass::Contradiction));
+        assert_eq!(parse_hit_class("none"), Some(HitClass::Unrelated));
+        assert_eq!(parse_hit_class("no relation"), Some(HitClass::Unrelated));
     }
 
     #[test]

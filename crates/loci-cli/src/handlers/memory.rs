@@ -232,9 +232,14 @@ where
                 let input = read_extraction_input(text, &files, std::io::stdin())?;
 
                 let params = LlmMemoryExtractionStrategyParams {
-                    guidelines,
+                    guidelines: match (guidelines, &self.extraction_config.guidelines) {
+                        (Some(cli), Some(cfg)) => Some(format!("{cfg}\n\n{cli}")),
+                        (Some(cli), None) => Some(cli),
+                        (None, Some(cfg)) => Some(cfg.clone()),
+                        (None, None) => None,
+                    },
                     metadata: pairs_to_map(metadata),
-                    max_entries,
+                    max_entries: max_entries.or(self.extraction_config.max_entries),
                     min_confidence: min_confidence.or(self.extraction_config.min_confidence),
                     thinking_mode: self
                         .extraction_config
@@ -334,6 +339,7 @@ fn config_pipeline_config_to_core(cfg: &loci_config::PipelineExtractionConfig) -
         max_counter: cfg.max_counter,
         auto_discard_threshold: cfg.auto_discard_threshold,
         auto_promotion_threshold: cfg.auto_promotion_threshold,
+        min_alpha_for_promotion: cfg.min_alpha_for_promotion,
         decay_rate: cfg.decay_rate,
     }
 }

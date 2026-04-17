@@ -348,7 +348,10 @@ impl MemoryStore for MockStore {
 /// Configures the response behaviour of [`MockTextGenerationModelProvider`].
 #[derive(Debug, Clone)]
 pub enum ProviderBehavior {
+    /// The same stream of responses is returned on every call.
     Stream(Vec<TextGenerationResponse>),
+    /// A distinct stream is served per call. Calls past the end reuse the last.
+    Sequence(Vec<Vec<TextGenerationResponse>>),
 }
 
 /// Captured state from a [`MockTextGenerationModelProvider`].
@@ -417,14 +420,21 @@ impl TextGenerationModelProvider for MockTextGenerationModelProvider {
     ) -> impl Future<Output = ModelProviderResult<TextGenerationResponse>> + Send + '_ {
         let mut state = self.state.lock().expect("mock provider mutex poisoned");
         state.last_request = Some(req.clone());
+        let call_index = state.request_count;
         state.request_count += 1;
         drop(state);
-        let response = match &self.behavior {
-            ProviderBehavior::Stream(chunks) => chunks
-                .last()
+        let chunks = match &self.behavior {
+            ProviderBehavior::Stream(chunks) => chunks.clone(),
+            ProviderBehavior::Sequence(rounds) => rounds
+                .get(call_index)
+                .or_else(|| rounds.last())
                 .cloned()
-                .unwrap_or_else(|| TextGenerationResponse::done(String::new(), req.model, None)),
+                .unwrap_or_default(),
         };
+        let response = chunks
+            .last()
+            .cloned()
+            .unwrap_or_else(|| TextGenerationResponse::done(String::new(), req.model, None));
         async move { Ok(response) }
     }
 
@@ -434,10 +444,16 @@ impl TextGenerationModelProvider for MockTextGenerationModelProvider {
     ) -> impl futures::Stream<Item = ModelProviderResult<TextGenerationResponse>> + Send + '_ {
         let mut state = self.state.lock().expect("mock provider mutex poisoned");
         state.last_request = Some(req);
+        let call_index = state.request_count;
         state.request_count += 1;
         drop(state);
         let chunks = match &self.behavior {
             ProviderBehavior::Stream(chunks) => chunks.clone(),
+            ProviderBehavior::Sequence(rounds) => rounds
+                .get(call_index)
+                .or_else(|| rounds.last())
+                .cloned()
+                .unwrap_or_default(),
         };
         stream::iter(chunks.into_iter().map(Ok))
     }

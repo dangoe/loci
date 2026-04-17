@@ -43,12 +43,20 @@ impl ReviewState {
     }
 }
 
-/// Clamps a confidence value to the open interval `(0.0, 1.0)`.
+/// Upper bound for extracted-memory confidence.
 ///
-/// LLM-assigned values at or below `0.0` are raised to [`f64::MIN_POSITIVE`]
-/// and values at or above `1.0` are lowered to `1.0 - f64::EPSILON`.
+/// 1.0 is reserved for `MemoryKind::Fact` (promoted by the pipeline); extracted
+/// memories are clamped strictly below it. 0.99 is used instead of
+/// `1.0 - f64::EPSILON` so that two-decimal display (`%.2f`) never rounds up to
+/// `1.00`, keeping the Fact/extracted distinction visible in reports.
+pub const MAX_EXTRACTED_CONFIDENCE: f64 = 0.99;
+
+/// Clamps a confidence value into the range used for extracted memories:
+/// `[f64::MIN_POSITIVE, MAX_EXTRACTED_CONFIDENCE]` — strictly greater than `0`
+/// and strictly less than `1`, with an upper bound that is visibly distinct
+/// from `Fact`'s `1.0` at any reasonable display precision.
 pub fn clamp_confidence(c: f64) -> f64 {
-    c.clamp(f64::MIN_POSITIVE, 1.0 - f64::EPSILON)
+    c.clamp(f64::MIN_POSITIVE, MAX_EXTRACTED_CONFIDENCE)
 }
 
 /// Input passed to [`crate::MemoryStore::add_entry`] and related methods.
@@ -362,7 +370,7 @@ mod tests {
     #[test]
     fn test_clamp_confidence_above_one() {
         assert!(clamp_confidence(2.0) < 1.0);
-        assert_eq!(clamp_confidence(2.0), 1.0 - f64::EPSILON);
+        assert_eq!(clamp_confidence(2.0), MAX_EXTRACTED_CONFIDENCE);
     }
 
     #[test]
@@ -372,7 +380,16 @@ mod tests {
 
     #[test]
     fn test_clamp_confidence_at_one() {
-        assert_eq!(clamp_confidence(1.0), 1.0 - f64::EPSILON);
+        assert_eq!(clamp_confidence(1.0), MAX_EXTRACTED_CONFIDENCE);
+    }
+
+    #[test]
+    fn test_clamp_confidence_display_never_rounds_to_one_at_two_decimals() {
+        // Regression: `%.2f` of `1.0 - f64::EPSILON` rounds to `1.00`, making
+        // extracted memories visually indistinguishable from `Fact` in reports.
+        let clamped = clamp_confidence(1.0);
+        let display = format!("{:.2}", clamped);
+        assert_ne!(display, "1.00", "clamped max must not render as 1.00");
     }
 
     #[test]

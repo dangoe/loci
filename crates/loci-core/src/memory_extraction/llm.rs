@@ -11,8 +11,9 @@ use serde::Deserialize as _;
 use crate::{
     error::MemoryExtractionError,
     memory::{MemoryInput, MemoryKind, clamp_confidence},
+    memory_extraction::chunker::split_into_chunks,
     model_provider::text_generation::{
-        TextGenerationModelProvider, TextGenerationRequest, ThinkingMode,
+        ResponseFormat, TextGenerationModelProvider, TextGenerationRequest, ThinkingMode,
     },
 };
 
@@ -59,19 +60,113 @@ pub struct LlmMemoryExtractionStrategyParams {
 }
 
 const EXTRACTION_SYSTEM_PROMPT: &str = "\
-You are a memory extraction assistant. Extract ONLY information that is:\n
-- Directly stated facts about a specific, named subject\n
-- User preferences, goals, or decisions\n
-- Deadlines, constraints, or requirements\n\n
-Do NOT extract:\n
-- General knowledge or encyclopedia-style facts\n
-- Information that can be looked up anywhere\n
-- Vague or context-free statements\n\n
-Output ONLY a valid JSON array of objects. Each object must have:\n
-  \"content\": a string naming its subject explicitly\n
-  \"confidence\": a float 0.0-1.0 indicating how confident you are that this is worth remembering\n\n
-Example output:\n
-[{\"content\": \"The user prefers dark mode.\", \"confidence\": 0.95}, {\"content\": \"Project X targets Rust stable.\", \"confidence\": 0.80}]";
+You are a memory extraction assistant. Extract discrete, self-contained facts \
+from the provided text that someone would plausibly want to retrieve later.\n\n\
+Each extracted entry MUST:\n\
+- Be a standalone statement understandable without the source context\n\
+- Name its subject explicitly (no pronouns, no dangling references)\n\
+- Represent a specific, concrete fact\n\n\
+DO NOT extract:\n\
+- Trivia with no lasting relevance (weather, meals, moods, greetings, small \
+  talk) unless the source text explicitly marks them as important\n\
+- Generic advice, platitudes, or opinions\n\
+- Procedural UI steps in instructions (\"click X\", \"then Y\") — extract only \
+  the resulting facts (e.g. the password policy, the timeout duration)\n\n\
+The `confidence` field is EPISTEMIC — it measures how clearly the fact is \
+stated in the text, NOT how interesting or useful it is. Use this rubric:\n\
+- 0.95-0.99: directly and unambiguously stated (1.0 is reserved for promoted \
+  facts; never use it here)\n\
+- 0.80-0.94: clearly stated with minor paraphrase\n\
+- 0.60-0.79: implied from a few sentences, some interpretation needed\n\
+- below 0.60: do NOT output — the inference is too weak\n\n\
+Output ONLY a valid JSON array of objects. No prose before or after. \
+Each object must have:\n\
+  \"content\": string, naming its subject explicitly\n\
+  \"confidence\": float in [0.0, 1.0] per the rubric above\n\n\
+Example:\n\
+[\n\
+  {\"content\": \"The CI deployment pipeline failed on 2026-04-10 because the runner's IAM credentials expired.\", \"confidence\": 0.97},\n\
+  {\"content\": \"Rania Khalil will add a Conftest rule to fail CI on IAM role expiry.\", \"confidence\": 0.90},\n\
+  {\"content\": \"The on-call engineer was paged during the incident.\", \"confidence\": 0.70}\n\
+]";
+
+/// Reinforcement appended to the prompt on a parse-failure retry.
+const REPAIR_REINFORCEMENT: &str = "\
+Your previous output was not a valid JSON array. Output ONLY a JSON array \
+starting with `[` and ending with `]`. No prose, no markdown fences, no \
+explanation. If there are no facts to extract, output `[]`.";
+
+/// Extracts the entries array from a model response, tolerating several
+/// shapes that local models produce under structured-output modes:
+///
+/// 1. A top-level JSON array: `[{...}, {...}]`.
+/// 2. A JSON object that wraps the array under any key, e.g.
+///    `{"entries": [...]}`, `{"memories": [...]}`, `{"facts": [...]}`.
+/// 3. Prose that contains an embedded JSON array somewhere inside.
+///
+/// Empty objects / unrelated JSON become an empty entry list — the pipeline
+/// treats that as "no facts this run" and moves on. A lone entry object
+/// (`{"content": "…"}` at the top level) is **not** promoted to a one-entry
+/// list: it's a protocol violation that suggests the model was too eager to
+/// stop, so we surface it as a parse error to trigger the retry path.
+fn locate_entries_array(response: &str) -> Result<Vec<serde_json::Value>, MemoryExtractionError> {
+    let trimmed = response.trim();
+
+    // Case 1: full response parses as a JSON value directly.
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        return coerce_to_entries(value);
+    }
+
+    // Case 2: response has an embedded array — scan from the first `[` and let
+    // the streaming deserializer tolerate trailing content.
+    if let Some(start) = response.find('[') {
+        let mut de = serde_json::Deserializer::from_str(&response[start..]);
+        if let Ok(arr) = Vec::<serde_json::Value>::deserialize(&mut de) {
+            return Ok(arr);
+        }
+    }
+
+    // Case 3: response has an embedded object — try to parse it and coerce.
+    if let Some(start) = response.find('{') {
+        let mut de = serde_json::Deserializer::from_str(&response[start..]);
+        if let Ok(value) = serde_json::Value::deserialize(&mut de) {
+            return coerce_to_entries(value);
+        }
+    }
+
+    Err(MemoryExtractionError::Parse(
+        "no JSON array or entry object found in model response".to_string(),
+    ))
+}
+
+/// Given a parsed JSON value, returns the list of entry objects.
+///
+/// - Arrays are returned as-is.
+/// - Objects with an array-valued field (any name) surface that array.
+/// - Objects that are a lone entry (have a top-level `content` field) are
+///   rejected so the retry path kicks in and forces a proper array.
+/// - Anything else yields an empty list.
+fn coerce_to_entries(
+    value: serde_json::Value,
+) -> Result<Vec<serde_json::Value>, MemoryExtractionError> {
+    match value {
+        serde_json::Value::Array(arr) => Ok(arr),
+        serde_json::Value::Object(map) => {
+            for (_, v) in &map {
+                if let serde_json::Value::Array(arr) = v {
+                    return Ok(arr.clone());
+                }
+            }
+            if map.contains_key("content") {
+                return Err(MemoryExtractionError::Parse(
+                    "model returned a single entry object instead of an array".to_string(),
+                ));
+            }
+            Ok(Vec::new())
+        }
+        _ => Ok(Vec::new()),
+    }
+}
 
 fn build_extraction_prompt(input: &str, params: &LlmMemoryExtractionStrategyParams) -> String {
     let mut parts: Vec<String> = Vec::new();
@@ -93,17 +188,7 @@ pub(super) fn parse_extraction_response(
     response: &str,
     params: LlmMemoryExtractionStrategyParams,
 ) -> Result<Vec<MemoryInput>, MemoryExtractionError> {
-    let start = response.find('[').ok_or_else(|| {
-        MemoryExtractionError::Parse("no JSON array found in model response".to_string())
-    })?;
-
-    // Use a streaming deserializer so that any prose the model appends after
-    // the JSON array (e.g. footnotes) is silently ignored rather than causing
-    // a "trailing characters" parse error.
-    let mut de = serde_json::Deserializer::from_str(&response[start..]);
-    let raw: Vec<serde_json::Value> = Vec::deserialize(&mut de).map_err(|e| {
-        MemoryExtractionError::Parse(format!("failed to parse model response as JSON array: {e}"))
-    })?;
+    let raw = locate_entries_array(response)?;
 
     let mut entries: Vec<(String, f64)> = raw
         .into_iter()
@@ -170,42 +255,119 @@ impl<P: TextGenerationModelProvider + Send + Sync>
         input: &str,
         params: LlmMemoryExtractionStrategyParams,
     ) -> impl Future<Output = Result<Vec<MemoryInput>, MemoryExtractionError>> + Send {
-        let prompt = build_extraction_prompt(input, &params);
-        let req = TextGenerationRequest::new(self.model.clone(), prompt)
-            .with_system(EXTRACTION_SYSTEM_PROMPT)
-            .with_temperature(0.1); // Low temperature for deterministic, structured output.
         let provider = Arc::clone(&self.provider);
-
-        let req = match params.thinking_mode.clone() {
-            Some(mode) => req.with_thinking(mode),
-            None => req,
-        };
+        let model = self.model.clone();
+        let input = input.to_owned();
 
         async move {
-            // Use generate_stream so the connection stays alive while the model
-            // generates (important for thinking-capable models like qwen3 that
-            // can produce very long outputs before the JSON array).
-            let mut stream = Box::pin(provider.generate_stream(req));
-            let mut full_text = String::new();
-            while let Some(chunk) = stream.next().await {
-                let resp = chunk.map_err(MemoryExtractionError::ModelProvider)?;
-                full_text.push_str(&resp.text);
+            let chunks = chunks_for(&input, params.chunking.as_ref());
+            let total = chunks.len();
+
+            let mut all_entries: Vec<MemoryInput> = Vec::new();
+            for (idx, chunk) in chunks.into_iter().enumerate() {
+                match extract_one_chunk(provider.as_ref(), &model, &chunk, params.clone()).await {
+                    Ok(entries) => all_entries.extend(entries),
+                    // Parse failures are the small-model-output problem, not a
+                    // hard failure of the whole extraction. Drop the chunk so
+                    // we keep whatever we already extracted from siblings.
+                    Err(MemoryExtractionError::Parse(msg)) => {
+                        log::warn!(
+                            "skipping chunk {}/{} after parse error: {msg}",
+                            idx + 1,
+                            total,
+                        );
+                    }
+                    Err(other) => return Err(other),
+                }
             }
 
-            parse_extraction_response(&full_text, params)
+            Ok(all_entries)
         }
     }
+}
+
+/// Splits `input` into chunks honouring the caller's [`ChunkingConfig`]. When
+/// no config is supplied, returns the entire input as a single chunk.
+fn chunks_for(input: &str, config: Option<&ChunkingConfig>) -> Vec<String> {
+    let chunk_size = config.and_then(|c| c.chunk_size).unwrap_or(0);
+    if chunk_size == 0 {
+        return vec![input.to_owned()];
+    }
+    let overlap = config.and_then(|c| c.overlap_size).unwrap_or(0);
+    split_into_chunks(input, chunk_size, overlap)
+}
+
+/// Runs a single extraction round for one chunk. On parse failure, retries
+/// once with an explicit reinforcement message and **without** JSON mode —
+/// provider-enforced JSON sometimes coerces small models into emitting
+/// bracketless objects like `{"response": "..."}` that the parser can't
+/// recover from; relaxing the constraint lets the model honour the text
+/// instruction to produce an array.
+async fn extract_one_chunk<P: TextGenerationModelProvider>(
+    provider: &P,
+    model: &str,
+    chunk: &str,
+    params: LlmMemoryExtractionStrategyParams,
+) -> Result<Vec<MemoryInput>, MemoryExtractionError> {
+    let prompt = build_extraction_prompt(chunk, &params);
+    let first = call_model(provider, model, &prompt, &params, true).await?;
+    match parse_extraction_response(&first, params.clone()) {
+        Ok(entries) => Ok(entries),
+        Err(MemoryExtractionError::Parse(_)) => {
+            let repair_prompt = format!("{prompt}\n\n{REPAIR_REINFORCEMENT}");
+            let second = call_model(provider, model, &repair_prompt, &params, false).await?;
+            parse_extraction_response(&second, params)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Issues one streaming generate call and returns the concatenated text.
+/// `json_mode` toggles provider-side structured-output enforcement.
+async fn call_model<P: TextGenerationModelProvider>(
+    provider: &P,
+    model: &str,
+    prompt: &str,
+    params: &LlmMemoryExtractionStrategyParams,
+    json_mode: bool,
+) -> Result<String, MemoryExtractionError> {
+    let mut req = TextGenerationRequest::new(model, prompt)
+        .with_system(EXTRACTION_SYSTEM_PROMPT)
+        .with_temperature(0.1);
+    if json_mode {
+        req = req.with_response_format(ResponseFormat::Json);
+    }
+    if let Some(mode) = params.thinking_mode.clone() {
+        req = req.with_thinking(mode);
+    }
+
+    // Streaming keeps the connection alive for thinking-capable models that
+    // emit long prefixes before the JSON array.
+    let mut stream = Box::pin(provider.generate_stream(req));
+    let mut full_text = String::new();
+    while let Some(chunk) = stream.next().await {
+        let resp = chunk.map_err(MemoryExtractionError::ModelProvider)?;
+        full_text.push_str(&resp.text);
+    }
+    Ok(full_text)
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::sync::Arc;
 
     use pretty_assertions::assert_eq;
 
     use crate::memory::MemoryKind;
+    use crate::memory_extraction::MemoryExtractionStrategy;
+    use crate::model_provider::text_generation::TextGenerationResponse;
+    use crate::testing::{MockTextGenerationModelProvider, ProviderBehavior};
 
-    use super::{LlmMemoryExtractionStrategyParams, parse_extraction_response};
+    use super::{
+        ChunkingConfig, LlmMemoryExtractionStrategy, LlmMemoryExtractionStrategyParams,
+        parse_extraction_response,
+    };
 
     fn default_params() -> LlmMemoryExtractionStrategyParams {
         LlmMemoryExtractionStrategyParams {
@@ -216,6 +378,10 @@ mod tests {
             chunking: None,
             thinking_mode: None,
         }
+    }
+
+    fn done_chunk(text: &str) -> TextGenerationResponse {
+        TextGenerationResponse::done(text.to_string(), "mock".to_string(), None)
     }
 
     #[test]
@@ -351,5 +517,222 @@ Note: [confidence values] are rough estimates."#;
         let result = parse_extraction_response(response, default_params()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].content, "fact");
+    }
+
+    #[tokio::test]
+    async fn test_extract_retries_once_on_parse_failure() {
+        // First call returns prose (no JSON array); second call returns valid JSON.
+        let provider = Arc::new(MockTextGenerationModelProvider::new(
+            ProviderBehavior::Sequence(vec![
+                vec![done_chunk("Sorry, I cannot produce JSON here.")],
+                vec![done_chunk(
+                    r#"[{"content": "recovered fact", "confidence": 0.9}]"#,
+                )],
+            ]),
+        ));
+        let strategy = LlmMemoryExtractionStrategy::new(Arc::clone(&provider), "m");
+
+        let result = strategy.extract("input", default_params()).await.unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].content, "recovered fact");
+        assert_eq!(provider.snapshot().request_count, 2);
+    }
+
+    #[tokio::test]
+    async fn test_extract_drops_chunk_after_retry_also_fails() {
+        // Both calls return prose with no JSON array. The chunk is dropped
+        // and `extract` returns an empty list rather than aborting the whole
+        // run — long inputs with many chunks shouldn't lose good sibling
+        // chunks because one went sideways.
+        let provider = Arc::new(MockTextGenerationModelProvider::new(
+            ProviderBehavior::Sequence(vec![
+                vec![done_chunk("no json here")],
+                vec![done_chunk("still no json")],
+            ]),
+        ));
+        let strategy = LlmMemoryExtractionStrategy::new(Arc::clone(&provider), "m");
+
+        let result = strategy.extract("input", default_params()).await.unwrap();
+        assert!(result.is_empty());
+        assert_eq!(provider.snapshot().request_count, 2);
+    }
+
+    #[tokio::test]
+    async fn test_extract_does_not_retry_when_first_call_parses() {
+        let provider = Arc::new(MockTextGenerationModelProvider::new(
+            ProviderBehavior::Sequence(vec![vec![done_chunk(
+                r#"[{"content": "ok", "confidence": 0.9}]"#,
+            )]]),
+        ));
+        let strategy = LlmMemoryExtractionStrategy::new(Arc::clone(&provider), "m");
+
+        let result = strategy.extract("input", default_params()).await.unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(provider.snapshot().request_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_extract_chunks_input_when_config_set() {
+        // Two separate JSON responses, one per chunk, concatenated.
+        let provider = Arc::new(MockTextGenerationModelProvider::new(
+            ProviderBehavior::Sequence(vec![
+                vec![done_chunk(
+                    r#"[{"content": "from chunk one", "confidence": 0.9}]"#,
+                )],
+                vec![done_chunk(
+                    r#"[{"content": "from chunk two", "confidence": 0.8}]"#,
+                )],
+            ]),
+        ));
+        let strategy = LlmMemoryExtractionStrategy::new(Arc::clone(&provider), "m");
+
+        // ~500 chars of distinct sentences so split_into_chunks yields ≥ 2 chunks.
+        let sentence = "The cat sat on the mat in the quiet library room. ";
+        let input = sentence.repeat(10);
+        let params = LlmMemoryExtractionStrategyParams {
+            chunking: Some(ChunkingConfig {
+                chunk_size: Some(200),
+                overlap_size: Some(0),
+            }),
+            ..default_params()
+        };
+
+        let result = strategy.extract(&input, params).await.unwrap();
+
+        assert!(
+            provider.snapshot().request_count >= 2,
+            "expected at least 2 model calls, got {}",
+            provider.snapshot().request_count
+        );
+        let contents: Vec<&str> = result.iter().map(|e| e.content.as_str()).collect();
+        assert!(contents.contains(&"from chunk one"));
+        assert!(contents.contains(&"from chunk two"));
+    }
+
+    #[tokio::test]
+    async fn test_extract_without_chunking_issues_single_call() {
+        let provider = Arc::new(MockTextGenerationModelProvider::new(
+            ProviderBehavior::Stream(vec![done_chunk(
+                r#"[{"content": "one", "confidence": 0.9}]"#,
+            )]),
+        ));
+        let strategy = LlmMemoryExtractionStrategy::new(Arc::clone(&provider), "m");
+
+        strategy
+            .extract("some long text", default_params())
+            .await
+            .unwrap();
+
+        assert_eq!(provider.snapshot().request_count, 1);
+    }
+
+    #[test]
+    fn test_parse_object_wrapped_array_key_entries() {
+        let response = r#"{"entries": [{"content": "fact", "confidence": 0.9}]}"#;
+        let result = parse_extraction_response(response, default_params()).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].content, "fact");
+    }
+
+    #[test]
+    fn test_parse_object_wrapped_array_arbitrary_key() {
+        // Key name is not one we special-case — first array-valued field wins.
+        let response = r#"{"whatever_key": [{"content": "x", "confidence": 0.8}]}"#;
+        let result = parse_extraction_response(response, default_params()).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].content, "x");
+    }
+
+    #[test]
+    fn test_parse_single_object_errors_to_trigger_retry() {
+        // Model returned a bare entry object instead of a list — this is a
+        // protocol violation that the retry path should fix by forcing the
+        // model to emit a real array.
+        let response = r#"{"content": "lonely fact", "confidence": 0.85}"#;
+        let err = parse_extraction_response(response, default_params())
+            .expect_err("bare entry object should error out");
+        assert!(matches!(err, crate::error::MemoryExtractionError::Parse(_)));
+    }
+
+    #[test]
+    fn test_parse_empty_object_yields_empty_list() {
+        // `{}` under strict JSON mode → treat as "no facts this run", not error.
+        let result = parse_extraction_response("{}", default_params()).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_parse_unrelated_json_object_yields_empty_list() {
+        let response = r#"{"status": "done", "count": 0}"#;
+        let result = parse_extraction_response(response, default_params()).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_extract_retries_on_single_object_response() {
+        // First call returns a bare entry object (JSON-mode artefact); the
+        // retry path should fire and return the real array.
+        let provider = Arc::new(MockTextGenerationModelProvider::new(
+            ProviderBehavior::Sequence(vec![
+                vec![done_chunk(
+                    r#"{"content": "single", "confidence": 0.9}"#,
+                )],
+                vec![done_chunk(
+                    r#"[{"content": "one", "confidence": 0.9}, {"content": "two", "confidence": 0.8}]"#,
+                )],
+            ]),
+        ));
+        let strategy = LlmMemoryExtractionStrategy::new(Arc::clone(&provider), "m");
+
+        let result = strategy.extract("input", default_params()).await.unwrap();
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(provider.snapshot().request_count, 2);
+    }
+
+    #[tokio::test]
+    async fn test_retry_disables_json_mode() {
+        let provider = Arc::new(MockTextGenerationModelProvider::new(
+            ProviderBehavior::Sequence(vec![
+                vec![done_chunk("no json at all")],
+                vec![done_chunk(
+                    r#"[{"content": "ok", "confidence": 0.9}]"#,
+                )],
+            ]),
+        ));
+        let strategy = LlmMemoryExtractionStrategy::new(Arc::clone(&provider), "m");
+
+        strategy.extract("input", default_params()).await.unwrap();
+
+        // Only the last request is captured; it must be the retry, which must
+        // have JSON mode turned off.
+        let snapshot = provider.snapshot();
+        assert_eq!(snapshot.request_count, 2);
+        let last = snapshot.last_request.expect("last request captured");
+        assert!(
+            last.response_format.is_none(),
+            "retry call must drop response_format to let the model produce text"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_extract_sets_json_response_format_on_request() {
+        let provider = Arc::new(MockTextGenerationModelProvider::new(
+            ProviderBehavior::Stream(vec![done_chunk(
+                r#"[{"content": "x", "confidence": 0.9}]"#,
+            )]),
+        ));
+        let strategy = LlmMemoryExtractionStrategy::new(Arc::clone(&provider), "m");
+        strategy.extract("input", default_params()).await.unwrap();
+
+        let req = provider.snapshot().last_request.expect("request captured");
+        assert!(
+            matches!(
+                req.response_format,
+                Some(crate::model_provider::text_generation::ResponseFormat::Json)
+            ),
+            "extraction must request JSON output mode"
+        );
     }
 }

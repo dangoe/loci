@@ -58,6 +58,12 @@ pub struct TextGenerationRequest {
     /// Stop sequences.  Generation halts when any of these strings appears.
     pub stop: Option<Vec<String>>,
 
+    /// Requested output format. When `Some(ResponseFormat::Json)` the provider
+    /// instructs the model to emit valid JSON only — mapped to Ollama's
+    /// top-level `format: "json"` and OpenAI's `response_format`. Providers that
+    /// cannot enforce a format ignore it.
+    pub response_format: Option<ResponseFormat>,
+
     /// How long the model provider should keep the model loaded in memory after
     /// the request completes.  Primarily meaningful for Ollama; other model
     /// providers ignore it gracefully.
@@ -91,6 +97,15 @@ pub enum ThinkingEffortLevel {
     High,
 }
 
+/// Requested response format. Providers that can enforce structured output
+/// (Ollama's `format`, OpenAI's `response_format`) use it to reject non-matching
+/// outputs server-side; others ignore it.
+#[derive(Debug, Clone)]
+pub enum ResponseFormat {
+    /// Constrain output to valid JSON.
+    Json,
+}
+
 impl TextGenerationRequest {
     /// Minimal constructor — everything else defaults.
     pub fn new(model: impl Into<String>, prompt: impl Into<String>) -> Self {
@@ -105,6 +120,7 @@ impl TextGenerationRequest {
             repeat_last_n: None,
             thinking: None,
             stop: None,
+            response_format: None,
             keep_alive: None,
             extra_params: HashMap::new(),
         }
@@ -155,6 +171,12 @@ impl TextGenerationRequest {
     /// Sets the stop sequences; generation halts when any of these strings appears.
     pub fn with_stop(mut self, stop: Vec<String>) -> Self {
         self.stop = Some(stop);
+        self
+    }
+
+    /// Requests a specific response format from the provider.
+    pub fn with_response_format(mut self, format: ResponseFormat) -> Self {
+        self.response_format = Some(format);
         self
     }
 
