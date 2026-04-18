@@ -10,7 +10,7 @@ use serde::Deserialize as _;
 
 use crate::{
     error::MemoryExtractionError,
-    memory::{TrustEvidence, MemoryInput, MemoryTrust, clamp_confidence},
+    memory::{MemoryInput, MemoryTrust, TrustEvidence},
     memory_extraction::chunker::split_into_chunks,
     model_provider::text_generation::{
         ResponseFormat, TextGenerationModelProvider, TextGenerationRequest, ThinkingMode,
@@ -197,7 +197,7 @@ pub(super) fn parse_extraction_response(
             let confidence = v
                 .get("confidence")
                 .and_then(|c| c.as_f64())
-                .map(clamp_confidence)
+                .map(MemoryTrust::clamp_confidence)
                 .unwrap_or(0.5);
             Some((content, confidence))
         })
@@ -414,7 +414,10 @@ mod tests {
     fn test_parse_uses_extracted_memory_kind() {
         let response = r#"[{"content": "a fact", "confidence": 0.9}]"#;
         let result = parse_extraction_response(response, default_params()).unwrap();
-        assert!(matches!(result[0].trust, Some(MemoryTrust::Extracted { .. })));
+        assert!(matches!(
+            result[0].trust,
+            Some(MemoryTrust::Extracted { .. })
+        ));
     }
 
     #[test]
@@ -441,8 +444,14 @@ mod tests {
     fn test_parse_clamps_confidence_at_boundary() {
         let response = r#"[{"content": "fact at one", "confidence": 1.0}, {"content": "fact at zero", "confidence": 0.0}]"#;
         let result = parse_extraction_response(response, default_params()).unwrap();
-        let conf0 = match result[0].trust { Some(MemoryTrust::Extracted { confidence, .. }) => confidence, _ => panic!("expected Extracted") };
-        let conf1 = match result[1].trust { Some(MemoryTrust::Extracted { confidence, .. }) => confidence, _ => panic!("expected Extracted") };
+        let conf0 = match result[0].trust {
+            Some(MemoryTrust::Extracted { confidence, .. }) => confidence,
+            _ => panic!("expected Extracted"),
+        };
+        let conf1 = match result[1].trust {
+            Some(MemoryTrust::Extracted { confidence, .. }) => confidence,
+            _ => panic!("expected Extracted"),
+        };
         assert!(conf0 < 1.0);
         assert!(conf1 > 0.0);
     }

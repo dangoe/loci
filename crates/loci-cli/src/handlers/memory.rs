@@ -18,8 +18,8 @@ use loci_core::{
     },
     memory_extraction::{
         LlmMemoryExtractionStrategy, LlmMemoryExtractionStrategyParams, MemoryExtractionPipeline,
-        MemoryExtractionStrategy, MemoryExtractor, PipelineConfig, PipelineSearchResultsConfig,
-        llm::ChunkingConfig as CoreChunkingConfig,
+        MemoryExtractionStrategy, MemoryExtractor, MemoryExtrationPipelineConfig,
+        PipelineSearchResultsConfig, llm::ChunkingConfig as CoreChunkingConfig,
     },
     model_provider::text_generation::TextGenerationModelProvider,
     store::MemoryStore as CoreMemoryStore,
@@ -93,9 +93,11 @@ where
                     metadata, kind
                 );
                 let input = match kind {
-                    Some(kind) => {
-                        CoreMemoryInput::new_with_trust(content, pairs_to_map(metadata), kind.into())
-                    }
+                    Some(kind) => CoreMemoryInput::new_with_trust(
+                        content,
+                        pairs_to_map(metadata),
+                        kind.into(),
+                    ),
                     None => CoreMemoryInput::new(content, pairs_to_map(metadata)),
                 };
                 let entry = self.store.add_entry(input).await?;
@@ -276,8 +278,10 @@ where
     }
 }
 
-fn config_pipeline_config_to_core(cfg: &loci_config::PipelineExtractionConfig) -> PipelineConfig {
-    PipelineConfig {
+fn config_pipeline_config_to_core(
+    cfg: &loci_config::PipelineExtractionConfig,
+) -> MemoryExtrationPipelineConfig {
+    MemoryExtrationPipelineConfig {
         direct_search: PipelineSearchResultsConfig {
             max_results: cfg.direct_search.max_results,
             min_score: cfg.direct_search.min_score,
@@ -309,8 +313,8 @@ mod tests {
     use loci_config::MemoryExtractionConfig;
     use loci_core::{
         memory::{
-            TrustEvidence, MemoryEntry as CoreMemoryEntry, MemoryTrust,
-            MemoryQueryResult as CoreMemoryQueryResult, Score as CoreScore,
+            MemoryEntry as CoreMemoryEntry, MemoryQueryResult as CoreMemoryQueryResult,
+            MemoryTrust, Score as CoreScore, TrustEvidence,
         },
         model_provider::text_generation::TextGenerationResponse,
         testing::{
@@ -369,7 +373,11 @@ mod tests {
 
     fn make_result(content: &str, trust: MemoryTrust) -> CoreMemoryQueryResult {
         CoreMemoryQueryResult {
-            memory_entry: CoreMemoryEntry::new_with_trust(content.to_string(), HashMap::new(), trust),
+            memory_entry: CoreMemoryEntry::new_with_trust(
+                content.to_string(),
+                HashMap::new(),
+                trust,
+            ),
             score: CoreScore::ZERO,
         }
     }
@@ -390,7 +398,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_memory_add_outputs_json() {
-        let entry = make_result("hello world", MemoryTrust::Extracted { confidence: 0.5, evidence: TrustEvidence::default() });
+        let entry = make_result(
+            "hello world",
+            MemoryTrust::Extracted {
+                confidence: 0.5,
+                evidence: TrustEvidence::default(),
+            },
+        );
         let id = entry.memory_entry.id;
         let handler = make_handler(MockStore::new().with_add(entry));
         let mut out = Vec::new();
@@ -457,7 +471,13 @@ mod tests {
     #[tokio::test]
     async fn test_memory_query_outputs_json_array() {
         let entries = vec![
-            make_result("first", MemoryTrust::Extracted { confidence: 0.5, evidence: TrustEvidence::default() }),
+            make_result(
+                "first",
+                MemoryTrust::Extracted {
+                    confidence: 0.5,
+                    evidence: TrustEvidence::default(),
+                },
+            ),
             make_result("second", MemoryTrust::Fact),
         ];
         let handler = make_handler(MockStore::new().with_query(entries));
@@ -511,7 +531,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_memory_get_outputs_json() {
-        let entry = make_result("specific entry", MemoryTrust::Extracted { confidence: 0.5, evidence: TrustEvidence::default() });
+        let entry = make_result(
+            "specific entry",
+            MemoryTrust::Extracted {
+                confidence: 0.5,
+                evidence: TrustEvidence::default(),
+            },
+        );
         let id = entry.memory_entry.id;
         let handler = make_handler(MockStore::new().with_get(entry));
         let mut out = Vec::new();
@@ -595,7 +621,15 @@ mod tests {
     fn make_extract_entries(contents: &[&str]) -> Vec<CoreMemoryQueryResult> {
         contents
             .iter()
-            .map(|c| make_result(c, MemoryTrust::Extracted { confidence: 0.5, evidence: TrustEvidence::default() }))
+            .map(|c| {
+                make_result(
+                    c,
+                    MemoryTrust::Extracted {
+                        confidence: 0.5,
+                        evidence: TrustEvidence::default(),
+                    },
+                )
+            })
             .collect()
     }
 

@@ -198,7 +198,7 @@ impl<E: TextEmbedder> QdrantMemoryStore<E> {
         let vector: Vec<f32> = embedding.values().to_vec();
         let now = Utc::now();
 
-        // Workaround until rescoring is supported
+        // Workaround until rescoring is supported by Qdrant rust client
         let fetch_limit = (max_results * 5) as u64;
 
         let mut conditions: Vec<Condition> = filters

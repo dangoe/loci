@@ -9,21 +9,14 @@ use chrono::{DateTime, Duration, Utc};
 use uuid::Uuid;
 
 /// Unified trust level for a memory entry.
-///
-/// Unified trust level for a memory entry.
-///
-/// Merges the previous `MemoryKind` + `confidence` + `TrustEvidence` triad
-/// into one concept. All three aspects drive TTL, retrieval weight, storage
-/// serialisation, and score blending.
 #[derive(Debug, Clone, PartialEq)]
 pub enum MemoryTrust {
-    /// Ground truth. Confidence 1.0, not subject to decay, removed only
-    /// manually.
+    /// Ground truth. Confidence 1.0, not subject to decay, removed only manually.
     Fact,
-    /// LLM-extracted memory with an initial confidence and evolving Bayesian
+    /// Extracted memory with an initial confidence and evolving Bayesian
     /// evidence. Subject to decay, auto-discard, and auto-promotion.
     Extracted {
-        /// Initial LLM-assigned confidence score, also the seed for `evidence`.
+        /// Assigned confidence score by the extractor.
         confidence: f64,
         /// Evolving Bayesian evidence (α/β counters) updated by the pipeline.
         evidence: TrustEvidence,
@@ -69,25 +62,24 @@ impl MemoryTrust {
             Self::Extracted { .. } => "extracted_memory",
         }
     }
+
+    /// Clamps a confidence value into the range used for extracted memories.
+    pub fn clamp_confidence(confidence: f64) -> f64 {
+        confidence.clamp(f64::MIN_POSITIVE, 0.95)
+    }
 }
 
-/// Accumulated Bayesian evidence for an extracted memory entry.
-///
-/// Tracks a Beta-distribution posterior (`α / (α + β)`). Entries that have
-/// never been through the extraction pipeline carry the `Default` value (all
-/// fields `None`), which causes `bayesian_confidence` to return `None` and
-/// the owning [`MemoryTrust`] to fall back to the initial `confidence` value.
+/// Accumulated bayesian evidence for an extracted memory entry.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TrustEvidence {
-    /// Bayesian positive counter. Together with `beta` derives the effective
-    /// confidence: `α / (α + β)`.
+    /// Bayesian positive counter.
     pub alpha: Option<f64>,
-    /// Bayesian negative counter. Incremented on contradiction hits.
+    /// Bayesian negative counter.
     pub beta: Option<f64>,
 }
 
 impl TrustEvidence {
-    /// Initialises counters from an LLM-assigned `confidence` value using the
+    /// Initialises counters from an extractor assigned `confidence` value using the
     /// rule `α = confidence × W`, `β = (1 − confidence) × W`, where `W` is
     /// the configurable `seed_weight`.
     pub fn from_confidence(confidence: f64, seed_weight: f64) -> Self {
@@ -97,7 +89,7 @@ impl TrustEvidence {
         }
     }
 
-    /// Returns the Bayesian mean `α / (α + β)`, or `None` when either counter
+    /// Returns the bayesian mean `α / (α + β)`, or `None` when either counter
     /// is absent or their sum is zero.
     pub fn bayesian_confidence(&self) -> Option<f64> {
         match (self.alpha, self.beta) {
@@ -105,20 +97,6 @@ impl TrustEvidence {
             _ => None,
         }
     }
-}
-
-/// Upper bound for extracted-memory confidence.
-///
-/// 1.0 is reserved for [`MemoryTrust::Fact`]; extracted memories are clamped
-/// strictly below it. 0.99 is used instead of `1.0 - f64::EPSILON` so that
-/// two-decimal display (`%.2f`) never rounds up to `1.00`, keeping the
-/// Fact/extracted distinction visible in reports.
-pub const MAX_EXTRACTED_CONFIDENCE: f64 = 0.99;
-
-/// Clamps a confidence value into the range used for extracted memories:
-/// `[f64::MIN_POSITIVE, MAX_EXTRACTED_CONFIDENCE]`.
-pub fn clamp_confidence(c: f64) -> f64 {
-    c.clamp(f64::MIN_POSITIVE, MAX_EXTRACTED_CONFIDENCE)
 }
 
 /// Query behavior mode.
@@ -374,37 +352,37 @@ mod tests {
     }
 
     #[test]
-    fn test_clamp_confidence_below_zero() {
-        assert!(clamp_confidence(-1.0) > 0.0);
-        assert_eq!(clamp_confidence(-1.0), f64::MIN_POSITIVE);
+    fn test_memory_trust_clamp_confidence_below_zero() {
+        assert!(MemoryTrust::clamp_confidence(-1.0) > 0.0);
+        assert_eq!(MemoryTrust::clamp_confidence(-1.0), f64::MIN_POSITIVE);
     }
 
     #[test]
-    fn test_clamp_confidence_above_one() {
-        assert!(clamp_confidence(2.0) < 1.0);
-        assert_eq!(clamp_confidence(2.0), MAX_EXTRACTED_CONFIDENCE);
+    fn test_memory_trust_clamp_confidence_above_one() {
+        assert!(MemoryTrust::clamp_confidence(2.0) < 1.0);
+        assert_eq!(MemoryTrust::clamp_confidence(2.0), 0.95);
     }
 
     #[test]
-    fn test_clamp_confidence_at_zero() {
-        assert_eq!(clamp_confidence(0.0), f64::MIN_POSITIVE);
+    fn test_memory_trust_clamp_confidence_at_zero() {
+        assert_eq!(MemoryTrust::clamp_confidence(0.0), f64::MIN_POSITIVE);
     }
 
     #[test]
-    fn test_clamp_confidence_at_one() {
-        assert_eq!(clamp_confidence(1.0), MAX_EXTRACTED_CONFIDENCE);
+    fn test_memory_trust_clamp_confidence_at_one() {
+        assert_eq!(MemoryTrust::clamp_confidence(1.0), 0.95);
     }
 
     #[test]
-    fn test_clamp_confidence_display_never_rounds_to_one_at_two_decimals() {
-        let clamped = clamp_confidence(1.0);
+    fn test_memory_trust_clamp_confidence_display_never_rounds_to_one_at_two_decimals() {
+        let clamped = MemoryTrust::clamp_confidence(1.0);
         let display = format!("{:.2}", clamped);
         assert_ne!(display, "1.00", "clamped max must not render as 1.00");
     }
 
     #[test]
-    fn test_clamp_confidence_passthrough_interior() {
-        assert_eq!(clamp_confidence(0.5), 0.5);
+    fn test_memory_trust_clamp_confidence_passthrough_interior() {
+        assert_eq!(MemoryTrust::clamp_confidence(0.5), 0.5);
     }
 
     #[test]

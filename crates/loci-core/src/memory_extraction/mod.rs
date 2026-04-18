@@ -8,9 +8,10 @@ pub mod pipeline;
 
 pub use chunker::{Chunker, SentenceAwareChunker};
 pub use llm::{LlmMemoryExtractionStrategy, LlmMemoryExtractionStrategyParams};
-use log::info;
+use log::{debug, info};
 pub use pipeline::{
-    MemoryExtractionPipeline, PipelineConfig, PipelineResult, PipelineSearchResultsConfig,
+    MemoryExtractionPipeline, MemoryExtractionResult, MemoryExtrationPipelineConfig,
+    PipelineSearchResultsConfig,
 };
 
 use std::{future::Future, marker::PhantomData, sync::Arc};
@@ -32,13 +33,9 @@ pub trait MemoryExtractionStrategy<P>: Send + Sync {
 
 /// Orchestrates a [`MemoryExtractionStrategy`] and a [`MemoryStore`]:
 /// extracts entries from text then persists them in a single call.
-///
-/// Optionally splits the input with a [`Chunker`] before extraction — see
-/// [`MemoryExtractor::with_chunker`]. Deduplication is handled by the store.
 pub struct MemoryExtractor<S: MemoryStore, E: MemoryExtractionStrategy<P>, P> {
     memory_store: Arc<S>,
     memory_extraction_strategy: Arc<E>,
-    chunker: Option<Arc<dyn Chunker>>,
     phantom: PhantomData<P>,
 }
 
@@ -49,7 +46,6 @@ impl<S: MemoryStore, E: MemoryExtractionStrategy<P>, P: Send + Sync> MemoryExtra
         Self {
             memory_store: Arc::new(memory_store),
             memory_extraction_strategy: Arc::new(memory_extraction_strategy),
-            chunker: None,
             phantom: PhantomData,
         }
     }
@@ -60,28 +56,12 @@ impl<S: MemoryStore, E: MemoryExtractionStrategy<P>, P: Send + Sync> MemoryExtra
         Self {
             memory_store,
             memory_extraction_strategy,
-            chunker: None,
             phantom: PhantomData,
         }
     }
 
-    /// Enables text chunking before extraction.
-    ///
-    /// When set, `extract_and_store` splits the input with `chunker` and runs
-    /// the extraction strategy on each chunk separately before persisting.
-    pub fn with_chunker(mut self, chunker: impl Chunker + 'static) -> Self {
-        self.chunker = Some(Arc::new(chunker));
-        self
-    }
-
     /// Extracts memory entries from `input` using `params`, optionally splits
     /// the input into chunks first, then persists all results.
-    ///
-    /// Both `Arc` handles are cloned before entering the async block so the
-    /// returned future is independent of `&self`'s lifetime.
-    ///
-    /// `P: Clone` is required because params are forwarded to each chunk's
-    /// extraction call independently.
     pub fn extract_and_store(
         &self,
         input: &str,
@@ -94,23 +74,15 @@ impl<S: MemoryStore, E: MemoryExtractionStrategy<P>, P: Send + Sync> MemoryExtra
 
         let strategy = Arc::clone(&self.memory_extraction_strategy);
         let store = Arc::clone(&self.memory_store);
-        let chunker = self.chunker.clone();
-        let input = input.to_owned();
 
         async move {
-            let chunks = match chunker {
-                Some(c) => c.chunk(&input),
-                None => vec![input],
-            };
+            let entries = strategy.extract(input, params.clone()).await?;
 
-            let mut all_entries: Vec<MemoryInput> = Vec::new();
-            for chunk in chunks {
-                let mut entries = strategy.extract(&chunk, params.clone()).await?;
-                all_entries.append(&mut entries);
-            }
+            debug!("Successfully extracted memory entries: {:#?}", entries);
+            info!("Extracted {} entries, storing...", entries.len());
 
             store
-                .add_entries(all_entries)
+                .add_entries(entries)
                 .await
                 .map_err(MemoryExtractionError::MemoryStore)
         }

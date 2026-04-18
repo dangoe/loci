@@ -11,8 +11,7 @@ use uuid::Uuid;
 use crate::classification::{ClassificationModelProvider, HitClass};
 use crate::error::{MemoryExtractionError, MemoryStoreError};
 use crate::memory::{
-    TrustEvidence, MemoryInput, MemoryTrust, MemoryQuery, MemoryQueryMode, MemoryQueryResult,
-    Score, clamp_confidence,
+    MemoryInput, MemoryQuery, MemoryQueryMode, MemoryQueryResult, MemoryTrust, Score, TrustEvidence,
 };
 use crate::memory_extraction::MemoryExtractionStrategy;
 use crate::store::MemoryStore;
@@ -28,7 +27,7 @@ pub struct PipelineSearchResultsConfig {
 
 /// Configuration for the memory extraction pipeline.
 #[derive(Debug, Clone)]
-pub struct PipelineConfig {
+pub struct MemoryExtrationPipelineConfig {
     /// Configuration for direct semantic search stage.
     pub direct_search: PipelineSearchResultsConfig,
     /// Configuration for inverted semantic search stage.
@@ -52,7 +51,7 @@ pub struct PipelineConfig {
     pub min_alpha_for_promotion: f64,
 }
 
-impl Default for PipelineConfig {
+impl Default for MemoryExtrationPipelineConfig {
     fn default() -> Self {
         Self {
             direct_search: PipelineSearchResultsConfig {
@@ -92,7 +91,7 @@ pub enum DiscardReason {
 }
 
 /// Outcome of a [`MemoryExtractionPipeline::extract_and_store`] call.
-pub struct PipelineResult {
+pub struct MemoryExtractionResult {
     /// Newly inserted entries (no prior match).
     pub inserted: Vec<MemoryQueryResult>,
     /// Entries that replaced existing duplicates/complements.
@@ -120,7 +119,7 @@ pub struct MemoryExtractionPipeline<S, E, C, P> {
     store: Arc<S>,
     strategy: Arc<E>,
     classifier: Arc<C>,
-    config: PipelineConfig,
+    config: MemoryExtrationPipelineConfig,
     _phantom: PhantomData<P>,
 }
 
@@ -135,7 +134,7 @@ where
         store: Arc<S>,
         strategy: Arc<E>,
         classifier: Arc<C>,
-        config: PipelineConfig,
+        config: MemoryExtrationPipelineConfig,
     ) -> Self {
         Self {
             store,
@@ -150,10 +149,10 @@ where
         &self,
         input: &str,
         params: P,
-    ) -> Result<PipelineResult, MemoryExtractionError> {
+    ) -> Result<MemoryExtractionResult, MemoryExtractionError> {
         let candidates = self.strategy.extract(input, params).await?;
 
-        let mut result = PipelineResult {
+        let mut result = MemoryExtractionResult {
             inserted: Vec::new(),
             merged: Vec::new(),
             promoted: Vec::new(),
@@ -161,7 +160,7 @@ where
         };
 
         for candidate in candidates {
-            let confidence = clamp_confidence(match &candidate.trust {
+            let confidence = MemoryTrust::clamp_confidence(match &candidate.trust {
                 Some(MemoryTrust::Extracted { confidence, .. }) => *confidence,
                 _ => 0.5,
             });
@@ -305,8 +304,7 @@ where
             match class {
                 HitClass::Duplicate | HitClass::Complementary => {
                     let alpha = trust_evidence.alpha.unwrap_or(0.0);
-                    trust_evidence.alpha =
-                        Some((alpha + increment).min(self.config.max_counter));
+                    trust_evidence.alpha = Some((alpha + increment).min(self.config.max_counter));
                 }
                 HitClass::Contradiction => {
                     let beta = trust_evidence.beta.unwrap_or(0.0);
@@ -405,14 +403,14 @@ mod tests {
 
     use crate::classification::HitClass;
     use crate::error::MemoryExtractionError;
-    use crate::memory::{TrustEvidence, MemoryInput, MemoryTrust};
+    use crate::memory::{MemoryInput, MemoryTrust, TrustEvidence};
     use crate::memory_extraction::MemoryExtractionStrategy;
     use crate::testing::{
         AddEntriesBehavior, ClassifyBehavior, MockClassificationModelProvider, MockStore,
         QueryBehavior, make_extracted_result, make_fact_result,
     };
 
-    use super::{DiscardReason, MemoryExtractionPipeline, PipelineConfig};
+    use super::{DiscardReason, MemoryExtractionPipeline, MemoryExtrationPipelineConfig};
 
     struct FixedStrategy(Vec<MemoryInput>);
 
@@ -444,7 +442,12 @@ mod tests {
         classifier: Arc<MockClassificationModelProvider>,
     ) -> MemoryExtractionPipeline<MockStore, FixedStrategy, MockClassificationModelProvider, ()>
     {
-        MemoryExtractionPipeline::new(store, strategy, classifier, PipelineConfig::default())
+        MemoryExtractionPipeline::new(
+            store,
+            strategy,
+            classifier,
+            MemoryExtrationPipelineConfig::default(),
+        )
     }
 
     #[tokio::test]
@@ -493,9 +496,9 @@ mod tests {
 
         // confidence = 0.1 → alpha=1.0, beta=9.0; increment = min(0.1, 5.0) = 0.1
         // 1 contradiction → beta = 9.0 + 0.1 = 9.1 → score ≈ 0.099 ≤ 0.1 → discard
-        let config = PipelineConfig {
+        let config = MemoryExtrationPipelineConfig {
             auto_discard_threshold: 0.1,
-            ..PipelineConfig::default()
+            ..MemoryExtrationPipelineConfig::default()
         };
 
         let pipeline =
@@ -612,7 +615,7 @@ mod tests {
 
     #[test]
     fn test_pipeline_config_defaults() {
-        let config = PipelineConfig::default();
+        let config = MemoryExtrationPipelineConfig::default();
         assert_eq!(config.direct_search.max_results, 5);
         assert!((config.direct_search.min_score - 0.70).abs() < f64::EPSILON);
         assert_eq!(config.inverted_search.max_results, 3);
@@ -631,33 +634,32 @@ mod tests {
         // confidence = 0.9, seed = 10 → alpha=9.0, beta=1.0
         // max_counter_increment = 1.0, max_counter = 9.5
         // 1 duplicate → increment = min(0.9, 1.0) = 0.9 → alpha = min(9.9, 9.5) = 9.5
-        let store = Arc::new(
-            MockStore::new()
-                .with_query_behavior(QueryBehavior::Ok(vec![make_extracted_result(
-                    uuid::Uuid::new_v4(),
-                    "hit",
-                    0.9,
-                )]))
-                .with_add_entries_behavior(AddEntriesBehavior::Ok(vec![make_extracted_result(
-                    uuid::Uuid::new_v4(),
-                    "hit",
-                    0.9,
-                )])),
-        );
+        let store =
+            Arc::new(
+                MockStore::new()
+                    .with_query_behavior(QueryBehavior::Ok(vec![make_extracted_result(
+                        uuid::Uuid::new_v4(),
+                        "hit",
+                        0.9,
+                    )]))
+                    .with_add_entries_behavior(AddEntriesBehavior::Ok(vec![
+                        make_extracted_result(uuid::Uuid::new_v4(), "hit", 0.9),
+                    ])),
+            );
         let strategy = Arc::new(FixedStrategy(vec![make_candidate("hit", 0.9)]));
         let classifier = Arc::new(
             MockClassificationModelProvider::new()
                 .with_behavior(ClassifyBehavior::Ok(HitClass::Duplicate)),
         );
 
-        let config = PipelineConfig {
+        let config = MemoryExtrationPipelineConfig {
             bayesian_seed_weight: 10.0,
             max_counter_increment: 1.0,
             max_counter: 9.5,
             // Below promotion threshold so we can inspect the add input
             auto_promotion_threshold: 0.99,
             auto_discard_threshold: 0.0,
-            ..PipelineConfig::default()
+            ..MemoryExtrationPipelineConfig::default()
         };
 
         let pipeline =
