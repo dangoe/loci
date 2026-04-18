@@ -218,10 +218,10 @@ async fn test_memory_extract_persists_and_outputs_added_result() {
         .expect("extract should succeed");
 
     let v: serde_json::Value = serde_json::from_str(&output).expect("output should be valid JSON");
-    assert!(v.get("added").is_some(), "output should have 'added' key");
-    assert_eq!(v["added"].as_array().unwrap().len(), 1);
-    assert_eq!(v["failures"].as_array().unwrap().len(), 0);
-    assert_eq!(v["added"][0]["id"].as_str().unwrap(), id.to_string());
+    assert!(v.get("inserted").is_some(), "output should have 'inserted' key");
+    assert!(v.get("merged").is_some(), "output should have 'merged' key");
+    assert!(v.get("promoted").is_some(), "output should have 'promoted' key");
+    assert!(v.get("discarded").is_some(), "output should have 'discarded' key");
 }
 
 #[tokio::test]

@@ -20,7 +20,7 @@ pub use memory::{MemoryConfig, MemorySection};
 pub use model::{
     ModelThinkingConfig, ModelThinkingEffortLevel, ModelTuningConfig, ModelsConfig, TextModelConfig,
 };
-pub use pipeline::PipelineExtractionConfig;
+pub use extractor::{MemoryExtractorConfig, MemoryExtractorSearchResultsConfig};
 pub use provider::{ModelProviderConfig, ModelProviderKind};
 pub use routing::{EmbeddingRoutingConfig, MemoryRoutingConfig, RoutingConfig, TextRoutingConfig};
 pub use store::StoreConfig;
@@ -28,10 +28,10 @@ pub use store::StoreConfig;
 mod embedding;
 mod error;
 mod extraction;
+mod extractor;
 mod init;
 mod memory;
 mod model;
-mod pipeline;
 mod provider;
 mod resolve;
 mod routing;
@@ -128,6 +128,9 @@ backend = "qdrant"
 [memory.extraction]
 model = "default"
 
+[memory.extraction.extractor]
+classification_model = "x"
+
 
 [routing.text]
 default = "default"
@@ -175,6 +178,9 @@ backend = "qdrant"
 [memory.extraction]
 model = "default"
 
+[memory.extraction.extractor]
+classification_model = "x"
+
 
 [routing.text]
 default = "x"
@@ -213,6 +219,9 @@ backend = "qdrant"
 
 [memory.extraction]
 model = "default"
+
+[memory.extraction.extractor]
+classification_model = "x"
 
 
 [routing.text]
@@ -254,6 +263,9 @@ backend = "qdrant"
 
 [memory.extraction]
 model = "default"
+
+[memory.extraction.extractor]
+classification_model = "x"
 
 
 [routing.text]
@@ -310,6 +322,9 @@ similarity_threshold = 0.92
 [memory.extraction]
 model = "default"
 
+[memory.extraction.extractor]
+classification_model = "x"
+
 
 [routing.text]
 default = "default"
@@ -341,6 +356,9 @@ backend = "qdrant"
 
 [memory.extraction]
 model = "default"
+
+[memory.extraction.extractor]
+classification_model = "x"
 
 
 [routing.text]
@@ -388,6 +406,9 @@ backend = "qdrant"
 [memory.extraction]
 model = "default"
 
+[memory.extraction.extractor]
+classification_model = "x"
+
 
 [routing.text]
 default = "primary"
@@ -419,6 +440,9 @@ backend = "qdrant"
 
 [memory.extraction]
 model = "default"
+
+[memory.extraction.extractor]
+classification_model = "x"
 
 
 [routing.text]
@@ -456,6 +480,9 @@ backend = "qdrant"
 [memory.extraction]
 model = "default"
 
+[memory.extraction.extractor]
+classification_model = "x"
+
 
 [routing.text]
 default = "x"
@@ -492,6 +519,9 @@ backend = "qdrant"
 [memory.extraction]
 model = "default"
 
+[memory.extraction.extractor]
+classification_model = "x"
+
 
 [routing.text]
 default = "default"
@@ -527,6 +557,9 @@ backend = "qdrant"
 
 [memory.extraction]
 model = "default"
+
+[memory.extraction.extractor]
+classification_model = "x"
 
 
 [routing.text]
@@ -572,6 +605,9 @@ backend = "qdrant"
 [memory.extraction]
 model = "default"
 
+[memory.extraction.extractor]
+classification_model = "x"
+
 
 [routing.text]
 default = "default"
@@ -602,6 +638,9 @@ backend = "local"
 
 [memory.extraction]
 model = "default"
+
+[memory.extraction.extractor]
+classification_model = "x"
 
 
 [routing.text]
@@ -660,6 +699,9 @@ backend = "qdrant"
 
 [memory.extraction]
 model = "default"
+
+[memory.extraction.extractor]
+classification_model = "x"
 
 
 [routing.text]

@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use loci_config::{
     AppConfig, EmbeddingModelConfig, EmbeddingRoutingConfig, MemoryConfig, MemoryExtractionConfig,
-    MemoryRoutingConfig, MemorySection, ModelProviderConfig, ModelProviderKind, ModelsConfig,
-    RoutingConfig, StoreConfig, TextModelConfig, TextRoutingConfig,
+    MemoryExtractorConfig, MemoryRoutingConfig, MemorySection, ModelProviderConfig,
+    ModelProviderKind, ModelsConfig, RoutingConfig, StoreConfig, TextModelConfig, TextRoutingConfig,
 };
 use loci_core::model_provider::text_generation::TextGenerationModelProvider;
 use loci_core::store::MemoryStore;
@@ -156,7 +156,24 @@ pub fn minimal_ollama_config() -> AppConfig {
                 guidelines: None,
                 thinking: None,
                 chunking: None,
-                pipeline: None,
+                extractor: MemoryExtractorConfig {
+                    classification_model: "test-classification-model".to_string(),
+                    direct_search: loci_config::MemoryExtractorSearchResultsConfig {
+                        max_results: 5,
+                        min_score: 0.70,
+                    },
+                    inverted_search: loci_config::MemoryExtractorSearchResultsConfig {
+                        max_results: 3,
+                        min_score: 0.60,
+                    },
+                    bayesian_seed_weight: 10.0,
+                    max_counter_increment: 5.0,
+                    max_counter: 100.0,
+                    auto_discard_threshold: 0.1,
+                    auto_promotion_threshold: 0.9,
+                    min_alpha_for_promotion: 12.0,
+                    decay_rate: 0.99,
+                },
             },
         },
         routing: RoutingConfig {
@@ -224,7 +241,24 @@ pub fn mock_config() -> AppConfig {
                 guidelines: None,
                 thinking: None,
                 chunking: None,
-                pipeline: None,
+                extractor: MemoryExtractorConfig {
+                    classification_model: "test-classification-model".to_string(),
+                    direct_search: loci_config::MemoryExtractorSearchResultsConfig {
+                        max_results: 5,
+                        min_score: 0.70,
+                    },
+                    inverted_search: loci_config::MemoryExtractorSearchResultsConfig {
+                        max_results: 3,
+                        min_score: 0.60,
+                    },
+                    bayesian_seed_weight: 10.0,
+                    max_counter_increment: 5.0,
+                    max_counter: 100.0,
+                    auto_discard_threshold: 0.1,
+                    auto_promotion_threshold: 0.9,
+                    min_alpha_for_promotion: 12.0,
+                    decay_rate: 0.99,
+                },
             },
         },
         routing: RoutingConfig {

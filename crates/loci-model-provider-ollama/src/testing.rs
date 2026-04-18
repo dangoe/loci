@@ -24,6 +24,14 @@ pub fn text_model() -> String {
     std::env::var("OLLAMA_TEXT_MODEL").unwrap_or_else(|_| "qwen3:0.6b".to_string())
 }
 
+/// Returns the classification model name.
+///
+/// Reads from the `OLLAMA_CLASSIFICATION_MODEL` environment variable, defaulting to
+/// `qwen3:0.6b`.
+pub fn classification_model() -> String {
+    std::env::var("OLLAMA_CLASSIFICATION_MODEL").unwrap_or_else(|_| "qwen3:0.6b".to_string())
+}
+
 /// Returns the embedding model name.
 ///
 /// Reads from the `OLLAMA_EMBEDDING_MODEL` environment variable, defaulting to

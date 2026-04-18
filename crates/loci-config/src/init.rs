@@ -87,6 +87,20 @@ mode = "disabled"               # extraction produces structured JSON; thinking 
 # chunk_size   = 2500            # max characters per chunk (splits at word boundary)
 # overlap_size = 200             # characters of overlap between consecutive chunks
 
+[memory.extraction.extractor]
+classification_model = "default"  # key in [models.text] for hit-classification (use a small, fast model)
+# direct_search.max_results  = 5
+# direct_search.min_score    = 0.70
+# inverted_search.max_results = 3
+# inverted_search.min_score   = 0.60
+# bayesian_seed_weight        = 10.0
+# max_counter_increment       = 5.0
+# max_counter                 = 100.0
+# auto_discard_threshold      = 0.1
+# auto_promotion_threshold    = 0.9
+# min_alpha_for_promotion     = 12.0
+# decay_rate                  = 0.99
+
 ########################################
 # Routing — default selections
 ########################################

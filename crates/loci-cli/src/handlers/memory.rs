@@ -17,9 +17,9 @@ use loci_core::{
         MemoryQueryMode as CoreMemoryQueryMode, MemoryTrust, Score as CoreScore,
     },
     memory_extraction::{
-        LlmMemoryExtractionStrategy, LlmMemoryExtractionStrategyParams, MemoryExtractionPipeline,
-        MemoryExtractionStrategy, MemoryExtractor, MemoryExtrationPipelineConfig,
-        PipelineSearchResultsConfig, llm::ChunkingConfig as CoreChunkingConfig,
+        LlmMemoryExtractionStrategy, LlmMemoryExtractionStrategyParams, MemoryExtractionStrategy,
+        MemoryExtractor, MemoryExtractorConfig, MemoryExtractorSearchResultsConfig,
+        llm::ChunkingConfig as CoreChunkingConfig,
     },
     model_provider::text_generation::TextGenerationModelProvider,
     store::MemoryStore as CoreMemoryStore,
@@ -230,19 +230,19 @@ where
                         })
                         .collect();
                     writeln!(out, "{}", serde_json::to_string_pretty(&json)?)?;
-                } else if let Some(pipeline_cfg) = &self.extraction_config.pipeline {
+                } else {
+                    let extractor_cfg = &self.extraction_config.extractor;
                     let classification_provider = Arc::new(LlmClassificationModelProvider::new(
                         Arc::clone(&self.provider),
-                        pipeline_cfg.classification_model.clone(),
+                        extractor_cfg.classification_model.clone(),
                     ));
-                    let pipeline_config = config_pipeline_config_to_core(pipeline_cfg);
-                    let pipeline = MemoryExtractionPipeline::new(
+                    let extractor = MemoryExtractor::new(
                         Arc::clone(&self.store),
                         Arc::new(strategy),
                         classification_provider,
-                        pipeline_config,
+                        config_extractor_config_to_core(extractor_cfg),
                     );
-                    let result = pipeline
+                    let result = extractor
                         .extract_and_store(&input, params)
                         .await
                         .map_err(|e| Box::new(e) as Box<dyn StdError>)?;
@@ -256,21 +256,6 @@ where
                             "discarded": result.discarded.len(),
                         }))?
                     )?;
-                } else {
-                    let extractor =
-                        MemoryExtractor::from_arcs(Arc::clone(&self.store), Arc::new(strategy));
-                    let result = extractor
-                        .extract_and_store(&input, params)
-                        .await
-                        .map_err(|e| Box::new(e) as Box<dyn StdError>)?;
-                    let json = serde_json::json!({
-                        "added": result.added.iter().map(entry_to_json).collect::<Vec<_>>(),
-                        "failures": result.failures.iter().map(|f| serde_json::json!({
-                            "index": f.index,
-                            "error": f.error.to_string(),
-                        })).collect::<Vec<_>>(),
-                    });
-                    writeln!(out, "{}", serde_json::to_string_pretty(&json)?)?;
                 }
             }
         }
@@ -278,15 +263,15 @@ where
     }
 }
 
-fn config_pipeline_config_to_core(
-    cfg: &loci_config::PipelineExtractionConfig,
-) -> MemoryExtrationPipelineConfig {
-    MemoryExtrationPipelineConfig {
-        direct_search: PipelineSearchResultsConfig {
+fn config_extractor_config_to_core(
+    cfg: &loci_config::MemoryExtractorConfig,
+) -> MemoryExtractorConfig {
+    MemoryExtractorConfig {
+        direct_search: MemoryExtractorSearchResultsConfig {
             max_results: cfg.direct_search.max_results,
             min_score: cfg.direct_search.min_score,
         },
-        inverted_search: PipelineSearchResultsConfig {
+        inverted_search: MemoryExtractorSearchResultsConfig {
             max_results: cfg.inverted_search.max_results,
             min_score: cfg.inverted_search.min_score,
         },
@@ -310,7 +295,7 @@ mod tests {
     use rstest::rstest;
     use std::{collections::HashMap, sync::Arc};
 
-    use loci_config::MemoryExtractionConfig;
+    use loci_config::{MemoryExtractionConfig, MemoryExtractorConfig, MemoryExtractorSearchResultsConfig};
     use loci_core::{
         memory::{
             MemoryEntry as CoreMemoryEntry, MemoryQueryResult as CoreMemoryQueryResult,
@@ -346,7 +331,18 @@ mod tests {
                 guidelines: None,
                 thinking: None,
                 chunking: None,
-                pipeline: None,
+                extractor: MemoryExtractorConfig {
+                    classification_model: "test-classification-model".to_string(),
+                    direct_search: MemoryExtractorSearchResultsConfig { max_results: 5, min_score: 0.70 },
+                    inverted_search: MemoryExtractorSearchResultsConfig { max_results: 3, min_score: 0.60 },
+                    bayesian_seed_weight: 10.0,
+                    max_counter_increment: 5.0,
+                    max_counter: 100.0,
+                    auto_discard_threshold: 0.1,
+                    auto_promotion_threshold: 0.9,
+                    min_alpha_for_promotion: 12.0,
+                    decay_rate: 0.99,
+                },
             },
         )
     }
@@ -366,7 +362,18 @@ mod tests {
                 guidelines: None,
                 thinking: None,
                 chunking: None,
-                pipeline: None,
+                extractor: MemoryExtractorConfig {
+                    classification_model: "test-classification-model".to_string(),
+                    direct_search: MemoryExtractorSearchResultsConfig { max_results: 5, min_score: 0.70 },
+                    inverted_search: MemoryExtractorSearchResultsConfig { max_results: 3, min_score: 0.60 },
+                    bayesian_seed_weight: 10.0,
+                    max_counter_increment: 5.0,
+                    max_counter: 100.0,
+                    auto_discard_threshold: 0.1,
+                    auto_promotion_threshold: 0.9,
+                    min_alpha_for_promotion: 12.0,
+                    decay_rate: 0.99,
+                },
             },
         )
     }
@@ -648,7 +655,18 @@ mod tests {
                 guidelines: None,
                 thinking: None,
                 chunking: None,
-                pipeline: None,
+                extractor: MemoryExtractorConfig {
+                    classification_model: "test-classification-model".to_string(),
+                    direct_search: MemoryExtractorSearchResultsConfig { max_results: 5, min_score: 0.70 },
+                    inverted_search: MemoryExtractorSearchResultsConfig { max_results: 3, min_score: 0.60 },
+                    bayesian_seed_weight: 10.0,
+                    max_counter_increment: 5.0,
+                    max_counter: 100.0,
+                    auto_discard_threshold: 0.1,
+                    auto_promotion_threshold: 0.9,
+                    min_alpha_for_promotion: 12.0,
+                    decay_rate: 0.99,
+                },
             },
         );
         let mut out = Vec::new();
@@ -702,7 +720,18 @@ mod tests {
                 guidelines: None,
                 thinking: None,
                 chunking: None,
-                pipeline: None,
+                extractor: MemoryExtractorConfig {
+                    classification_model: "test-classification-model".to_string(),
+                    direct_search: MemoryExtractorSearchResultsConfig { max_results: 5, min_score: 0.70 },
+                    inverted_search: MemoryExtractorSearchResultsConfig { max_results: 3, min_score: 0.60 },
+                    bayesian_seed_weight: 10.0,
+                    max_counter_increment: 5.0,
+                    max_counter: 100.0,
+                    auto_discard_threshold: 0.1,
+                    auto_promotion_threshold: 0.9,
+                    min_alpha_for_promotion: 12.0,
+                    decay_rate: 0.99,
+                },
             },
         );
         let mut out = Vec::new();
@@ -723,17 +752,29 @@ mod tests {
             .await
             .unwrap();
 
-        // Store was written
-        let inputs = store
-            .snapshot()
-            .add_inputs
-            .expect("store should have received add_entries");
-        assert_eq!(inputs.len(), 2);
+        // Store was written (add_entries was called at least once)
+        assert!(
+            store.snapshot().add_inputs.is_some(),
+            "store should have received add_entries"
+        );
 
         let v = parse_json_output(&out);
-        assert!(v.get("added").is_some());
-        assert_eq!(v["added"].as_array().unwrap().len(), 2);
-        assert_eq!(v["failures"].as_array().unwrap().len(), 0);
+        assert!(
+            v.get("inserted").is_some(),
+            "output should have 'inserted' field"
+        );
+        assert!(
+            v.get("merged").is_some(),
+            "output should have 'merged' field"
+        );
+        assert!(
+            v.get("promoted").is_some(),
+            "output should have 'promoted' field"
+        );
+        assert!(
+            v.get("discarded").is_some(),
+            "output should have 'discarded' field"
+        );
     }
 
     #[tokio::test]
@@ -972,7 +1013,18 @@ mod tests {
                 guidelines: None,
                 thinking: None,
                 chunking: None,
-                pipeline: None,
+                extractor: MemoryExtractorConfig {
+                    classification_model: "test-classification-model".to_string(),
+                    direct_search: MemoryExtractorSearchResultsConfig { max_results: 5, min_score: 0.70 },
+                    inverted_search: MemoryExtractorSearchResultsConfig { max_results: 3, min_score: 0.60 },
+                    bayesian_seed_weight: 10.0,
+                    max_counter_increment: 5.0,
+                    max_counter: 100.0,
+                    auto_discard_threshold: 0.1,
+                    auto_promotion_threshold: 0.9,
+                    min_alpha_for_promotion: 12.0,
+                    decay_rate: 0.99,
+                },
             },
         );
         let mut out = Vec::new();

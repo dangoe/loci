@@ -10,10 +10,13 @@ use std::sync::Arc;
 use loci_core::memory::{MemoryQuery, MemoryQueryMode, MemoryTrust, Score};
 use loci_core::memory_extraction::{
     LlmMemoryExtractionStrategy, LlmMemoryExtractionStrategyParams, MemoryExtractionStrategy,
-    MemoryExtractor,
+    MemoryExtractor, MemoryExtractorConfig,
 };
 use loci_core::store::MemoryStore;
-use loci_model_provider_ollama::testing::{ensure_ollama_available, ollama_provider, text_model};
+use loci_model_provider_ollama::classification::LlmClassificationModelProvider;
+use loci_model_provider_ollama::testing::{
+    classification_model, ensure_ollama_available, ollama_provider, text_model,
+};
 
 use support::{create_embedder, start_qdrant_store};
 
@@ -193,32 +196,38 @@ async fn test_extract_and_store_persists_entries() {
     let store = Arc::new(store);
 
     let strategy = LlmMemoryExtractionStrategy::new(Arc::clone(&provider), text_model());
-    let extractor = MemoryExtractor::from_arcs(Arc::clone(&store), Arc::new(strategy));
+    let classifier = Arc::new(LlmClassificationModelProvider::new(
+        Arc::clone(&provider),
+        classification_model(),
+    ));
+    let extractor = MemoryExtractor::new(
+        Arc::clone(&store),
+        Arc::new(strategy),
+        classifier,
+        MemoryExtractorConfig::default(),
+    );
 
     let result = extractor
         .extract_and_store(RICH_INPUT, base_params())
         .await
         .expect("extract_and_store should succeed");
 
+    let stored: Vec<_> = result
+        .inserted
+        .iter()
+        .chain(result.merged.iter())
+        .chain(result.promoted.iter())
+        .collect();
+
     assert!(
-        result.failures.is_empty(),
-        "no entry should fail to be stored; failures: {:?}",
-        result
-            .failures
-            .iter()
-            .map(|f| f.error.to_string())
-            .collect::<Vec<_>>()
-    );
-    assert!(
-        !result.added.is_empty(),
+        !stored.is_empty(),
         "at least one entry should be stored from a fact-rich paragraph"
     );
 
     // The combined content of all stored entries should reference at least one
     // proper noun that was present in the input.
     let key_terms = ["alice", "rust", "neovim", "berlin", "zulip"];
-    let all_content = result
-        .added
+    let all_content = stored
         .iter()
         .map(|r| r.memory_entry.content.to_lowercase())
         .collect::<Vec<_>>()
@@ -228,8 +237,7 @@ async fn test_extract_and_store_persists_entries() {
         mentions_key_term,
         "stored entries should reference key terms from the input \
          (checked: {key_terms:?}); stored: {:?}",
-        result
-            .added
+        stored
             .iter()
             .map(|r| &r.memory_entry.content)
             .collect::<Vec<_>>()
@@ -247,7 +255,16 @@ async fn test_extracted_entries_are_semantically_retrievable() {
     let store = Arc::new(store);
 
     let strategy = LlmMemoryExtractionStrategy::new(Arc::clone(&provider), text_model());
-    let extractor = MemoryExtractor::from_arcs(Arc::clone(&store), Arc::new(strategy));
+    let classifier = Arc::new(LlmClassificationModelProvider::new(
+        Arc::clone(&provider),
+        classification_model(),
+    ));
+    let extractor = MemoryExtractor::new(
+        Arc::clone(&store),
+        Arc::new(strategy),
+        classifier,
+        MemoryExtractorConfig::default(),
+    );
 
     extractor
         .extract_and_store(RICH_INPUT, base_params())
@@ -300,7 +317,16 @@ async fn test_stored_entries_have_configured_metadata() {
     let store = Arc::new(store);
 
     let strategy = LlmMemoryExtractionStrategy::new(Arc::clone(&provider), text_model());
-    let extractor = MemoryExtractor::from_arcs(Arc::clone(&store), Arc::new(strategy));
+    let classifier = Arc::new(LlmClassificationModelProvider::new(
+        Arc::clone(&provider),
+        classification_model(),
+    ));
+    let extractor = MemoryExtractor::new(
+        Arc::clone(&store),
+        Arc::new(strategy),
+        classifier,
+        MemoryExtractorConfig::default(),
+    );
 
     let mut meta = HashMap::new();
     meta.insert("source".to_string(), "e2e-test".to_string());
@@ -315,20 +341,27 @@ async fn test_stored_entries_have_configured_metadata() {
         .await
         .expect("extract_and_store should succeed");
 
+    let stored: Vec<_> = result
+        .inserted
+        .iter()
+        .chain(result.merged.iter())
+        .chain(result.promoted.iter())
+        .collect();
+
     assert!(
-        !result.added.is_empty(),
+        !stored.is_empty(),
         "extraction should yield entries to validate metadata persistence"
     );
-    for added in &result.added {
+    for entry in &stored {
         assert_eq!(
-            added
+            entry
                 .memory_entry
                 .metadata
                 .get("source")
                 .map(String::as_str),
             Some("e2e-test"),
             "stored entry should carry the configured metadata, entry id: {}",
-            added.memory_entry.id
+            entry.memory_entry.id
         );
     }
 }
@@ -344,7 +377,16 @@ async fn test_stored_entries_have_extracted_memory_kind() {
     let store = Arc::new(store);
 
     let strategy = LlmMemoryExtractionStrategy::new(Arc::clone(&provider), text_model());
-    let extractor = MemoryExtractor::from_arcs(Arc::clone(&store), Arc::new(strategy));
+    let classifier = Arc::new(LlmClassificationModelProvider::new(
+        Arc::clone(&provider),
+        classification_model(),
+    ));
+    let extractor = MemoryExtractor::new(
+        Arc::clone(&store),
+        Arc::new(strategy),
+        classifier,
+        MemoryExtractorConfig::default(),
+    );
 
     let result = extractor
         .extract_and_store(RICH_INPUT, base_params())
@@ -352,14 +394,16 @@ async fn test_stored_entries_have_extracted_memory_kind() {
         .expect("extract_and_store should succeed");
 
     assert!(
-        !result.added.is_empty(),
-        "extraction should yield entries to validate kind persistence"
+        !result.inserted.is_empty(),
+        "extraction should yield inserted entries to validate kind persistence"
     );
-    for added in &result.added {
+    // In a fresh store there are no prior entries so all candidates are inserted,
+    // not promoted. Each inserted entry must carry the Extracted trust kind.
+    for entry in &result.inserted {
         assert!(
-            matches!(added.memory_entry.trust, MemoryTrust::Extracted { .. }),
-            "stored entry must carry the ExtractedMemory kind, entry id: {}",
-            added.memory_entry.id
+            matches!(entry.memory_entry.trust, MemoryTrust::Extracted { .. }),
+            "inserted entry must carry the Extracted trust kind, entry id: {}",
+            entry.memory_entry.id
         );
     }
 }

@@ -4,8 +4,8 @@
 
 use serde::Deserialize;
 
+use crate::extractor::MemoryExtractorConfig;
 use crate::model::ModelThinkingConfig;
-use crate::pipeline::PipelineExtractionConfig;
 
 /// Chunking settings for splitting input text before LLM extraction,
 /// deserialized from `[memory.extraction.chunking]`.
@@ -61,7 +61,7 @@ pub struct MemoryExtractionConfig {
 
     /// Optional pipeline-stage settings. When absent, the legacy single-stage
     /// extraction path is used.
-    pub pipeline: Option<PipelineExtractionConfig>,
+    pub extractor: MemoryExtractorConfig,
 }
 
 #[cfg(test)]
@@ -96,8 +96,13 @@ default = "x"
 default = "qdrant"
 "#;
 
+    const EXTRACTOR_SECTION: &str = r#"
+[memory.extraction.extractor]
+classification_model = "x"
+"#;
+
     fn config_with_extraction(extraction_toml: &str) -> AppConfig {
-        let raw = format!("{BASE}\n{extraction_toml}");
+        let raw = format!("{BASE}\n{extraction_toml}\n{EXTRACTOR_SECTION}");
         let f = write_temp_config(&raw);
         load_config(f.path()).unwrap()
     }
@@ -239,9 +244,21 @@ overlap_size = 300
     }
 
     #[test]
+    fn test_missing_extractor_section_returns_parse_error() {
+        let f = write_temp_config(&format!(
+            "{BASE}\n[memory.extraction]\nmodel = \"default\"\n"
+        ));
+        let err = crate::load_config(f.path()).unwrap_err();
+        assert!(
+            matches!(err, crate::ConfigError::Parse { .. }),
+            "expected Parse error when [memory.extraction.extractor] is absent, got: {err:?}"
+        );
+    }
+
+    #[test]
     fn test_missing_model_field_returns_parse_error() {
         let f = write_temp_config(&format!(
-            "{BASE}\n[memory.extraction]\nmin_confidence = 0.7\n"
+            "{BASE}\n[memory.extraction]\nmin_confidence = 0.7\n{EXTRACTOR_SECTION}"
         ));
         let err = crate::load_config(f.path()).unwrap_err();
         assert!(
