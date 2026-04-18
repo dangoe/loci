@@ -10,8 +10,8 @@ use loci_core::model_provider::{
     embedding::{EmbeddingModelProvider, EmbeddingRequest, EmbeddingResponse},
     error::ModelProviderError,
     text_generation::{
-        ResponseFormat, TextGenerationModelProvider, TextGenerationRequest,
-        TextGenerationResponse, ThinkingEffortLevel, ThinkingMode, TokenUsage,
+        ResponseFormat, TextGenerationModelProvider, TextGenerationRequest, TextGenerationResponse,
+        ThinkingEffortLevel, ThinkingMode, TokenUsage,
     },
 };
 use log::debug;

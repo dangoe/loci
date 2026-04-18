@@ -14,8 +14,7 @@ use loci_config::MemoryExtractionConfig;
 use loci_core::{
     memory::{
         MemoryInput as CoreMemoryInput, MemoryKind as CoreMemoryKind,
-        MemoryQuery as CoreMemoryQuery, MemoryQueryMode as CoreMemoryQueryMode,
-        ReviewState as CoreReviewState, Score as CoreScore,
+        MemoryQuery as CoreMemoryQuery, MemoryQueryMode as CoreMemoryQueryMode, Score as CoreScore,
     },
     memory_extraction::{
         LlmMemoryExtractionStrategy, LlmMemoryExtractionStrategyParams, MemoryExtractionPipeline,
@@ -161,56 +160,6 @@ where
                     out,
                     "{}",
                     serde_json::to_string_pretty(&serde_json::json!({ "expired pruned": true }))?
-                )?;
-            }
-            MemoryCommand::Decay { rate, dry_run } => {
-                debug!("apply decay: rate={rate}, dry_run={dry_run}");
-                let query = CoreMemoryQuery {
-                    topic: String::new(),
-                    max_results: 10_000,
-                    min_score: CoreScore::ZERO,
-                    filters: HashMap::new(),
-                    mode: CoreMemoryQueryMode::Lookup,
-                };
-                let entries = self.store.query(query).await?;
-                let mut decayed = 0usize;
-                let mut skipped = 0usize;
-                for result in &entries {
-                    let entry = &result.memory_entry;
-                    let alpha = entry.review.alpha.unwrap_or(0.0);
-                    let beta = entry.review.beta.unwrap_or(0.0);
-                    if alpha == 0.0 && beta == 0.0 {
-                        skipped += 1;
-                        continue;
-                    }
-                    let new_alpha = alpha * rate;
-                    let new_confidence = if new_alpha + beta > 0.0 {
-                        new_alpha / (new_alpha + beta)
-                    } else {
-                        0.0
-                    };
-                    let new_review = CoreReviewState {
-                        alpha: Some(new_alpha),
-                        beta: Some(beta),
-                    };
-                    let input = CoreMemoryInput {
-                        content: entry.content.clone(),
-                        metadata: entry.metadata.clone(),
-                        kind: Some(entry.kind),
-                        confidence: Some(new_confidence),
-                        review: new_review,
-                    };
-                    if !dry_run {
-                        self.store.update_entry(entry.id, input).await?;
-                    }
-                    decayed += 1;
-                }
-                writeln!(
-                    out,
-                    "{}",
-                    serde_json::to_string_pretty(
-                        &serde_json::json!({ "decayed": decayed, "skipped": skipped })
-                    )?
                 )?;
             }
             MemoryCommand::Extract {

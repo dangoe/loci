@@ -116,7 +116,10 @@ mod tests {
     fn test_hit_class_parse_accepts_common_synonyms() {
         assert_eq!(parse_hit_class("same"), Some(HitClass::Duplicate));
         assert_eq!(parse_hit_class("related"), Some(HitClass::Complementary));
-        assert_eq!(parse_hit_class("contradicts"), Some(HitClass::Contradiction));
+        assert_eq!(
+            parse_hit_class("contradicts"),
+            Some(HitClass::Contradiction)
+        );
         assert_eq!(parse_hit_class("conflict"), Some(HitClass::Contradiction));
         assert_eq!(parse_hit_class("none"), Some(HitClass::Unrelated));
         assert_eq!(parse_hit_class("no relation"), Some(HitClass::Unrelated));

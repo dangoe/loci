@@ -298,11 +298,12 @@ fn chunks_for(input: &str, config: Option<&ChunkingConfig>) -> Vec<String> {
 }
 
 /// Runs a single extraction round for one chunk. On parse failure, retries
-/// once with an explicit reinforcement message and **without** JSON mode —
-/// provider-enforced JSON sometimes coerces small models into emitting
-/// bracketless objects like `{"response": "..."}` that the parser can't
-/// recover from; relaxing the constraint lets the model honour the text
-/// instruction to produce an array.
+/// once with an explicit reinforcement message.
+///
+/// JSON mode is intentionally disabled: provider-enforced JSON sometimes
+/// coerces small models into emitting a bare object (`{"response": "..."}` or
+/// `{}`) rather than the JSON array the system prompt requests. Relying on the
+/// text instruction alone produces correct arrays from the models tested.
 async fn extract_one_chunk<P: TextGenerationModelProvider>(
     provider: &P,
     model: &str,
@@ -310,7 +311,7 @@ async fn extract_one_chunk<P: TextGenerationModelProvider>(
     params: LlmMemoryExtractionStrategyParams,
 ) -> Result<Vec<MemoryInput>, MemoryExtractionError> {
     let prompt = build_extraction_prompt(chunk, &params);
-    let first = call_model(provider, model, &prompt, &params, true).await?;
+    let first = call_model(provider, model, &prompt, &params, false).await?;
     match parse_extraction_response(&first, params.clone()) {
         Ok(entries) => Ok(entries),
         Err(MemoryExtractionError::Parse(_)) => {
@@ -675,9 +676,7 @@ Note: [confidence values] are rough estimates."#;
         // retry path should fire and return the real array.
         let provider = Arc::new(MockTextGenerationModelProvider::new(
             ProviderBehavior::Sequence(vec![
-                vec![done_chunk(
-                    r#"{"content": "single", "confidence": 0.9}"#,
-                )],
+                vec![done_chunk(r#"{"content": "single", "confidence": 0.9}"#)],
                 vec![done_chunk(
                     r#"[{"content": "one", "confidence": 0.9}, {"content": "two", "confidence": 0.8}]"#,
                 )],
@@ -696,9 +695,7 @@ Note: [confidence values] are rough estimates."#;
         let provider = Arc::new(MockTextGenerationModelProvider::new(
             ProviderBehavior::Sequence(vec![
                 vec![done_chunk("no json at all")],
-                vec![done_chunk(
-                    r#"[{"content": "ok", "confidence": 0.9}]"#,
-                )],
+                vec![done_chunk(r#"[{"content": "ok", "confidence": 0.9}]"#)],
             ]),
         ));
         let strategy = LlmMemoryExtractionStrategy::new(Arc::clone(&provider), "m");
@@ -717,22 +714,20 @@ Note: [confidence values] are rough estimates."#;
     }
 
     #[tokio::test]
-    async fn test_extract_sets_json_response_format_on_request() {
+    async fn test_extract_does_not_set_json_response_format_on_request() {
+        // JSON mode is deliberately disabled: provider-enforced JSON causes
+        // small models to emit objects (`{}`) instead of arrays.  The text
+        // instruction in the system prompt is sufficient.
         let provider = Arc::new(MockTextGenerationModelProvider::new(
-            ProviderBehavior::Stream(vec![done_chunk(
-                r#"[{"content": "x", "confidence": 0.9}]"#,
-            )]),
+            ProviderBehavior::Stream(vec![done_chunk(r#"[{"content": "x", "confidence": 0.9}]"#)]),
         ));
         let strategy = LlmMemoryExtractionStrategy::new(Arc::clone(&provider), "m");
         strategy.extract("input", default_params()).await.unwrap();
 
         let req = provider.snapshot().last_request.expect("request captured");
         assert!(
-            matches!(
-                req.response_format,
-                Some(crate::model_provider::text_generation::ResponseFormat::Json)
-            ),
-            "extraction must request JSON output mode"
+            req.response_format.is_none(),
+            "extraction must not set response_format — JSON mode breaks small models"
         );
     }
 }
