@@ -279,14 +279,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_score_valid_boundaries() {
+    fn test_score_new_with_valid_boundary_values_returns_ok() {
         assert!(Score::new(0.0).is_ok());
         assert!(Score::new(0.5).is_ok());
         assert!(Score::new(1.0).is_ok());
     }
 
     #[test]
-    fn test_score_out_of_range() {
+    fn test_score_new_with_out_of_range_value_returns_err() {
         assert!(Score::new(-0.1).is_err());
         assert!(Score::new(1.1).is_err());
     }
@@ -298,7 +298,7 @@ mod tests {
     }
 
     #[test]
-    fn test_score_zero_is_zero() {
+    fn test_score_zero_constant_has_value_zero() {
         assert_eq!(Score::ZERO.value(), 0.0);
     }
 

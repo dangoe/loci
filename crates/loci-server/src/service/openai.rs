@@ -163,7 +163,7 @@ mod tests {
     }
 
     #[test]
-    fn build_config_uses_default_text_model() {
+    fn test_build_config_uses_default_text_model() {
         let svc = make_service();
         let input = ChatCompletionInput {
             prompt: "test".into(),
@@ -175,7 +175,7 @@ mod tests {
     }
 
     #[test]
-    fn build_config_sets_system_append_mode_when_system_present() {
+    fn test_build_config_sets_system_append_mode_when_system_present() {
         let svc = make_service();
         let input = ChatCompletionInput {
             prompt: "test".into(),
@@ -189,7 +189,7 @@ mod tests {
     }
 
     #[test]
-    fn build_config_returns_error_when_model_key_missing() {
+    fn test_build_config_returns_error_when_model_key_missing() {
         let mut cfg = mock_config();
         cfg.routing.text.default = "nonexistent".into();
         let store = Arc::new(
@@ -216,7 +216,7 @@ mod tests {
     }
 
     #[test]
-    fn build_config_memory_mode_is_auto() {
+    fn test_build_config_memory_mode_is_auto() {
         let svc = make_service();
         let input = ChatCompletionInput {
             prompt: "test".into(),
@@ -231,7 +231,7 @@ mod tests {
     }
 
     #[test]
-    fn build_config_tuning_is_forwarded() {
+    fn test_build_config_tuning_is_forwarded() {
         let svc = make_service();
         let input = ChatCompletionInput {
             prompt: "test".into(),

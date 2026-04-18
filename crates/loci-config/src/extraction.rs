@@ -103,7 +103,7 @@ default = "qdrant"
     }
 
     #[test]
-    fn minimal_extraction_block_is_parsed() {
+    fn test_minimal_extraction_block_is_parsed() {
         let cfg = config_with_extraction(
             r#"
 [memory.extraction]
@@ -119,7 +119,7 @@ model = "default"
     }
 
     #[test]
-    fn min_confidence_is_parsed() {
+    fn test_min_confidence_is_parsed() {
         let cfg = config_with_extraction(
             r#"
 [memory.extraction]
@@ -131,7 +131,7 @@ min_confidence = 0.7
     }
 
     #[test]
-    fn max_entries_is_parsed() {
+    fn test_max_entries_is_parsed() {
         let cfg = config_with_extraction(
             r#"
 [memory.extraction]
@@ -143,7 +143,7 @@ max_entries = 20
     }
 
     #[test]
-    fn guidelines_is_parsed() {
+    fn test_guidelines_is_parsed() {
         let cfg = config_with_extraction(
             r#"
 [memory.extraction]
@@ -158,7 +158,7 @@ guidelines = "Focus on technical facts only."
     }
 
     #[test]
-    fn thinking_disabled_is_parsed() {
+    fn test_thinking_disabled_is_parsed() {
         use crate::ModelThinkingConfig;
         let cfg = config_with_extraction(
             r#"
@@ -176,7 +176,7 @@ mode = "disabled"
     }
 
     #[test]
-    fn thinking_effort_is_parsed() {
+    fn test_thinking_effort_is_parsed() {
         use crate::{ModelThinkingConfig, ModelThinkingEffortLevel};
         let cfg = config_with_extraction(
             r#"
@@ -197,7 +197,7 @@ level = "low"
     }
 
     #[test]
-    fn chunking_defaults_when_section_present_but_fields_absent() {
+    fn test_chunking_defaults_when_section_present_but_fields_absent() {
         let cfg = config_with_extraction(
             r#"
 [memory.extraction]
@@ -212,7 +212,7 @@ model = "default"
     }
 
     #[test]
-    fn chunking_explicit_values_are_parsed() {
+    fn test_chunking_explicit_values_are_parsed() {
         let cfg = config_with_extraction(
             r#"
 [memory.extraction]
@@ -229,7 +229,7 @@ overlap_size = 300
     }
 
     #[test]
-    fn missing_extraction_block_returns_parse_error() {
+    fn test_missing_extraction_block_returns_parse_error() {
         let f = write_temp_config(BASE);
         let err = crate::load_config(f.path()).unwrap_err();
         assert!(
@@ -239,7 +239,7 @@ overlap_size = 300
     }
 
     #[test]
-    fn missing_model_field_returns_parse_error() {
+    fn test_missing_model_field_returns_parse_error() {
         let f = write_temp_config(&format!(
             "{BASE}\n[memory.extraction]\nmin_confidence = 0.7\n"
         ));

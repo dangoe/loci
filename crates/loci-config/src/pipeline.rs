@@ -132,7 +132,7 @@ default = "qdrant"
     }
 
     #[test]
-    fn pipeline_absent_gives_none() {
+    fn test_pipeline_absent_gives_none() {
         let cfg = config_with_extraction(
             r#"
 [memory.extraction]
@@ -143,7 +143,7 @@ model = "default"
     }
 
     #[test]
-    fn pipeline_minimal_is_parsed() {
+    fn test_pipeline_minimal_is_parsed() {
         let cfg = config_with_extraction(
             r#"
 [memory.extraction]
@@ -169,7 +169,7 @@ classification_model = "qwen2.5:0.5b"
     }
 
     #[test]
-    fn pipeline_explicit_values_are_parsed() {
+    fn test_pipeline_explicit_values_are_parsed() {
         let cfg = config_with_extraction(
             r#"
 [memory.extraction]
@@ -210,7 +210,7 @@ min_score   = 0.55
     }
 
     #[test]
-    fn pipeline_defaults() {
+    fn test_pipeline_defaults() {
         let cfg = config_with_extraction(
             r#"
 [memory.extraction]

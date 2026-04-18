@@ -108,18 +108,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_dimension() {
+    fn test_dimension_returns_element_count() {
         assert_eq!(Embedding::new(vec![1.0, 2.0, 3.0]).dimension(), 3);
     }
 
     #[test]
-    fn test_values() {
+    fn test_values_returns_stored_float_slice() {
         let values = vec![0.1_f32, 0.2, 0.3];
         assert_eq!(Embedding::new(values.clone()).values(), values.as_slice());
     }
 
     #[test]
-    fn test_from_vec() {
+    fn test_from_vec_stores_values_as_embedding() {
         let e: Embedding = vec![1.0_f32, 2.0].into();
         assert_eq!(e.dimension(), 2);
     }

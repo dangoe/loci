@@ -44,7 +44,7 @@ mod tests {
     use crate::handlers::json::entry_to_json;
 
     #[test]
-    fn entry_to_json_serializes_fields() {
+    fn test_entry_to_json_serializes_fields() {
         let mut metadata = HashMap::new();
         metadata.insert("source".to_string(), "unit-test".to_string());
 

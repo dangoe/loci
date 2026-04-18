@@ -140,7 +140,7 @@ default = "qdrant"
 "#;
 
     #[test]
-    fn parses_minimal_config() {
+    fn test_parses_minimal_config() {
         let f = write_temp_config(MINIMAL_CONFIG);
         let config = load_config(f.path()).unwrap();
 
@@ -157,7 +157,7 @@ default = "qdrant"
     }
 
     #[test]
-    fn resolves_literal_api_key() {
+    fn test_resolves_literal_api_key() {
         let cfg = r#"
 [providers.openai]
 kind = "openai"
@@ -194,7 +194,7 @@ default = "qdrant"
     }
 
     #[test]
-    fn resolves_env_api_key() {
+    fn test_resolves_env_api_key() {
         // SAFETY: single-threaded test process; no other threads read this var.
         unsafe { std::env::set_var("LOCI_TEST_SECRET", "resolved-value") };
         let cfg = r#"
@@ -235,7 +235,7 @@ default = "qdrant"
     }
 
     #[test]
-    fn missing_env_var_returns_error() {
+    fn test_missing_env_var_returns_error() {
         // SAFETY: single-threaded test process; no other threads read this var.
         unsafe { std::env::remove_var("LOCI_TEST_MISSING_VAR") };
         let cfg = r#"
@@ -271,27 +271,27 @@ default = "qdrant"
     }
 
     #[test]
-    fn missing_config_file_returns_io_error() {
+    fn test_missing_config_file_returns_io_error() {
         let err = load_config(Path::new("/nonexistent/path/config.toml")).unwrap_err();
         assert!(matches!(err, ConfigError::Io { .. }));
     }
 
     #[test]
-    fn invalid_toml_returns_parse_error() {
+    fn test_invalid_toml_returns_parse_error() {
         let f = write_temp_config("this is not toml ][");
         let err = load_config(f.path()).unwrap_err();
         assert!(matches!(err, ConfigError::Parse { .. }));
     }
 
     #[test]
-    fn similarity_threshold_is_optional() {
+    fn test_similarity_threshold_is_optional() {
         let f = write_temp_config(MINIMAL_CONFIG);
         let config = load_config(f.path()).unwrap();
         assert!(config.memory.config.similarity_threshold.is_none());
     }
 
     #[test]
-    fn similarity_threshold_parsed_when_set() {
+    fn test_similarity_threshold_parsed_when_set() {
         let cfg = r#"
 [providers.ollama]
 kind = "ollama"
@@ -326,7 +326,7 @@ default = "qdrant"
     }
 
     #[test]
-    fn qdrant_backend_with_env_api_key() {
+    fn test_qdrant_backend_with_env_api_key() {
         // SAFETY: single-threaded test process; no other threads read this var.
         unsafe { std::env::set_var("LOCI_QDRANT_KEY", "qdrant-secret") };
         let cfg = r#"
@@ -364,14 +364,14 @@ default = "qdrant"
     }
 
     #[test]
-    fn fallback_defaults_to_empty_vec() {
+    fn test_fallback_defaults_to_empty_vec() {
         let f = write_temp_config(MINIMAL_CONFIG);
         let config = load_config(f.path()).unwrap();
         assert!(config.routing.text.fallback.is_empty());
     }
 
     #[test]
-    fn fallback_is_parsed_when_set() {
+    fn test_fallback_is_parsed_when_set() {
         let cfg = r#"
 [providers.ollama]
 kind = "ollama"
@@ -407,7 +407,7 @@ default = "qdrant"
     /// `[providers]` is `#[serde(default)]`, so an absent section is valid and
     /// results in an empty providers map rather than a parse error.
     #[test]
-    fn missing_providers_section_is_accepted_with_empty_map() {
+    fn test_missing_providers_section_is_accepted_with_empty_map() {
         let cfg = r#"
 [memory.backends.qdrant]
 kind = "qdrant"
@@ -439,7 +439,7 @@ default = "qdrant"
     }
 
     #[test]
-    fn invalid_provider_kind_returns_parse_error() {
+    fn test_invalid_provider_kind_returns_parse_error() {
         let cfg = r#"
 [providers.bad]
 kind = "invalid_kind"
@@ -475,7 +475,7 @@ default = "qdrant"
     }
 
     #[test]
-    fn text_model_without_provider_returns_parse_error() {
+    fn test_text_model_without_provider_returns_parse_error() {
         // `provider` is a required field on `TextModelConfig` (no `#[serde(default)]`).
         let cfg = r#"
 [models.text.default]
@@ -511,7 +511,7 @@ default = "qdrant"
     }
 
     #[test]
-    fn text_model_without_model_field_returns_parse_error() {
+    fn test_text_model_without_model_field_returns_parse_error() {
         // `model` is a required field on `TextModelConfig` (no `#[serde(default)]`).
         let cfg = r#"
 [models.text.default]
@@ -547,7 +547,7 @@ default = "qdrant"
     }
 
     #[test]
-    fn temperature_as_string_returns_parse_error() {
+    fn test_temperature_as_string_returns_parse_error() {
         // `temperature` is typed as `Option<f32>`; a string value is a type mismatch.
         let cfg = r#"
 [providers.ollama]
@@ -591,7 +591,7 @@ default = "qdrant"
     }
 
     #[test]
-    fn markdown_backend_is_parsed_correctly() {
+    fn test_markdown_backend_is_parsed_correctly() {
         let cfg = r#"
 [memory.backends.local]
 kind = "markdown"
@@ -623,7 +623,7 @@ default = "local"
     }
 
     #[test]
-    fn model_tuning_is_parsed_when_set() {
+    fn test_model_tuning_is_parsed_when_set() {
         let cfg = r#"
 [providers.ollama]
 kind = "ollama"

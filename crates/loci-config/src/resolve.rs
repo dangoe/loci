@@ -25,12 +25,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn literal_value_is_returned_unchanged() {
+    fn test_literal_value_is_returned_unchanged() {
         assert_eq!(resolve_secret("sk-abc123").unwrap(), "sk-abc123");
     }
 
     #[test]
-    fn env_prefix_resolves_variable() {
+    fn test_env_prefix_resolves_variable() {
         // SAFETY: single-threaded test process; no other threads read this var.
         unsafe { std::env::set_var("LOCI_RESOLVE_TEST", "hello") };
         assert_eq!(resolve_secret("env:LOCI_RESOLVE_TEST").unwrap(), "hello");
@@ -39,7 +39,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_env_var_is_an_error() {
+    fn test_missing_env_var_is_an_error() {
         // SAFETY: single-threaded test process; no other threads read this var.
         unsafe { std::env::remove_var("LOCI_RESOLVE_MISSING") };
         let err = resolve_secret("env:LOCI_RESOLVE_MISSING").unwrap_err();

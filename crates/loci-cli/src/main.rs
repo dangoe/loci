@@ -145,13 +145,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resolve_config_path_uses_cli_value_when_set() {
+    fn test_resolve_config_path_uses_cli_value_when_set() {
         let p = resolve_config_path(Some(PathBuf::from("/tmp/my-config.toml")));
         assert_eq!(p, PathBuf::from("/tmp/my-config.toml"));
     }
 
     #[test]
-    fn resolve_config_path_falls_back_to_xdg_when_empty() {
+    fn test_resolve_config_path_falls_back_to_xdg_when_empty() {
         let p = resolve_config_path(None);
         assert!(p.ends_with("loci/config.toml"));
     }

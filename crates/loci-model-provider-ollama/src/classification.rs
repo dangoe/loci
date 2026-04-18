@@ -142,14 +142,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_valid_response_duplicate() {
+    async fn test_classify_hit_with_duplicate_response_returns_duplicate() {
         let p = provider_with(r#"{"class": "duplicate"}"#);
         let result = p.classify_hit("a", "b").await;
         assert_eq!(result.unwrap(), HitClass::Duplicate);
     }
 
     #[tokio::test]
-    async fn test_case_insensitive_complementary() {
+    async fn test_classify_hit_with_uppercase_class_returns_complementary() {
         let p = provider_with(r#"{"class": "COMPLEMENTARY"}"#);
         let result = p.classify_hit("a", "b").await;
         assert_eq!(result.unwrap(), HitClass::Complementary);
@@ -176,14 +176,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_think_stripping_contradiction() {
+    async fn test_classify_hit_with_think_wrapped_response_returns_correct_class() {
         let p = provider_with("<think>reasoning</think>\n{\"class\": \"contradiction\"}");
         let result = p.classify_hit("a", "b").await;
         assert_eq!(result.unwrap(), HitClass::Contradiction);
     }
 
     #[tokio::test]
-    async fn test_provider_error_mapped() {
+    async fn test_classify_hit_when_provider_errors_returns_model_provider_error() {
         let provider =
             LlmClassificationModelProvider::new(Arc::new(MockProvider::timing_out()), "mock-model");
         let result = provider.classify_hit("a", "b").await;

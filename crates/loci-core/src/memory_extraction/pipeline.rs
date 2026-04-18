@@ -448,7 +448,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_fresh_insert_path() {
+    async fn test_extract_and_store_with_no_similar_entries_inserts_candidate() {
         // No existing hits → candidate is inserted as ExtractedMemory.
         let candidate = make_candidate("the sky is blue", 0.8);
         let inserted_result = make_extracted_result(uuid::Uuid::new_v4(), "the sky is blue", 0.8);
@@ -473,7 +473,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_auto_discard_path() {
+    async fn test_extract_and_store_when_contradiction_lowers_score_discards_candidate() {
         // Two Contradiction hits lower the score enough to trigger auto-discard.
         // confidence = 0.7 → alpha=7.0, beta=3.0
         // increment = min(0.7, 5.0) = 0.7
@@ -534,7 +534,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_auto_promotion_path() {
+    async fn test_extract_and_store_with_many_duplicate_hits_promotes_to_fact() {
         // Many Duplicate hits boost alpha enough to trigger auto-promotion to Fact.
         // confidence = 0.9 → alpha=9.0, beta=1.0; increment = min(0.9, 5.0) = 0.9
         // 5 duplicate hits → alpha = min(9.0 + 0.9*5, 100) = 13.5 → score ≈ 0.931 ≥ 0.9 → promote
@@ -573,7 +573,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_merge_path() {
+    async fn test_extract_and_store_with_single_duplicate_hit_merges_entries() {
         // Duplicate hit → same ID deduplicated → 1 delete, 1 merged insert.
         // confidence = 0.7 → alpha=7.0, beta=3.0; increment = min(0.7, 5.0) = 0.7
         // 1 duplicate → alpha = 7.7 → score ≈ 0.72 (between thresholds → merged)
