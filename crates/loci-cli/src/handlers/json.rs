@@ -4,16 +4,24 @@
 
 /// Serialises a [`loci_core::memory::MemoryEntry`] to a [`serde_json::Value`].
 pub fn entry_to_json(e: &loci_core::memory::MemoryQueryResult) -> serde_json::Value {
+    use loci_core::memory::MemoryTrust;
+    let (confidence, trust_evidence) = match &e.memory_entry.trust {
+        MemoryTrust::Fact => (1.0_f64, serde_json::Value::Null),
+        MemoryTrust::Extracted { confidence, evidence } => (
+            evidence.bayesian_confidence().unwrap_or(*confidence),
+            serde_json::json!({
+                "alpha": evidence.alpha,
+                "beta": evidence.beta,
+            }),
+        ),
+    };
     serde_json::json!({
         "id": e.memory_entry.id.to_string(),
         "content": e.memory_entry.content,
         "metadata": e.memory_entry.metadata,
-        "kind": e.memory_entry.kind.as_str(),
-        "confidence": e.memory_entry.confidence,
-        "review": {
-            "alpha": e.memory_entry.review.alpha,
-            "beta": e.memory_entry.review.beta,
-        },
+        "kind": e.memory_entry.trust.as_str(),
+        "confidence": confidence,
+        "trust_evidence": trust_evidence,
         "seen_count": e.memory_entry.seen_count,
         "first_seen": e.memory_entry.first_seen.to_rfc3339(),
         "last_seen": e.memory_entry.last_seen.to_rfc3339(),
@@ -28,7 +36,7 @@ mod tests {
     use std::collections::HashMap;
 
     use loci_core::memory::{
-        MemoryEntry as CoreMemoryEntry, MemoryKind, MemoryQueryResult as CoreMemoryQueryResult,
+        MemoryEntry as CoreMemoryEntry, MemoryTrust, MemoryQueryResult as CoreMemoryQueryResult,
         Score as CoreScore,
     };
     use serde_json::Value as JsonValue;
@@ -40,10 +48,10 @@ mod tests {
         let mut metadata = HashMap::new();
         metadata.insert("source".to_string(), "unit-test".to_string());
 
-        let entry = CoreMemoryEntry::new_with_kind(
+        let entry = CoreMemoryEntry::new_with_trust(
             "my content".to_string(),
             metadata.clone(),
-            MemoryKind::Fact,
+            MemoryTrust::Fact,
         );
         let mq = CoreMemoryQueryResult {
             memory_entry: entry.clone(),

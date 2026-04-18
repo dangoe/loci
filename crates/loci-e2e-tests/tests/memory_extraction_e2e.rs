@@ -7,7 +7,7 @@ mod support;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use loci_core::memory::{MemoryKind, MemoryQuery, MemoryQueryMode, Score};
+use loci_core::memory::{MemoryQuery, MemoryQueryMode, MemoryTrust, Score};
 use loci_core::memory_extraction::{
     LlmMemoryExtractionStrategy, LlmMemoryExtractionStrategyParams, MemoryExtractionStrategy,
     MemoryExtractor,
@@ -91,9 +91,8 @@ async fn test_extracted_entries_carry_extracted_memory_kind() {
         "extraction should yield entries to validate kind propagation"
     );
     for entry in &entries {
-        assert_eq!(
-            entry.kind,
-            Some(MemoryKind::ExtractedMemory),
+        assert!(
+            matches!(&entry.trust, Some(MemoryTrust::Extracted { .. })),
             "every extracted entry must carry the hardcoded ExtractedMemory kind"
         );
     }
@@ -357,9 +356,8 @@ async fn test_stored_entries_have_extracted_memory_kind() {
         "extraction should yield entries to validate kind persistence"
     );
     for added in &result.added {
-        assert_eq!(
-            added.memory_entry.kind,
-            MemoryKind::ExtractedMemory,
+        assert!(
+            matches!(added.memory_entry.trust, MemoryTrust::Extracted { .. }),
             "stored entry must carry the ExtractedMemory kind, entry id: {}",
             added.memory_entry.id
         );

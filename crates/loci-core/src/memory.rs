@@ -8,21 +8,85 @@ use std::fmt;
 use chrono::{DateTime, Duration, Utc};
 use uuid::Uuid;
 
-/// Bayesian review state for a memory entry.
+/// Unified trust level for a memory entry.
 ///
-/// Tracks a Beta-distribution confidence estimate (`α / (α + β)`). Entries
-/// that have never been through the extraction pipeline carry the `Default`
-/// value (all fields `None`).
+/// Unified trust level for a memory entry.
+///
+/// Merges the previous `MemoryKind` + `confidence` + `TrustEvidence` triad
+/// into one concept. All three aspects drive TTL, retrieval weight, storage
+/// serialisation, and score blending.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MemoryTrust {
+    /// Ground truth. Confidence 1.0, not subject to decay, removed only
+    /// manually.
+    Fact,
+    /// LLM-extracted memory with an initial confidence and evolving Bayesian
+    /// evidence. Subject to decay, auto-discard, and auto-promotion.
+    Extracted {
+        /// Initial LLM-assigned confidence score, also the seed for `evidence`.
+        confidence: f64,
+        /// Evolving Bayesian evidence (α/β counters) updated by the pipeline.
+        evidence: TrustEvidence,
+    },
+}
+
+impl MemoryTrust {
+    /// Effective confidence used for retrieval score blending.
+    ///
+    /// `Fact` → 1.0.
+    /// `Extracted` → Bayesian mean when counters are populated; falls back to
+    /// the initial `confidence` value.
+    pub fn effective_confidence(&self) -> f64 {
+        match self {
+            Self::Fact => 1.0,
+            Self::Extracted {
+                confidence,
+                evidence,
+            } => evidence.bayesian_confidence().unwrap_or(*confidence),
+        }
+    }
+
+    /// Default retrieval weight used for score blending.
+    pub fn retrieval_weight(&self) -> f64 {
+        match self {
+            Self::Fact => 1.0,
+            Self::Extracted { .. } => 0.8,
+        }
+    }
+
+    /// Default expiry horizon by trust level.
+    pub fn default_ttl(&self) -> Option<Duration> {
+        match self {
+            Self::Fact => None,
+            Self::Extracted { .. } => Some(Duration::days(365)),
+        }
+    }
+
+    /// Storage string discriminant (`"fact"` or `"extracted_memory"`).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Fact => "fact",
+            Self::Extracted { .. } => "extracted_memory",
+        }
+    }
+}
+
+/// Accumulated Bayesian evidence for an extracted memory entry.
+///
+/// Tracks a Beta-distribution posterior (`α / (α + β)`). Entries that have
+/// never been through the extraction pipeline carry the `Default` value (all
+/// fields `None`), which causes `bayesian_confidence` to return `None` and
+/// the owning [`MemoryTrust`] to fall back to the initial `confidence` value.
 #[derive(Debug, Clone, PartialEq, Default)]
-pub struct ReviewState {
-    /// Bayesian positive counter.  Together with `beta` derives the effective
+pub struct TrustEvidence {
+    /// Bayesian positive counter. Together with `beta` derives the effective
     /// confidence: `α / (α + β)`.
     pub alpha: Option<f64>,
-    /// Bayesian negative counter.  Incremented on contradiction hits.
+    /// Bayesian negative counter. Incremented on contradiction hits.
     pub beta: Option<f64>,
 }
 
-impl ReviewState {
+impl TrustEvidence {
     /// Initialises counters from an LLM-assigned `confidence` value using the
     /// rule `α = confidence × W`, `β = (1 − confidence) × W`, where `W` is
     /// the configurable `seed_weight`.
@@ -34,7 +98,7 @@ impl ReviewState {
     }
 
     /// Returns the Bayesian mean `α / (α + β)`, or `None` when either counter
-    /// is absent.
+    /// is absent or their sum is zero.
     pub fn bayesian_confidence(&self) -> Option<f64> {
         match (self.alpha, self.beta) {
             (Some(a), Some(b)) if a + b > 0.0 => Some(a / (a + b)),
@@ -45,101 +109,16 @@ impl ReviewState {
 
 /// Upper bound for extracted-memory confidence.
 ///
-/// 1.0 is reserved for `MemoryKind::Fact` (promoted by the pipeline); extracted
-/// memories are clamped strictly below it. 0.99 is used instead of
-/// `1.0 - f64::EPSILON` so that two-decimal display (`%.2f`) never rounds up to
-/// `1.00`, keeping the Fact/extracted distinction visible in reports.
+/// 1.0 is reserved for [`MemoryTrust::Fact`]; extracted memories are clamped
+/// strictly below it. 0.99 is used instead of `1.0 - f64::EPSILON` so that
+/// two-decimal display (`%.2f`) never rounds up to `1.00`, keeping the
+/// Fact/extracted distinction visible in reports.
 pub const MAX_EXTRACTED_CONFIDENCE: f64 = 0.99;
 
 /// Clamps a confidence value into the range used for extracted memories:
-/// `[f64::MIN_POSITIVE, MAX_EXTRACTED_CONFIDENCE]` — strictly greater than `0`
-/// and strictly less than `1`, with an upper bound that is visibly distinct
-/// from `Fact`'s `1.0` at any reasonable display precision.
+/// `[f64::MIN_POSITIVE, MAX_EXTRACTED_CONFIDENCE]`.
 pub fn clamp_confidence(c: f64) -> f64 {
     c.clamp(f64::MIN_POSITIVE, MAX_EXTRACTED_CONFIDENCE)
-}
-
-/// Input passed to [`crate::MemoryStore::add_entry`] and related methods.
-#[derive(Debug, Clone)]
-pub struct MemoryInput {
-    pub content: String,
-    pub metadata: HashMap<String, String>,
-    pub kind: Option<MemoryKind>,
-    /// LLM-assigned confidence score in (0.0, 1.0). Used for retrieval ranking.
-    /// `None` when the entry was not produced by LLM extraction.
-    pub confidence: Option<f64>,
-    /// Pipeline review state (Bayesian counters).
-    /// Defaults to all-`None` for entries not processed by the extraction pipeline.
-    pub review: ReviewState,
-}
-
-impl MemoryInput {
-    pub fn new(content: String, metadata: HashMap<String, String>) -> Self {
-        Self {
-            content,
-            metadata,
-            kind: None,
-            confidence: None,
-            review: ReviewState::default(),
-        }
-    }
-
-    pub fn new_with_kind(
-        content: String,
-        metadata: HashMap<String, String>,
-        kind: MemoryKind,
-    ) -> Self {
-        Self {
-            content,
-            metadata,
-            kind: Some(kind),
-            confidence: None,
-            review: ReviewState::default(),
-        }
-    }
-}
-
-/// The kind of a memory entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum MemoryKind {
-    /// Confidence 1.0, not subject to decay, can only be removed manually.
-    Fact,
-    /// Extracted memory with Bayesian confidence in (0.0, 1.0), subject to
-    /// decay, auto-discard, and auto-promotion.
-    ExtractedMemory,
-}
-
-impl MemoryKind {
-    /// Default retrieval weight used for score blending.
-    pub fn retrieval_weight(self) -> f64 {
-        match self {
-            Self::Fact => 1.0,
-            Self::ExtractedMemory => 0.8,
-        }
-    }
-
-    /// Default expiry horizon by kind.
-    pub fn default_ttl(self) -> Option<Duration> {
-        match self {
-            Self::Fact => None,
-            Self::ExtractedMemory => Some(Duration::days(365)),
-        }
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Fact => "fact",
-            Self::ExtractedMemory => "extracted_memory",
-        }
-    }
-
-    pub fn parse(s: &str) -> Option<Self> {
-        match s {
-            "fact" => Some(Self::Fact),
-            "extracted_memory" => Some(Self::ExtractedMemory),
-            _ => None,
-        }
-    }
 }
 
 /// Query behavior mode.
@@ -188,6 +167,38 @@ impl fmt::Display for InvalidScore {
 
 impl std::error::Error for InvalidScore {}
 
+/// Input passed to [`crate::MemoryStore::add_entry`] and related methods.
+#[derive(Debug, Clone)]
+pub struct MemoryInput {
+    pub content: String,
+    pub metadata: HashMap<String, String>,
+    /// Trust level for this entry. `None` at store time defaults to
+    /// `Extracted { confidence: 0.5, evidence: Default::default() }`.
+    pub trust: Option<MemoryTrust>,
+}
+
+impl MemoryInput {
+    pub fn new(content: String, metadata: HashMap<String, String>) -> Self {
+        Self {
+            content,
+            metadata,
+            trust: None,
+        }
+    }
+
+    pub fn new_with_trust(
+        content: String,
+        metadata: HashMap<String, String>,
+        trust: MemoryTrust,
+    ) -> Self {
+        Self {
+            content,
+            metadata,
+            trust: Some(trust),
+        }
+    }
+}
+
 /// A stored memory. Intentionally embedding-free — model providers that require
 /// vector similarity compute embeddings internally.
 #[derive(Debug, Clone, PartialEq)]
@@ -195,44 +206,47 @@ pub struct MemoryEntry {
     pub id: Uuid,
     pub content: String,
     pub metadata: HashMap<String, String>,
-    pub kind: MemoryKind,
+    pub trust: MemoryTrust,
     pub seen_count: u32,
     pub first_seen: DateTime<Utc>,
     pub last_seen: DateTime<Utc>,
     pub expires_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
-    /// LLM-assigned confidence score in (0.0, 1.0). Used for retrieval ranking.
-    /// `None` when the entry was not produced by LLM extraction.
-    pub confidence: Option<f64>,
-    /// Pipeline review state (Bayesian counters).
-    pub review: ReviewState,
 }
 
 impl MemoryEntry {
-    /// Creates a new `MemoryEntry` defaulting to `ExtractedMemory` kind.
+    /// Creates a new `MemoryEntry` defaulting to an uninformed
+    /// `Extracted` trust (confidence 0.5, no evidence counters).
     pub fn new(content: String, metadata: HashMap<String, String>) -> Self {
-        Self::new_with_kind(content, metadata, MemoryKind::ExtractedMemory)
+        Self::new_with_trust(
+            content,
+            metadata,
+            MemoryTrust::Extracted {
+                confidence: 0.5,
+                evidence: TrustEvidence::default(),
+            },
+        )
     }
 
-    /// Creates a new `MemoryEntry` for a specific kind with default lifecycle fields.
-    pub fn new_with_kind(
+    /// Creates a new `MemoryEntry` with the given trust level and default
+    /// lifecycle fields.
+    pub fn new_with_trust(
         content: String,
         metadata: HashMap<String, String>,
-        kind: MemoryKind,
+        trust: MemoryTrust,
     ) -> Self {
         let now = Utc::now();
+        let expires_at = trust.default_ttl().map(|ttl| now + ttl);
         Self {
             id: Uuid::new_v4(),
             content,
             metadata,
-            kind,
+            trust,
             seen_count: 1,
             first_seen: now,
             last_seen: now,
-            expires_at: kind.default_ttl().map(|ttl| now + ttl),
+            expires_at,
             created_at: now,
-            confidence: None,
-            review: ReviewState::default(),
         }
     }
 }
@@ -244,8 +258,8 @@ pub struct MemoryQueryResult {
     pub score: Score,
 }
 
-/// Input to [`crate::MemoryStore::query`]. Model providers decide how to interpret the topic
-/// (vector similarity, keyword search, etc.).
+/// Input to [`crate::MemoryStore::query`]. Model providers decide how to
+/// interpret the topic (vector similarity, keyword search, etc.).
 #[derive(Debug, Clone)]
 pub struct MemoryQuery {
     pub topic: String,
@@ -304,61 +318,59 @@ mod tests {
         let input = MemoryInput::new("content".to_string(), metadata.clone());
         assert_eq!(input.content, "content");
         assert_eq!(input.metadata, metadata);
-        assert_eq!(input.kind, None);
-        assert_eq!(input.review, ReviewState::default());
+        assert!(input.trust.is_none());
     }
 
     #[test]
-    fn test_memory_input_new_with_kind_stores_kind() {
+    fn test_memory_input_new_with_trust_stores_trust() {
         let input =
-            MemoryInput::new_with_kind("content".to_string(), HashMap::new(), MemoryKind::Fact);
-        assert_eq!(input.kind, Some(MemoryKind::Fact));
-        assert_eq!(input.review, ReviewState::default());
+            MemoryInput::new_with_trust("content".to_string(), HashMap::new(), MemoryTrust::Fact);
+        assert_eq!(input.trust, Some(MemoryTrust::Fact));
     }
 
     #[test]
-    fn test_review_state_default_is_all_none() {
-        let r = ReviewState::default();
-        assert!(r.alpha.is_none());
-        assert!(r.beta.is_none());
+    fn test_trust_evidence_default_is_all_none() {
+        let b = TrustEvidence::default();
+        assert!(b.alpha.is_none());
+        assert!(b.beta.is_none());
     }
 
     #[test]
-    fn test_review_state_from_confidence_sets_counters() {
-        let r = ReviewState::from_confidence(0.8, 10.0);
-        assert!((r.alpha.unwrap() - 8.0).abs() < 1e-10);
-        assert!((r.beta.unwrap() - 2.0).abs() < 1e-10);
+    fn test_trust_evidence_from_confidence_sets_counters() {
+        let b = TrustEvidence::from_confidence(0.8, 10.0);
+        assert!((b.alpha.unwrap() - 8.0).abs() < 1e-10);
+        assert!((b.beta.unwrap() - 2.0).abs() < 1e-10);
     }
 
     #[test]
-    fn test_review_state_from_confidence_respects_seed_weight() {
-        let r = ReviewState::from_confidence(0.8, 5.0);
-        assert!((r.alpha.unwrap() - 4.0).abs() < 1e-10);
-        assert!((r.beta.unwrap() - 1.0).abs() < 1e-10);
+    fn test_trust_evidence_from_confidence_respects_seed_weight() {
+        let b = TrustEvidence::from_confidence(0.8, 5.0);
+        assert!((b.alpha.unwrap() - 4.0).abs() < 1e-10);
+        assert!((b.beta.unwrap() - 1.0).abs() < 1e-10);
     }
 
     #[test]
     fn test_bayesian_confidence_returns_mean() {
-        let r = ReviewState {
+        let b = TrustEvidence {
             alpha: Some(8.0),
             beta: Some(2.0),
         };
-        let c = r.bayesian_confidence().unwrap();
+        let c = b.bayesian_confidence().unwrap();
         assert!((c - 0.8).abs() < f64::EPSILON);
     }
 
     #[test]
     fn test_bayesian_confidence_none_when_counters_absent() {
-        assert!(ReviewState::default().bayesian_confidence().is_none());
+        assert!(TrustEvidence::default().bayesian_confidence().is_none());
     }
 
     #[test]
     fn test_bayesian_confidence_none_when_sum_is_zero() {
-        let r = ReviewState {
+        let b = TrustEvidence {
             alpha: Some(0.0),
             beta: Some(0.0),
         };
-        assert!(r.bayesian_confidence().is_none());
+        assert!(b.bayesian_confidence().is_none());
     }
 
     #[test]
@@ -385,8 +397,6 @@ mod tests {
 
     #[test]
     fn test_clamp_confidence_display_never_rounds_to_one_at_two_decimals() {
-        // Regression: `%.2f` of `1.0 - f64::EPSILON` rounds to `1.00`, making
-        // extracted memories visually indistinguishable from `Fact` in reports.
         let clamped = clamp_confidence(1.0);
         let display = format!("{:.2}", clamped);
         assert_ne!(display, "1.00", "clamped max must not render as 1.00");
@@ -398,9 +408,9 @@ mod tests {
     }
 
     #[test]
-    fn test_memory_entry_new_has_default_review() {
+    fn test_memory_entry_new_has_default_extracted_trust() {
         let m = MemoryEntry::new("content".to_string(), HashMap::new());
-        assert_eq!(m.review, ReviewState::default());
+        assert!(matches!(m.trust, MemoryTrust::Extracted { .. }));
     }
 
     #[test]
@@ -416,7 +426,7 @@ mod tests {
         let m = MemoryEntry::new("my content".to_string(), metadata.clone());
         assert_eq!(m.content, "my content");
         assert_eq!(m.metadata, metadata);
-        assert_eq!(m.kind, MemoryKind::ExtractedMemory);
+        assert!(matches!(m.trust, MemoryTrust::Extracted { .. }));
         assert_eq!(m.seen_count, 1);
         assert_eq!(m.first_seen, m.last_seen);
         assert!(m.expires_at.is_some());
@@ -424,26 +434,67 @@ mod tests {
 
     #[test]
     fn test_fact_default_ttl_is_none() {
-        assert_eq!(MemoryKind::Fact.default_ttl(), None);
+        assert_eq!(MemoryTrust::Fact.default_ttl(), None);
     }
 
     #[test]
-    fn test_extracted_memory_default_ttl_is_one_year() {
-        assert_eq!(
-            MemoryKind::ExtractedMemory.default_ttl(),
-            Some(Duration::days(365))
-        );
+    fn test_extracted_default_ttl_is_one_year() {
+        let trust = MemoryTrust::Extracted {
+            confidence: 0.8,
+            evidence: TrustEvidence::default(),
+        };
+        assert_eq!(trust.default_ttl(), Some(Duration::days(365)));
     }
 
     #[test]
-    fn test_memory_kind_roundtrip_str() {
-        assert_eq!(MemoryKind::parse("fact"), Some(MemoryKind::Fact));
-        assert_eq!(MemoryKind::Fact.as_str(), "fact");
-        assert_eq!(
-            MemoryKind::parse("extracted_memory"),
-            Some(MemoryKind::ExtractedMemory)
-        );
-        assert_eq!(MemoryKind::ExtractedMemory.as_str(), "extracted_memory");
-        assert_eq!(MemoryKind::parse("unknown"), None);
+    fn test_memory_trust_as_str() {
+        assert_eq!(MemoryTrust::Fact.as_str(), "fact");
+        let extracted = MemoryTrust::Extracted {
+            confidence: 0.8,
+            evidence: TrustEvidence::default(),
+        };
+        assert_eq!(extracted.as_str(), "extracted_memory");
+    }
+
+    #[test]
+    fn test_effective_confidence_fact_is_one() {
+        assert!((MemoryTrust::Fact.effective_confidence() - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_effective_confidence_extracted_uses_bayesian_when_populated() {
+        let trust = MemoryTrust::Extracted {
+            confidence: 0.3,
+            evidence: TrustEvidence {
+                alpha: Some(8.0),
+                beta: Some(2.0),
+            },
+        };
+        assert!((trust.effective_confidence() - 0.8).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_effective_confidence_extracted_falls_back_to_confidence() {
+        let trust = MemoryTrust::Extracted {
+            confidence: 0.7,
+            evidence: TrustEvidence::default(),
+        };
+        assert!((trust.effective_confidence() - 0.7).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_fact_entry_has_no_ttl() {
+        let m = MemoryEntry::new_with_trust("x".to_string(), HashMap::new(), MemoryTrust::Fact);
+        assert!(m.expires_at.is_none());
+    }
+
+    #[test]
+    fn test_extracted_entry_has_ttl() {
+        let trust = MemoryTrust::Extracted {
+            confidence: 0.8,
+            evidence: TrustEvidence::default(),
+        };
+        let m = MemoryEntry::new_with_trust("x".to_string(), HashMap::new(), trust);
+        assert!(m.expires_at.is_some());
     }
 }

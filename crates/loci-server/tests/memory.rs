@@ -16,7 +16,7 @@ use pretty_assertions::assert_eq;
 use rstest::rstest;
 use uuid::Uuid;
 
-use loci_core::memory::{MemoryKind, MemoryQueryMode};
+use loci_core::memory::{TrustEvidence, MemoryQueryMode, MemoryTrust};
 use loci_core::model_provider::text_generation::TextGenerationResponse;
 use loci_server::loci::memory::v1::{
     MemoryKind as ProtoMemoryKind, MemoryServiceAddEntryRequest, MemoryServiceDeleteEntryRequest,
@@ -42,7 +42,7 @@ fn default_provider() -> Arc<MockTextGenerationModelProvider> {
 #[tokio::test]
 async fn test_memory_add_entry_uses_real_server_and_preserves_request_mapping() {
     let id = Uuid::new_v4();
-    let stored = make_result(id, "stored content", MemoryKind::ExtractedMemory, 0.73);
+    let stored = make_result(id, "stored content", MemoryTrust::Extracted { confidence: 0.5, evidence: TrustEvidence::default() }, 0.73);
     let store = Arc::new(MockStore::new().with_add(stored.clone()).with_get(stored));
     let server =
         TestServer::start_with_components(mock_config(), Arc::clone(&store), default_provider())
@@ -78,12 +78,12 @@ async fn test_memory_add_entry_uses_real_server_and_preserves_request_mapping() 
         .expect("store should capture add_entry input");
     assert_eq!(input.content, "remember this");
     assert_eq!(input.metadata.get("kind"), Some(&"fact".to_string()));
-    assert_eq!(input.kind, Some(MemoryKind::ExtractedMemory));
+    assert!(matches!(input.trust, Some(MemoryTrust::Extracted { .. })));
 }
 
 #[tokio::test]
 async fn test_memory_query_uses_lookup_mode_and_preserves_filters() {
-    let result = make_result(Uuid::new_v4(), "User name is Bob", MemoryKind::Fact, 0.91);
+    let result = make_result(Uuid::new_v4(), "User name is Bob", MemoryTrust::Fact, 0.91);
     let store = Arc::new(
         MockStore::new()
             .with_add(result.clone())
@@ -160,7 +160,7 @@ async fn test_memory_get_entry_translates_not_found_errors() {
 #[case("set_kind")]
 #[tokio::test]
 async fn test_memory_rpcs_reject_invalid_ids(#[case] method: &str) {
-    let result = make_result(Uuid::new_v4(), "unused", MemoryKind::ExtractedMemory, 0.12);
+    let result = make_result(Uuid::new_v4(), "unused", MemoryTrust::Extracted { confidence: 0.5, evidence: TrustEvidence::default() }, 0.12);
     let store = Arc::new(MockStore::new().with_add(result.clone()).with_get(result));
     let server =
         TestServer::start_with_components(mock_config(), Arc::clone(&store), default_provider())
@@ -214,13 +214,13 @@ async fn test_memory_rpcs_reject_invalid_ids(#[case] method: &str) {
     assert_eq!(captured.get_id, None);
     assert_eq!(captured.delete_id, None);
     assert_eq!(captured.update_id, None);
-    assert_eq!(captured.set_kind_id, None);
+    assert_eq!(captured.set_trust_id, None);
 }
 
 #[tokio::test]
 async fn test_memory_update_entry_preserves_request_mapping() {
     let id = Uuid::new_v4();
-    let updated = make_result(id, "updated content", MemoryKind::ExtractedMemory, 0.85);
+    let updated = make_result(id, "updated content", MemoryTrust::Extracted { confidence: 0.5, evidence: TrustEvidence::default() }, 0.85);
     let store = Arc::new(MockStore::new().with_update(updated));
     let server =
         TestServer::start_with_components(mock_config(), Arc::clone(&store), default_provider())
@@ -257,13 +257,13 @@ async fn test_memory_update_entry_preserves_request_mapping() {
         .expect("store should capture update_entry input");
     assert_eq!(input.content, "new content");
     assert_eq!(input.metadata.get("source"), Some(&"test".to_string()));
-    assert_eq!(input.kind, Some(MemoryKind::ExtractedMemory));
+    assert!(matches!(input.trust, Some(MemoryTrust::Extracted { .. })));
 }
 
 #[tokio::test]
 async fn test_memory_set_entry_kind_returns_updated_entry() {
     let id = Uuid::new_v4();
-    let result = make_result(id, "promoted content", MemoryKind::Fact, 0.95);
+    let result = make_result(id, "promoted content", MemoryTrust::Fact, 0.95);
     let store = Arc::new(MockStore::new().with_set_kind(result));
     let server =
         TestServer::start_with_components(mock_config(), Arc::clone(&store), default_provider())
@@ -291,8 +291,8 @@ async fn test_memory_set_entry_kind_returns_updated_entry() {
     );
 
     let captured = store.snapshot();
-    assert_eq!(captured.set_kind_id, Some(id));
-    assert_eq!(captured.set_kind_kind, Some(MemoryKind::Fact));
+    assert_eq!(captured.set_trust_id, Some(id));
+    assert!(matches!(captured.set_trust, Some(MemoryTrust::Fact)));
 }
 
 #[tokio::test]

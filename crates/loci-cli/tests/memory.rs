@@ -9,7 +9,7 @@ mod common;
 use pretty_assertions::assert_eq;
 use uuid::Uuid;
 
-use loci_core::memory::MemoryKind;
+use loci_core::memory::{TrustEvidence, MemoryTrust};
 use loci_core::model_provider::text_generation::TextGenerationResponse;
 use loci_core::testing::AddEntriesBehavior;
 
@@ -26,7 +26,7 @@ fn default_provider() -> MockTextGenerationModelProvider {
 #[tokio::test]
 async fn test_memory_add_outputs_json_with_entry_fields() {
     let id = Uuid::new_v4();
-    let entry = make_result(id, "hello world", MemoryKind::ExtractedMemory, 0.0);
+    let entry = make_result(id, "hello world", MemoryTrust::Extracted { confidence: 0.5, evidence: TrustEvidence::default() }, 0.0);
     let cli = TestCli::new(MockStore::new().with_add(entry), default_provider());
 
     let output = cli
@@ -49,7 +49,7 @@ async fn test_memory_query_outputs_json_array() {
     let result = make_result(
         Uuid::new_v4(),
         "remembered fact",
-        MemoryKind::ExtractedMemory,
+        MemoryTrust::Extracted { confidence: 0.5, evidence: TrustEvidence::default() },
         0.88,
     );
     let cli = TestCli::new(
@@ -77,7 +77,7 @@ async fn test_memory_query_outputs_json_array() {
 #[tokio::test]
 async fn test_memory_get_outputs_json() {
     let id = Uuid::new_v4();
-    let entry = make_result(id, "found entry", MemoryKind::Fact, 0.95);
+    let entry = make_result(id, "found entry", MemoryTrust::Fact, 0.95);
     let cli = TestCli::new(MockStore::new().with_get(entry), default_provider());
 
     let output = cli
@@ -94,7 +94,7 @@ async fn test_memory_get_outputs_json() {
 #[tokio::test]
 async fn test_memory_promote_outputs_json() {
     let id = Uuid::new_v4();
-    let promoted = make_result(id, "important fact", MemoryKind::Fact, 1.0);
+    let promoted = make_result(id, "important fact", MemoryTrust::Fact, 1.0);
     let cli = TestCli::new(MockStore::new().with_set_kind(promoted), default_provider());
 
     let output = cli
@@ -169,7 +169,7 @@ async fn test_memory_extract_dry_run_outputs_candidates_without_persisting() {
     let stored = vec![make_result(
         id,
         "extracted fact",
-        MemoryKind::ExtractedMemory,
+        MemoryTrust::Extracted { confidence: 0.5, evidence: TrustEvidence::default() },
         0.0,
     )];
     let store = MockStore::new().with_add_entries_behavior(AddEntriesBehavior::Ok(stored));
@@ -199,7 +199,7 @@ async fn test_memory_extract_dry_run_outputs_candidates_without_persisting() {
 #[tokio::test]
 async fn test_memory_extract_persists_and_outputs_added_result() {
     let id = uuid::Uuid::new_v4();
-    let stored = vec![make_result(id, "a fact", MemoryKind::ExtractedMemory, 0.0)];
+    let stored = vec![make_result(id, "a fact", MemoryTrust::Extracted { confidence: 0.5, evidence: TrustEvidence::default() }, 0.0)];
     let store = MockStore::new().with_add_entries_behavior(AddEntriesBehavior::Ok(stored));
     let provider = extraction_provider(r#"[{"content": "a fact", "confidence": 0.9}]"#);
     let cli = TestCli::new(store, provider);

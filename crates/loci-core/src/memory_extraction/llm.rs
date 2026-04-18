@@ -10,7 +10,7 @@ use serde::Deserialize as _;
 
 use crate::{
     error::MemoryExtractionError,
-    memory::{MemoryInput, MemoryKind, clamp_confidence},
+    memory::{TrustEvidence, MemoryInput, MemoryTrust, clamp_confidence},
     memory_extraction::chunker::split_into_chunks,
     model_provider::text_generation::{
         ResponseFormat, TextGenerationModelProvider, TextGenerationRequest, ThinkingMode,
@@ -217,9 +217,10 @@ pub(super) fn parse_extraction_response(
         .map(|(content, confidence)| MemoryInput {
             content,
             metadata: params.metadata.clone(),
-            kind: Some(MemoryKind::ExtractedMemory),
-            confidence: Some(confidence),
-            review: Default::default(),
+            trust: Some(MemoryTrust::Extracted {
+                confidence,
+                evidence: TrustEvidence::default(),
+            }),
         })
         .collect())
 }
@@ -360,7 +361,7 @@ mod tests {
 
     use pretty_assertions::assert_eq;
 
-    use crate::memory::MemoryKind;
+    use crate::memory::MemoryTrust;
     use crate::memory_extraction::MemoryExtractionStrategy;
     use crate::model_provider::text_generation::TextGenerationResponse;
     use crate::testing::{MockTextGenerationModelProvider, ProviderBehavior};
@@ -413,29 +414,37 @@ mod tests {
     fn test_parse_uses_extracted_memory_kind() {
         let response = r#"[{"content": "a fact", "confidence": 0.9}]"#;
         let result = parse_extraction_response(response, default_params()).unwrap();
-        assert_eq!(result[0].kind, Some(MemoryKind::ExtractedMemory));
+        assert!(matches!(result[0].trust, Some(MemoryTrust::Extracted { .. })));
     }
 
     #[test]
     fn test_parse_stores_confidence_on_entry() {
         let response = r#"[{"content": "a fact", "confidence": 0.85}]"#;
         let result = parse_extraction_response(response, default_params()).unwrap();
-        assert_eq!(result[0].confidence, Some(0.85));
+        assert!(matches!(
+            result[0].trust,
+            Some(MemoryTrust::Extracted { confidence, .. }) if (confidence - 0.85).abs() < f64::EPSILON
+        ));
     }
 
     #[test]
     fn test_parse_missing_confidence_defaults_to_0_5() {
         let response = r#"[{"content": "a fact"}]"#;
         let result = parse_extraction_response(response, default_params()).unwrap();
-        assert_eq!(result[0].confidence, Some(0.5));
+        assert!(matches!(
+            result[0].trust,
+            Some(MemoryTrust::Extracted { confidence, .. }) if (confidence - 0.5).abs() < f64::EPSILON
+        ));
     }
 
     #[test]
     fn test_parse_clamps_confidence_at_boundary() {
         let response = r#"[{"content": "fact at one", "confidence": 1.0}, {"content": "fact at zero", "confidence": 0.0}]"#;
         let result = parse_extraction_response(response, default_params()).unwrap();
-        assert!(result[0].confidence.unwrap() < 1.0);
-        assert!(result[1].confidence.unwrap() > 0.0);
+        let conf0 = match result[0].trust { Some(MemoryTrust::Extracted { confidence, .. }) => confidence, _ => panic!("expected Extracted") };
+        let conf1 = match result[1].trust { Some(MemoryTrust::Extracted { confidence, .. }) => confidence, _ => panic!("expected Extracted") };
+        assert!(conf0 < 1.0);
+        assert!(conf1 > 0.0);
     }
 
     #[test]

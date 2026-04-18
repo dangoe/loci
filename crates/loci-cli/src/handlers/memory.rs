@@ -13,8 +13,8 @@ use std::{
 use loci_config::MemoryExtractionConfig;
 use loci_core::{
     memory::{
-        MemoryInput as CoreMemoryInput, MemoryKind as CoreMemoryKind,
-        MemoryQuery as CoreMemoryQuery, MemoryQueryMode as CoreMemoryQueryMode, Score as CoreScore,
+        MemoryInput as CoreMemoryInput, MemoryQuery as CoreMemoryQuery,
+        MemoryQueryMode as CoreMemoryQueryMode, MemoryTrust, Score as CoreScore,
     },
     memory_extraction::{
         LlmMemoryExtractionStrategy, LlmMemoryExtractionStrategyParams, MemoryExtractionPipeline,
@@ -35,11 +35,14 @@ use crate::{
     handlers::{CommandHandler, json::entry_to_json, mapping::model_thinking_to_core},
 };
 
-impl From<MemoryKind> for CoreMemoryKind {
+impl From<MemoryKind> for MemoryTrust {
     fn from(val: MemoryKind) -> Self {
         match val {
-            MemoryKind::Fact => CoreMemoryKind::Fact,
-            MemoryKind::ExtractedMemory => CoreMemoryKind::ExtractedMemory,
+            MemoryKind::Fact => MemoryTrust::Fact,
+            MemoryKind::ExtractedMemory => MemoryTrust::Extracted {
+                confidence: 0.5,
+                evidence: Default::default(),
+            },
         }
     }
 }
@@ -91,7 +94,7 @@ where
                 );
                 let input = match kind {
                     Some(kind) => {
-                        CoreMemoryInput::new_with_kind(content, pairs_to_map(metadata), kind.into())
+                        CoreMemoryInput::new_with_trust(content, pairs_to_map(metadata), kind.into())
                     }
                     None => CoreMemoryInput::new(content, pairs_to_map(metadata)),
                 };
@@ -135,7 +138,7 @@ where
             }
             MemoryCommand::Promote { id } => {
                 debug!("promote memory entry to Fact: id={id}");
-                let entry = self.store.set_entry_kind(id, CoreMemoryKind::Fact).await?;
+                let entry = self.store.set_entry_trust(id, MemoryTrust::Fact).await?;
                 writeln!(
                     out,
                     "{}",
@@ -218,8 +221,8 @@ where
                         .map(|e| {
                             serde_json::json!({
                                 "content": e.content,
-                                "confidence": e.confidence,
-                                "kind": e.kind.map(|k: CoreMemoryKind| k.as_str()).unwrap_or("extracted_memory"),
+                                "confidence": e.trust.as_ref().map(|t| t.effective_confidence()).unwrap_or(0.5),
+                                "kind": e.trust.as_ref().map(|t| t.as_str()).unwrap_or("extracted_memory"),
                                 "metadata": e.metadata,
                             })
                         })
@@ -306,7 +309,7 @@ mod tests {
     use loci_config::MemoryExtractionConfig;
     use loci_core::{
         memory::{
-            MemoryEntry as CoreMemoryEntry, MemoryKind as CoreMemoryKind,
+            TrustEvidence, MemoryEntry as CoreMemoryEntry, MemoryTrust,
             MemoryQueryResult as CoreMemoryQueryResult, Score as CoreScore,
         },
         model_provider::text_generation::TextGenerationResponse,
@@ -364,9 +367,9 @@ mod tests {
         )
     }
 
-    fn make_result(content: &str, kind: CoreMemoryKind) -> CoreMemoryQueryResult {
+    fn make_result(content: &str, trust: MemoryTrust) -> CoreMemoryQueryResult {
         CoreMemoryQueryResult {
-            memory_entry: CoreMemoryEntry::new_with_kind(content.to_string(), HashMap::new(), kind),
+            memory_entry: CoreMemoryEntry::new_with_trust(content.to_string(), HashMap::new(), trust),
             score: CoreScore::ZERO,
         }
     }
@@ -387,7 +390,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_memory_add_outputs_json() {
-        let entry = make_result("hello world", CoreMemoryKind::ExtractedMemory);
+        let entry = make_result("hello world", MemoryTrust::Extracted { confidence: 0.5, evidence: TrustEvidence::default() });
         let id = entry.memory_entry.id;
         let handler = make_handler(MockStore::new().with_add(entry));
         let mut out = Vec::new();
@@ -412,7 +415,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_memory_add_with_kind_outputs_kind_field() {
-        let entry = make_result("core fact", CoreMemoryKind::Fact);
+        let entry = make_result("core fact", MemoryTrust::Fact);
         let handler = make_handler(MockStore::new().with_add(entry));
         let mut out = Vec::new();
 
@@ -454,8 +457,8 @@ mod tests {
     #[tokio::test]
     async fn test_memory_query_outputs_json_array() {
         let entries = vec![
-            make_result("first", CoreMemoryKind::ExtractedMemory),
-            make_result("second", CoreMemoryKind::Fact),
+            make_result("first", MemoryTrust::Extracted { confidence: 0.5, evidence: TrustEvidence::default() }),
+            make_result("second", MemoryTrust::Fact),
         ];
         let handler = make_handler(MockStore::new().with_query(entries));
         let mut out = Vec::new();
@@ -508,7 +511,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_memory_get_outputs_json() {
-        let entry = make_result("specific entry", CoreMemoryKind::ExtractedMemory);
+        let entry = make_result("specific entry", MemoryTrust::Extracted { confidence: 0.5, evidence: TrustEvidence::default() });
         let id = entry.memory_entry.id;
         let handler = make_handler(MockStore::new().with_get(entry));
         let mut out = Vec::new();
@@ -538,7 +541,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_memory_promote_outputs_json() {
-        let entry = make_result("important fact", CoreMemoryKind::Fact);
+        let entry = make_result("important fact", MemoryTrust::Fact);
         let id = entry.memory_entry.id;
         let handler = make_handler(MockStore::new().with_set_kind(entry));
         let mut out = Vec::new();
@@ -592,7 +595,7 @@ mod tests {
     fn make_extract_entries(contents: &[&str]) -> Vec<CoreMemoryQueryResult> {
         contents
             .iter()
-            .map(|c| make_result(c, CoreMemoryKind::ExtractedMemory))
+            .map(|c| make_result(c, MemoryTrust::Extracted { confidence: 0.5, evidence: TrustEvidence::default() }))
             .collect()
     }
 
@@ -865,13 +868,13 @@ mod tests {
     }
 
     #[rstest]
-    #[case(MemoryKind::Fact, CoreMemoryKind::Fact)]
-    #[case(MemoryKind::ExtractedMemory, CoreMemoryKind::ExtractedMemory)]
+    #[case(MemoryKind::Fact, MemoryTrust::Fact)]
+    #[case(MemoryKind::ExtractedMemory, MemoryTrust::Extracted { confidence: 0.5, evidence: TrustEvidence::default() })]
     fn test_memory_kind_all_variants_convert(
         #[case] input: MemoryKind,
-        #[case] expected: CoreMemoryKind,
+        #[case] expected: MemoryTrust,
     ) {
-        let result: CoreMemoryKind = input.into();
+        let result: MemoryTrust = input.into();
         assert_eq!(result, expected);
     }
 

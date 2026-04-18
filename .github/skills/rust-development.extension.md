@@ -33,25 +33,26 @@ cargo fmt --check                                          # formatting check
 
 ## Core Domain Notes (`loci-core`)
 
-- `MemoryStore` is text-centric: `add_entry/get_entry/query/update_entry/set_entry_kind/delete_entry/prune_expired`.
-- `MemoryEntry` stores lifecycle fields (`kind`, `seen_count`, `first_seen`, `last_seen`, `expires_at`);
+- `MemoryStore` is text-centric: `add_entry/get_entry/query/update_entry/set_entry_trust/delete_entry/prune_expired`.
+- `MemoryEntry` stores lifecycle fields (`trust`, `seen_count`, `first_seen`, `last_seen`, `expires_at`);
   embeddings are computed in store/provider layers, not stored on `MemoryEntry`.
 - `Contextualizer` queries memory entries using `MemoryQueryMode::Use` and streams model output.
 
-## Memory Kind Model
+## Memory Trust Model
 
-Two-variant enum `MemoryKind` replaces the old four-tier system:
+`MemoryTrust` is a single enum that merges the old `MemoryKind` + `confidence` + Bayesian counters into one concept:
 
 | Variant | Confidence | TTL | Retrieval weight | Notes |
 | --- | --- | --- | --- | --- |
-| `ExtractedMemory` | Bayesian `(0.0, 1.0)` | 365 days | 0.8 | Default for LLM-extracted entries; subject to auto-discard and auto-promotion |
-| `Fact` | 1.0 (fixed) | None (no expiry) | 1.0 | Curated or auto-promoted entries; never decayed or discarded |
+| `MemoryTrust::Extracted { confidence, evidence }` | Bayesian `(0.0, 1.0)` | 365 days | 0.8 | Default for LLM-extracted entries; subject to auto-discard and auto-promotion |
+| `MemoryTrust::Fact` | 1.0 (fixed) | None (no expiry) | 1.0 | Curated or auto-promoted entries; never decayed or discarded |
 
 Key rules:
 - LLM confidence is clamped to the open interval `(0.0, 1.0)` using `clamp_confidence()`.
 - Default confidence when the LLM omits it: `0.5`.
-- `ReviewState` holds Bayesian counters (`alpha`, `beta`); score = α/(α+β).
-- `ReviewState::from_confidence(c, seed_weight)` initialises α = c×W, β = (1−c)×W.
+- `TrustEvidence` holds Bayesian counters (`alpha`, `beta`); score = α/(α+β).
+- `TrustEvidence::from_confidence(c, seed_weight)` initialises α = c×W, β = (1−c)×W.
+- Storage schema is unchanged: flat fields `kind`, `confidence`, `credibility_belief_alpha`, `credibility_belief_beta` (backward-compatible with existing Qdrant data).
 
 ## Memory Extraction Pipeline (`MemoryExtractionPipeline`)
 
@@ -64,11 +65,9 @@ Config fields (all in `PipelineConfig` / `[memory.extraction.pipeline]`):
 | `max_counter` | 100.0 | Absolute cap on α and β counters |
 | `auto_discard_threshold` | 0.1 | score ≤ threshold → discard, no store write |
 | `auto_promotion_threshold` | 0.9 | score ≥ threshold → store as `Fact` |
-| `decay_rate` | 0.99 | Per-day exponential decay applied to α |
+Pipeline result fields: `inserted`, `merged`, `promoted` (auto-promoted to `MemoryTrust::Fact`), `discarded` (with `DiscardReason`: `LowScore` or `ContradictsAFact`).
 
-Pipeline result fields: `inserted`, `merged`, `promoted` (auto-promoted to Fact), `discarded` (with `DiscardReason`: `LowScore` or `ContradictsAFact`).
-
-A candidate that contradicts an existing `Fact` entry is immediately discarded (`ContradictsAFact`) regardless of its score.
+A candidate that contradicts an existing `MemoryTrust::Fact` entry is immediately discarded (`ContradictsAFact`) regardless of its score.
 
 ## Dependencies in Use
 

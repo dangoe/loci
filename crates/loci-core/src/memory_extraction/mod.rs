@@ -124,7 +124,7 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use crate::{
-        memory::{MemoryEntry, MemoryInput, MemoryKind, MemoryQueryResult, Score},
+        memory::{MemoryEntry, MemoryInput, MemoryQueryResult, Score},
         testing::{AddEntriesBehavior, MockStore},
     };
 
@@ -148,9 +148,7 @@ mod tests {
         MemoryInput {
             content: content.to_string(),
             metadata: HashMap::new(),
-            kind: Some(MemoryKind::ExtractedMemory),
-            confidence: None,
-            review: Default::default(),
+            trust: None,
         }
     }
 

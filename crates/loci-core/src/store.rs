@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::{
     error::MemoryStoreError,
-    memory::{MemoryInput, MemoryKind, MemoryQuery, MemoryQueryResult},
+    memory::{MemoryInput, MemoryQuery, MemoryQueryResult, MemoryTrust},
 };
 
 /// Per-item failure information for `add_entries`.
@@ -80,11 +80,11 @@ pub trait MemoryStore: Send + Sync {
         input: MemoryInput,
     ) -> impl Future<Output = Result<MemoryQueryResult, MemoryStoreError>> + Send + '_;
 
-    /// Sets the memory kind of an existing entry by its ID and returns the updated entry.
-    fn set_entry_kind(
+    /// Sets the trust level of an existing entry by its ID and returns the updated entry.
+    fn set_entry_trust(
         &self,
         id: Uuid,
-        kind: MemoryKind,
+        trust: MemoryTrust,
     ) -> impl Future<Output = Result<MemoryQueryResult, MemoryStoreError>> + Send + '_;
 
     /// Deletes a memory entry by its ID.

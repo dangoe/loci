@@ -17,7 +17,10 @@ use uuid::Uuid;
 use crate::classification::{ClassificationError, ClassificationModelProvider, HitClass};
 use crate::embedding::{Embedding, TextEmbedder};
 use crate::error::{EmbeddingError, MemoryStoreError};
-use crate::memory::{MemoryEntry, MemoryInput, MemoryKind, MemoryQuery, MemoryQueryResult, Score};
+use crate::memory::{
+    TrustEvidence, MemoryEntry, MemoryInput, MemoryQuery, MemoryQueryResult, MemoryTrust,
+    Score,
+};
 use crate::model_provider::{
     common::ModelProviderResult,
     text_generation::{TextGenerationModelProvider, TextGenerationRequest, TextGenerationResponse},
@@ -77,8 +80,8 @@ pub struct MockStoreState {
     pub delete_id: Option<Uuid>,
     pub update_id: Option<Uuid>,
     pub update_input: Option<MemoryInput>,
-    pub set_kind_id: Option<Uuid>,
-    pub set_kind_kind: Option<MemoryKind>,
+    pub set_trust_id: Option<Uuid>,
+    pub set_trust: Option<MemoryTrust>,
     pub query: Option<MemoryQuery>,
     pub query_calls: usize,
 }
@@ -177,7 +180,7 @@ impl MockStore {
         self
     }
 
-    /// Configures `set_entry_kind` to return the given result.
+    /// Configures `set_entry_trust` to return the given result.
     pub fn with_set_kind(mut self, result: MemoryQueryResult) -> Self {
         self.set_kind_behavior = EntryBehavior::Ok(result);
         self
@@ -209,7 +212,7 @@ impl MockStore {
         self
     }
 
-    /// Configures the behavior of `set_entry_kind`.
+    /// Configures the behavior of `set_entry_trust`.
     pub fn with_set_kind_behavior(mut self, behavior: EntryBehavior) -> Self {
         self.set_kind_behavior = behavior;
         self
@@ -300,14 +303,14 @@ impl MemoryStore for MockStore {
         }
     }
 
-    async fn set_entry_kind(
+    async fn set_entry_trust(
         &self,
         id: Uuid,
-        kind: MemoryKind,
+        trust: MemoryTrust,
     ) -> Result<MemoryQueryResult, MemoryStoreError> {
         let mut state = self.state.lock().expect("mock store mutex poisoned");
-        state.set_kind_id = Some(id);
-        state.set_kind_kind = Some(kind);
+        state.set_trust_id = Some(id);
+        state.set_trust = Some(trust);
         drop(state);
 
         let behavior = self.set_kind_behavior.clone();
@@ -498,26 +501,42 @@ impl TextEmbedder for MockTextEmbedder {
     }
 }
 
-/// Builds a [`MemoryQueryResult`] with sensible defaults for common test
-/// scenarios.
-pub fn make_result(id: Uuid, content: &str, kind: MemoryKind, score: f64) -> MemoryQueryResult {
+/// Builds a [`MemoryQueryResult`] with the given trust level and score.
+pub fn make_result(id: Uuid, content: &str, trust: MemoryTrust, score: f64) -> MemoryQueryResult {
     let now = Utc::now();
     MemoryQueryResult {
         memory_entry: MemoryEntry {
             id,
             content: content.to_string(),
             metadata: HashMap::from([("source".to_string(), "test".to_string())]),
-            kind,
+            trust,
             seen_count: 2,
             first_seen: now,
             last_seen: now,
             expires_at: None,
             created_at: now,
-            confidence: None,
-            review: Default::default(),
         },
         score: Score::new(score).expect("score should be valid"),
     }
+}
+
+/// Convenience wrapper: builds an `Extracted` [`MemoryQueryResult`] where
+/// `confidence` doubles as the retrieval score.
+pub fn make_extracted_result(id: Uuid, content: &str, score: f64) -> MemoryQueryResult {
+    make_result(
+        id,
+        content,
+        MemoryTrust::Extracted {
+            confidence: score,
+            evidence: TrustEvidence::default(),
+        },
+        score,
+    )
+}
+
+/// Convenience wrapper: builds a `Fact` [`MemoryQueryResult`].
+pub fn make_fact_result(id: Uuid, content: &str, score: f64) -> MemoryQueryResult {
+    make_result(id, content, MemoryTrust::Fact, score)
 }
 
 /// Configures the outcome of [`MockClassificationModelProvider::classify_hit`].

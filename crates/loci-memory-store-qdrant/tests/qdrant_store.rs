@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use chrono::{Duration, Utc};
 use loci_core::error::MemoryStoreError;
 use loci_core::memory::{
-    MemoryInput, MemoryKind, MemoryQuery, MemoryQueryMode, MemoryQueryResult, Score,
+    MemoryInput, MemoryQuery, MemoryQueryMode, MemoryQueryResult, MemoryTrust, Score,
 };
 use loci_core::store::MemoryStore;
 use loci_core::testing::MockTextEmbedder;
@@ -53,13 +53,7 @@ async fn prepare_expired_entry(
     store: &QdrantMemoryStore<MockTextEmbedder>,
 ) {
     let short_lived = store
-        .add_entry(MemoryInput {
-            content: "short-lived".to_string(),
-            metadata: HashMap::new(),
-            kind: Some(MemoryKind::ExtractedMemory),
-            confidence: None,
-            review: Default::default(),
-        })
+        .add_entry(MemoryInput::new("short-lived".to_string(), HashMap::new()))
         .await
         .unwrap();
 
@@ -194,7 +188,7 @@ async fn test_get_entry_returns_added_entry() {
 
     assert_eq!(fetched.memory_entry.id, saved.memory_entry.id);
     assert_eq!(fetched.memory_entry.content, "fetch me");
-    assert_eq!(fetched.memory_entry.kind, MemoryKind::ExtractedMemory);
+    assert!(matches!(fetched.memory_entry.trust, MemoryTrust::Extracted { .. }));
     assert_eq!(fetched.memory_entry.seen_count, 1);
 }
 
@@ -217,7 +211,7 @@ async fn test_metadata_is_persisted_and_restored() {
     let results = store.query(query("tagged content query", 1)).await.unwrap();
 
     assert_eq!(results[0].memory_entry.metadata, metadata);
-    assert_eq!(results[0].memory_entry.kind, MemoryKind::ExtractedMemory);
+    assert!(matches!(results[0].memory_entry.trust, MemoryTrust::Extracted { .. }));
 }
 
 #[tokio::test]
@@ -261,13 +255,11 @@ async fn test_prune_expired_memory_entries() {
     let (store, container) = start_store(embedder, None).await;
 
     let long_lived = store
-        .add_entry(MemoryInput {
-            content: "long-lived".to_string(),
-            metadata: HashMap::new(),
-            kind: Some(MemoryKind::Fact),
-            confidence: None,
-            review: Default::default(),
-        })
+        .add_entry(MemoryInput::new_with_trust(
+            "long-lived".to_string(),
+            HashMap::new(),
+            MemoryTrust::Fact,
+        ))
         .await
         .unwrap();
 
@@ -350,16 +342,14 @@ async fn test_query_respects_expiration() {
 
     let mut valid_entries: Vec<MemoryQueryResult> = Vec::new();
 
-    for kind in [MemoryKind::Fact, MemoryKind::ExtractedMemory] {
+    for trust in [
+        MemoryTrust::Fact,
+        MemoryTrust::Extracted { confidence: 0.5, evidence: Default::default() },
+    ] {
+        let content = trust.as_str().to_string();
         valid_entries.push(
             store
-                .add_entry(MemoryInput {
-                    content: kind.as_str().to_string(),
-                    metadata: HashMap::new(),
-                    kind: Some(kind),
-                    confidence: None,
-                    review: Default::default(),
-                })
+                .add_entry(MemoryInput::new_with_trust(content, HashMap::new(), trust))
                 .await
                 .unwrap(),
         );
@@ -450,16 +440,16 @@ async fn test_set_entry_kind_promotes_to_fact() {
 
     let saved = store.add_entry(input("curate me")).await.unwrap();
     let updated = store
-        .set_entry_kind(saved.memory_entry.id, MemoryKind::Fact)
+        .set_entry_trust(saved.memory_entry.id, MemoryTrust::Fact)
         .await
         .unwrap();
 
-    assert_eq!(updated.memory_entry.kind, MemoryKind::Fact);
+    assert!(matches!(updated.memory_entry.trust, MemoryTrust::Fact));
     assert_eq!(updated.memory_entry.expires_at, None);
 
-    // Verify the kind change is persisted in the store.
+    // Verify the trust change is persisted in the store.
     let fetched = store.get_entry(saved.memory_entry.id).await.unwrap();
-    assert_eq!(fetched.memory_entry.kind, MemoryKind::Fact);
+    assert!(matches!(fetched.memory_entry.trust, MemoryTrust::Fact));
     assert_eq!(fetched.memory_entry.expires_at, None);
 }
 

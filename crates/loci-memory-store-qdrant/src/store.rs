@@ -8,7 +8,8 @@ use chrono::{DateTime, Utc};
 use loci_core::embedding::{Embedding, TextEmbedder};
 use loci_core::error::MemoryStoreError;
 use loci_core::memory::{
-    MemoryEntry, MemoryInput, MemoryKind, MemoryQuery, MemoryQueryMode, MemoryQueryResult, Score,
+    MemoryEntry, MemoryInput, MemoryQuery, MemoryQueryMode, MemoryQueryResult, MemoryTrust, Score,
+    TrustEvidence,
 };
 use loci_core::store::{AddEntriesResult, MemoryStore, PerEntryFailure};
 use qdrant_client::Payload;
@@ -36,8 +37,8 @@ const FIELD_FIRST_SEEN: &str = "first_seen";
 const FIELD_LAST_SEEN: &str = "last_seen";
 const FIELD_EXPIRES_AT: &str = "expires_at";
 const FIELD_CONFIDENCE: &str = "confidence";
-const FIELD_REVIEW_ALPHA: &str = "review_alpha";
-const FIELD_REVIEW_BETA: &str = "review_beta";
+const FIELD_TRUST_EVIDENCE_ALPHA: &str = "credibility_belief_alpha";
+const FIELD_TRUST_EVIDENCE_BETA: &str = "credibility_belief_beta";
 
 const SOURCE_METADATA_KEY: &str = "source";
 
@@ -128,21 +129,25 @@ impl<E: TextEmbedder> QdrantMemoryStore<E> {
         payload.insert(FIELD_CONTENT, memory.content.clone());
         payload.insert(FIELD_METADATA, metadata_value);
         payload.insert(FIELD_CREATED_AT, memory.created_at.timestamp());
-        payload.insert(FIELD_KIND, memory.kind.as_str());
+        payload.insert(FIELD_KIND, memory.trust.as_str());
         payload.insert(FIELD_SEEN_COUNT, i64::from(memory.seen_count));
         payload.insert(FIELD_FIRST_SEEN, memory.first_seen.timestamp());
         payload.insert(FIELD_LAST_SEEN, memory.last_seen.timestamp());
         if let Some(expires_at) = memory.expires_at {
             payload.insert(FIELD_EXPIRES_AT, expires_at.timestamp());
         }
-        if let Some(confidence) = memory.confidence {
-            payload.insert(FIELD_CONFIDENCE, confidence);
-        }
-        if let Some(alpha) = memory.review.alpha {
-            payload.insert(FIELD_REVIEW_ALPHA, alpha);
-        }
-        if let Some(beta) = memory.review.beta {
-            payload.insert(FIELD_REVIEW_BETA, beta);
+        if let MemoryTrust::Extracted {
+            confidence,
+            evidence,
+        } = &memory.trust
+        {
+            payload.insert(FIELD_CONFIDENCE, *confidence);
+            if let Some(alpha) = evidence.alpha {
+                payload.insert(FIELD_TRUST_EVIDENCE_ALPHA, alpha);
+            }
+            if let Some(beta) = evidence.beta {
+                payload.insert(FIELD_TRUST_EVIDENCE_BETA, beta);
+            }
         }
 
         let point = PointStruct::new(
@@ -344,11 +349,11 @@ impl<E: TextEmbedder> MemoryStore for QdrantMemoryStore<E> {
         let mut failures: Vec<PerEntryFailure> = Vec::new();
 
         for (idx, input) in inputs.into_iter().enumerate() {
-            let kind = input.kind.unwrap_or(MemoryKind::ExtractedMemory);
-
-            let mut memory = MemoryEntry::new_with_kind(input.content, input.metadata, kind);
-            memory.confidence = input.confidence;
-            memory.review = input.review;
+            let trust = input.trust.unwrap_or_else(|| MemoryTrust::Extracted {
+                confidence: 0.5,
+                evidence: TrustEvidence::default(),
+            });
+            let memory = MemoryEntry::new_with_trust(input.content, input.metadata, trust);
 
             let embedding = match self.embedder.embed(&memory.content).await {
                 Ok(e) => e,
@@ -452,27 +457,25 @@ impl<E: TextEmbedder> MemoryStore for QdrantMemoryStore<E> {
         input: MemoryInput,
     ) -> Result<MemoryQueryResult, MemoryStoreError> {
         let existing = self.load_memory(id).await?;
-        let kind = input.kind.unwrap_or(existing.kind);
+        let trust = input.trust.unwrap_or(existing.trust.clone());
 
         let now = Utc::now();
-        let expires_at = if kind == existing.kind {
+        let expires_at = if trust.as_str() == existing.trust.as_str() {
             existing.expires_at
         } else {
-            kind.default_ttl().map(|ttl| now + ttl)
+            trust.default_ttl().map(|ttl| now + ttl)
         };
 
         let memory = MemoryEntry {
             id,
             content: input.content,
             metadata: input.metadata,
-            kind,
+            trust,
             seen_count: existing.seen_count,
             first_seen: existing.first_seen,
             last_seen: existing.last_seen,
             expires_at,
             created_at: existing.created_at,
-            confidence: input.confidence.or(existing.confidence),
-            review: input.review,
         };
 
         let embedding = self
@@ -488,14 +491,14 @@ impl<E: TextEmbedder> MemoryStore for QdrantMemoryStore<E> {
         })
     }
 
-    async fn set_entry_kind(
+    async fn set_entry_trust(
         &self,
         id: Uuid,
-        kind: MemoryKind,
+        trust: MemoryTrust,
     ) -> Result<MemoryQueryResult, MemoryStoreError> {
         let mut memory = self.load_memory(id).await?;
-        memory.kind = kind;
-        memory.expires_at = kind.default_ttl().map(|ttl| Utc::now() + ttl);
+        memory.expires_at = trust.default_ttl().map(|ttl| Utc::now() + ttl);
+        memory.trust = trust;
 
         let embedding = self
             .embedder
@@ -661,18 +664,28 @@ fn parse_payload_to_memory(
         .unwrap_or_default();
 
     let created_at = parse_mandatory_value(payload, FIELD_CREATED_AT, parse_timestamp)?;
-    let kind = payload
-        .get(FIELD_KIND)
-        .and_then(|value| value.as_str())
-        .and_then(|value_as_string| {
-            MemoryKind::parse(value_as_string).or_else(|| {
-                log::warn!(
-                    "unknown kind value '{value_as_string}' for entry {id}, defaulting to ExtractedMemory"
-                );
-                None
-            })
-        })
-        .unwrap_or(MemoryKind::ExtractedMemory);
+
+    let kind_str_owned;
+    let kind_str = match payload.get(FIELD_KIND).and_then(|v| v.as_str()) {
+        Some(s) => {
+            kind_str_owned = s.clone();
+            kind_str_owned.as_str()
+        }
+        None => {
+            log::warn!("missing kind field for entry {id}, defaulting to extracted_memory");
+            "extracted_memory"
+        }
+    };
+
+    let confidence = payload.get(FIELD_CONFIDENCE).and_then(|v| v.as_double());
+    let alpha = payload
+        .get(FIELD_TRUST_EVIDENCE_ALPHA)
+        .and_then(|v| v.as_double());
+    let beta = payload
+        .get(FIELD_TRUST_EVIDENCE_BETA)
+        .and_then(|v| v.as_double());
+
+    let trust = build_memory_trust(kind_str, confidence, alpha, beta);
 
     let seen_count = payload
         .get(FIELD_SEEN_COUNT)
@@ -685,47 +698,38 @@ fn parse_payload_to_memory(
     let last_seen =
         parse_optional_value(payload, FIELD_LAST_SEEN, parse_timestamp)?.unwrap_or(created_at);
     let expires_at = parse_optional_value(payload, FIELD_EXPIRES_AT, parse_timestamp)?
-        .or_else(|| kind.default_ttl().map(|ttl| created_at + ttl));
-
-    let confidence = payload.get(FIELD_CONFIDENCE).and_then(|v| v.as_double());
-
-    let review = loci_core::memory::ReviewState {
-        alpha: payload.get(FIELD_REVIEW_ALPHA).and_then(|v| v.as_double()),
-        beta: payload.get(FIELD_REVIEW_BETA).and_then(|v| v.as_double()),
-    };
+        .or_else(|| trust.default_ttl().map(|ttl| created_at + ttl));
 
     Ok(MemoryEntry {
         id,
         content,
         metadata,
-        kind,
+        trust,
         seen_count,
         first_seen,
         last_seen,
         expires_at,
         created_at,
-        confidence,
-        review,
     })
 }
 
-fn effective_confidence(entry: &MemoryEntry) -> f64 {
-    match entry.kind {
-        MemoryKind::Fact => 1.0,
-        MemoryKind::ExtractedMemory => {
-            let alpha = entry.review.alpha.unwrap_or(0.0);
-            let beta = entry.review.beta.unwrap_or(0.0);
-            if alpha + beta > 0.0 {
-                alpha / (alpha + beta)
-            } else {
-                entry.confidence.unwrap_or(0.5)
-            }
-        }
+fn build_memory_trust(
+    kind_str: &str,
+    confidence: Option<f64>,
+    alpha: Option<f64>,
+    beta: Option<f64>,
+) -> MemoryTrust {
+    match kind_str {
+        "fact" => MemoryTrust::Fact,
+        _ => MemoryTrust::Extracted {
+            confidence: confidence.unwrap_or(0.5),
+            evidence: TrustEvidence { alpha, beta },
+        },
     }
 }
 
 fn blend_score(similarity: f64, entry: &MemoryEntry) -> Result<Score, MemoryStoreError> {
-    let weighted = (similarity * effective_confidence(entry)).clamp(0.0, 1.0);
+    let weighted = (similarity * entry.trust.effective_confidence()).clamp(0.0, 1.0);
     Score::new(weighted).map_err(|e| MemoryStoreError::Query(e.to_string()))
 }
 
@@ -753,27 +757,39 @@ mod tests {
 
     use chrono::Utc;
 
-    use loci_core::memory::{MemoryEntry, MemoryKind, ReviewState};
+    use loci_core::memory::{MemoryEntry, MemoryTrust, TrustEvidence};
 
-    use super::{blend_score, effective_confidence, is_expired, metadata_matches_for_dedup};
+    use crate::store::build_memory_trust;
 
-    fn extracted_memory_with_review(alpha: f64, beta: f64) -> MemoryEntry {
-        let mut e = MemoryEntry::new("".to_string(), HashMap::new());
-        e.review = ReviewState {
-            alpha: Some(alpha),
-            beta: Some(beta),
-        };
-        e
+    use super::{blend_score, is_expired, metadata_matches_for_dedup};
+
+    fn extracted_with_evidence(alpha: f64, beta: f64) -> MemoryEntry {
+        MemoryEntry::new_with_trust(
+            "".to_string(),
+            HashMap::new(),
+            MemoryTrust::Extracted {
+                confidence: 0.5,
+                evidence: TrustEvidence {
+                    alpha: Some(alpha),
+                    beta: Some(beta),
+                },
+            },
+        )
     }
 
-    fn extracted_memory_with_confidence(confidence: f64) -> MemoryEntry {
-        let mut e = MemoryEntry::new("".to_string(), HashMap::new());
-        e.confidence = Some(confidence);
-        e
+    fn extracted_with_confidence(confidence: f64) -> MemoryEntry {
+        MemoryEntry::new_with_trust(
+            "".to_string(),
+            HashMap::new(),
+            MemoryTrust::Extracted {
+                confidence,
+                evidence: TrustEvidence::default(),
+            },
+        )
     }
 
     fn fact_entry() -> MemoryEntry {
-        MemoryEntry::new_with_kind("".to_string(), HashMap::new(), MemoryKind::Fact)
+        MemoryEntry::new_with_trust("".to_string(), HashMap::new(), MemoryTrust::Fact)
     }
 
     #[test]
@@ -785,14 +801,14 @@ mod tests {
     #[test]
     fn blend_score_extracted_memory_uses_bayesian_confidence() {
         // alpha=9, beta=1 → confidence = 0.9
-        let entry = extracted_memory_with_review(9.0, 1.0);
+        let entry = extracted_with_evidence(9.0, 1.0);
         let score = blend_score(1.0, &entry).unwrap();
         assert!((score.value() - 0.9).abs() < 1e-9);
     }
 
     #[test]
     fn blend_score_extracted_memory_falls_back_to_stored_confidence() {
-        let entry = extracted_memory_with_confidence(0.7);
+        let entry = extracted_with_confidence(0.7);
         let score = blend_score(1.0, &entry).unwrap();
         assert!((score.value() - 0.7).abs() < 1e-9);
     }
@@ -808,15 +824,15 @@ mod tests {
     fn blend_score_zero_similarity_yields_zero() {
         for entry in [
             fact_entry(),
-            extracted_memory_with_review(9.0, 1.0),
-            extracted_memory_with_confidence(0.8),
+            extracted_with_evidence(9.0, 1.0),
+            extracted_with_confidence(0.8),
         ] {
             let score = blend_score(0.0, &entry).unwrap();
             assert_eq!(
                 score.value(),
                 0.0,
-                "expected 0.0 for entry kind {:?}",
-                entry.kind
+                "expected 0.0 for entry {:?}",
+                entry.trust.as_str()
             );
         }
     }
@@ -824,21 +840,9 @@ mod tests {
     #[test]
     fn blend_score_scales_similarity_by_confidence() {
         // alpha=8, beta=2 → confidence = 0.8; similarity = 0.5 → score = 0.4
-        let entry = extracted_memory_with_review(8.0, 2.0);
+        let entry = extracted_with_evidence(8.0, 2.0);
         let score = blend_score(0.5, &entry).unwrap();
         assert!((score.value() - 0.4).abs() < 1e-9);
-    }
-
-    #[test]
-    fn effective_confidence_fact_is_always_one() {
-        assert!((effective_confidence(&fact_entry()) - 1.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn effective_confidence_extracted_prefers_bayesian_over_stored() {
-        let mut entry = extracted_memory_with_review(9.0, 1.0);
-        entry.confidence = Some(0.2); // stored confidence should be ignored when counters exist
-        assert!((effective_confidence(&entry) - 0.9).abs() < 1e-9);
     }
 
     #[test]
@@ -900,8 +904,6 @@ mod tests {
 
     #[test]
     fn metadata_matches_for_dedup_source_key_is_excluded_from_comparison() {
-        // Two maps that differ only in the "source" key must be considered matching,
-        // because source provenance is intentionally excluded from dedup comparison.
         let existing: HashMap<String, String> = [
             ("source".to_string(), "wiki".to_string()),
             ("lang".to_string(), "rust".to_string()),
@@ -919,8 +921,6 @@ mod tests {
 
     #[test]
     fn metadata_matches_for_dedup_source_only_maps_match() {
-        // Both maps contain only the "source" key with different values.
-        // Since "source" is excluded, both filtered maps are empty → they match.
         let existing: HashMap<String, String> = [("source".to_string(), "a".to_string())]
             .into_iter()
             .collect();
@@ -928,5 +928,38 @@ mod tests {
             .into_iter()
             .collect();
         assert!(metadata_matches_for_dedup(&existing, &incoming));
+    }
+
+    #[test]
+    fn test_build_memory_trust_from_payload_fact() {
+        let t = build_memory_trust("fact", None, None, None);
+        assert_eq!(t, MemoryTrust::Fact);
+    }
+
+    #[test]
+    fn test_build_memory_trust_from_payload_extracted_with_values() {
+        let t = build_memory_trust("extracted_memory", Some(0.7), Some(7.0), Some(3.0));
+        assert!(matches!(
+            t,
+            MemoryTrust::Extracted {
+                confidence,
+                evidence: TrustEvidence {
+                    alpha: Some(a),
+                    beta: Some(b),
+                },
+            } if (confidence - 0.7).abs() < f64::EPSILON
+              && (a - 7.0).abs() < f64::EPSILON
+              && (b - 3.0).abs() < f64::EPSILON
+        ));
+    }
+
+    #[test]
+    fn test_build_memory_trust_from_payload_extracted_defaults_confidence() {
+        let t = build_memory_trust("extracted_memory", None, None, None);
+        assert!(matches!(
+            t,
+            MemoryTrust::Extracted { confidence, .. }
+            if (confidence - 0.5).abs() < f64::EPSILON
+        ));
     }
 }

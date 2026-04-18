@@ -14,8 +14,7 @@ use uuid::Uuid;
 
 use loci_core::error::MemoryStoreError;
 use loci_core::memory::{
-    MemoryInput, MemoryKind as CoreMemoryKind, MemoryQuery, MemoryQueryMode, MemoryQueryResult,
-    Score,
+    MemoryInput, MemoryQuery, MemoryQueryMode, MemoryQueryResult, MemoryTrust, Score,
 };
 use loci_core::model_provider::text_generation::TextGenerationModelProvider;
 use loci_core::store::MemoryStore;
@@ -59,9 +58,9 @@ where
         ctx: Context,
         request: OwnedView<MemoryServiceAddEntryRequestView<'static>>,
     ) -> Result<(MemoryServiceAddEntryResponse, Context), ConnectError> {
-        let kind = proto_kind_to_core(request.kind.as_known());
+        let trust = proto_kind_to_trust(request.kind.as_known());
         let metadata = map_view_to_hashmap(&request.metadata);
-        let input = MemoryInput::new_with_kind(request.content.to_owned(), metadata, kind);
+        let input = MemoryInput::new_with_trust(request.content.to_owned(), metadata, trust);
 
         let result = self.state.store.add_entry(input).await.map_err(store_err)?;
         Ok((
@@ -119,11 +118,11 @@ where
         request: OwnedView<MemoryServiceUpdateEntryRequestView<'static>>,
     ) -> Result<(MemoryServiceUpdateEntryResponse, Context), ConnectError> {
         let id = parse_uuid(request.id)?;
-        let kind = proto_kind_to_core(request.kind.as_known());
-        let input = MemoryInput::new_with_kind(
+        let trust = proto_kind_to_trust(request.kind.as_known());
+        let input = MemoryInput::new_with_trust(
             request.content.to_owned(),
             map_view_to_hashmap(&request.metadata),
-            kind,
+            trust,
         );
         let result = self
             .state
@@ -146,11 +145,11 @@ where
         request: OwnedView<MemoryServiceSetEntryKindRequestView<'static>>,
     ) -> Result<(MemoryServiceSetEntryKindResponse, Context), ConnectError> {
         let id = parse_uuid(request.id)?;
-        let kind = proto_kind_to_core(request.kind.as_known());
+        let trust = proto_kind_to_trust(request.kind.as_known());
         let result = self
             .state
             .store
-            .set_entry_kind(id, kind)
+            .set_entry_trust(id, trust)
             .await
             .map_err(store_err)?;
         Ok((
@@ -209,17 +208,20 @@ fn store_err(e: MemoryStoreError) -> ConnectError {
     }
 }
 
-fn proto_kind_to_core(kind: Option<MemoryKind>) -> CoreMemoryKind {
+fn proto_kind_to_trust(kind: Option<MemoryKind>) -> MemoryTrust {
     match kind {
-        Some(MemoryKind::MEMORY_KIND_FACT) => CoreMemoryKind::Fact,
-        _ => CoreMemoryKind::ExtractedMemory,
+        Some(MemoryKind::MEMORY_KIND_FACT) => MemoryTrust::Fact,
+        _ => MemoryTrust::Extracted {
+            confidence: 0.5,
+            evidence: Default::default(),
+        },
     }
 }
 
-fn core_kind_to_proto(kind: CoreMemoryKind) -> MemoryKind {
-    match kind {
-        CoreMemoryKind::Fact => MemoryKind::MEMORY_KIND_FACT,
-        CoreMemoryKind::ExtractedMemory => MemoryKind::MEMORY_KIND_EXTRACTED_MEMORY,
+fn trust_to_proto_kind(trust: &MemoryTrust) -> MemoryKind {
+    match trust {
+        MemoryTrust::Fact => MemoryKind::MEMORY_KIND_FACT,
+        MemoryTrust::Extracted { .. } => MemoryKind::MEMORY_KIND_EXTRACTED_MEMORY,
     }
 }
 
@@ -243,7 +245,7 @@ fn query_result_to_proto(r: &MemoryQueryResult) -> MemoryEntry {
         id: e.id.to_string(),
         content: e.content.clone(),
         metadata: e.metadata.clone(),
-        kind: EnumValue::from(core_kind_to_proto(e.kind)),
+        kind: EnumValue::from(trust_to_proto_kind(&e.trust)),
         seen_count: e.seen_count,
         first_seen: MessageField::some(datetime_to_timestamp(e.first_seen)),
         last_seen: MessageField::some(datetime_to_timestamp(e.last_seen)),
