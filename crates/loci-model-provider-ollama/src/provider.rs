@@ -192,10 +192,9 @@ impl OllamaModelProvider {
             }
         });
 
-        let format = match req.response_format {
-            Some(ResponseFormat::Json) => Some("json"),
-            None => None,
-        };
+        let format = req.response_format.as_ref().map(|format| match format {
+            ResponseFormat::Json => "json",
+        });
 
         OllamaTextGenerationRequest {
             model: &req.model,

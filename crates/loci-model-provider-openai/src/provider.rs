@@ -218,12 +218,12 @@ impl OpenAIModelProvider {
             _ => None,
         };
 
-        let response_format = match req.response_format {
-            Some(ResponseFormat::Json) => Some(OpenAiResponseFormat {
-                kind: "json_object",
-            }),
-            None => None,
-        };
+        let response_format =
+            req.response_format
+                .as_ref()
+                .map(|ResponseFormat::Json| OpenAiResponseFormat {
+                    kind: "json_object",
+                });
 
         ChatCompletionRequest {
             model: &req.model,
