@@ -50,8 +50,6 @@ pub struct PipelineConfig {
     /// isolation: a Fact should be corroborated, not just asserted once.
     /// Default: 12.0 (seed weight 10 + one strong corroborating observation).
     pub min_alpha_for_promotion: f64,
-    /// Per-day exponential decay rate applied to alpha. Default: 0.99.
-    pub decay_rate: f64,
 }
 
 impl Default for PipelineConfig {
@@ -71,7 +69,6 @@ impl Default for PipelineConfig {
             auto_discard_threshold: 0.1,
             auto_promotion_threshold: 0.9,
             min_alpha_for_promotion: 12.0,
-            decay_rate: 0.99,
         }
     }
 }
@@ -663,7 +660,6 @@ mod tests {
         assert!((config.auto_discard_threshold - 0.1).abs() < f64::EPSILON);
         assert!((config.auto_promotion_threshold - 0.9).abs() < f64::EPSILON);
         assert!((config.min_alpha_for_promotion - 12.0).abs() < f64::EPSILON);
-        assert!((config.decay_rate - 0.99).abs() < f64::EPSILON);
     }
 
     #[test]

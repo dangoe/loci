@@ -289,7 +289,6 @@ fn config_pipeline_config_to_core(cfg: &loci_config::PipelineExtractionConfig) -
         auto_discard_threshold: cfg.auto_discard_threshold,
         auto_promotion_threshold: cfg.auto_promotion_threshold,
         min_alpha_for_promotion: cfg.min_alpha_for_promotion,
-        decay_rate: cfg.decay_rate,
     }
 }
 
