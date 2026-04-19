@@ -2,15 +2,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // This file is part of loci-core.
 
-pub mod chunker;
+mod chunker;
 pub mod llm;
 
-pub use chunker::{Chunker, SentenceAwareChunker};
+use chunker::{Chunker, SentenceAwareChunker};
 pub use llm::{LlmMemoryExtractionStrategy, LlmMemoryExtractionStrategyParams};
 
 use std::{
     collections::{HashMap, HashSet},
-    future::Future,
     marker::PhantomData,
     sync::Arc,
 };
@@ -18,6 +17,7 @@ use std::{
 use uuid::Uuid;
 
 use crate::{
+    BoxFuture,
     classification::{ClassificationModelProvider, HitClass},
     error::{MemoryExtractionError, MemoryStoreError},
     memory::{
@@ -28,12 +28,12 @@ use crate::{
 };
 
 /// Extracts memory entries from a source.
-pub trait MemoryExtractionStrategy<P>: Send + Sync {
-    fn extract(
-        &self,
-        input: &str,
-        params: P,
-    ) -> impl Future<Output = Result<Vec<MemoryInput>, MemoryExtractionError>> + Send;
+pub trait MemoryExtractionStrategy<P: Send + Sync>: Send + Sync {
+    fn extract<'a>(
+        &'a self,
+        input: &'a str,
+        params: &'a P,
+    ) -> BoxFuture<'a, Result<Vec<MemoryInput>, MemoryExtractionError>>;
 }
 
 /// Configuration for the initial search stage.
@@ -110,7 +110,8 @@ pub enum DiscardReason {
     ContradictsAFact,
 }
 
-/// Outcome of a [`MemoryExtractor::extract_and_store`] call.
+/// Outcome of a [`MemoryExtractor::extract_memory_entries`] call.
+#[derive(Debug)]
 pub struct MemoryExtractionResult {
     /// Newly inserted entries (no prior match).
     pub inserted: Vec<MemoryQueryResult>,
@@ -164,10 +165,10 @@ where
         }
     }
 
-    pub async fn extract_and_store(
+    pub async fn extract_memory_entries(
         &self,
         input: &str,
-        params: P,
+        params: &P,
     ) -> Result<MemoryExtractionResult, MemoryExtractionError> {
         let candidates = self.strategy.extract(input, params).await?;
 
@@ -179,10 +180,11 @@ where
         };
 
         for candidate in candidates {
-            let confidence = MemoryTrust::clamp_confidence(match &candidate.trust {
+            let raw_confidence = match &candidate.trust {
                 Some(MemoryTrust::Extracted { confidence, .. }) => *confidence,
                 _ => 0.5,
-            });
+            };
+            let confidence = MemoryTrust::clamp_confidence(raw_confidence);
 
             let classified_hits = self.collect_classified_hits(&candidate).await?;
 
@@ -415,11 +417,11 @@ fn extract_match_ids(classified_hits: &[(MemoryQueryResult, HitClass)]) -> Vec<U
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::future::Future;
     use std::sync::Arc;
 
     use pretty_assertions::assert_eq;
 
+    use crate::BoxFuture;
     use crate::classification::HitClass;
     use crate::error::MemoryExtractionError;
     use crate::memory::{MemoryInput, MemoryTrust, TrustEvidence};
@@ -436,10 +438,10 @@ mod tests {
         fn extract(
             &self,
             _input: &str,
-            _params: (),
-        ) -> impl Future<Output = Result<Vec<MemoryInput>, MemoryExtractionError>> + Send {
+            _params: &(),
+        ) -> BoxFuture<'_, Result<Vec<MemoryInput>, MemoryExtractionError>> {
             let entries = self.0.clone();
-            async move { Ok(entries) }
+            Box::pin(async move { Ok(entries) })
         }
     }
 
@@ -468,7 +470,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_extract_and_store_with_no_similar_entries_inserts_candidate() {
+    async fn test_extract_memory_entries_with_no_similar_entries_inserts_candidate() {
         // No existing hits → candidate is inserted as ExtractedMemory.
         let candidate = make_candidate("the sky is blue", 0.8);
         let inserted_result = make_extracted_result(uuid::Uuid::new_v4(), "the sky is blue", 0.8);
@@ -482,7 +484,7 @@ mod tests {
         let classifier = Arc::new(MockClassificationModelProvider::new());
 
         let result = extractor(store, strategy, classifier)
-            .extract_and_store("ignored", ())
+            .extract_memory_entries("ignored", &())
             .await
             .unwrap();
 
@@ -493,7 +495,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_extract_and_store_when_contradiction_lowers_score_discards_candidate() {
+    async fn test_extract_memory_entries_when_contradiction_lowers_score_discards_candidate() {
         // Two Contradiction hits lower the score enough to trigger auto-discard.
         // confidence = 0.7 → alpha=7.0, beta=3.0
         // increment = min(0.7, 5.0) = 0.7
@@ -519,7 +521,10 @@ mod tests {
         };
 
         let extractor = MemoryExtractor::new(Arc::clone(&store), strategy, classifier, config);
-        let result = extractor.extract_and_store("ignored", ()).await.unwrap();
+        let result = extractor
+            .extract_memory_entries("ignored", &())
+            .await
+            .unwrap();
 
         assert_eq!(result.discarded.len(), 1);
         assert_eq!(result.discarded[0].reason, DiscardReason::LowScore);
@@ -543,7 +548,7 @@ mod tests {
         );
 
         let result = extractor(Arc::clone(&store), strategy, classifier)
-            .extract_and_store("ignored", ())
+            .extract_memory_entries("ignored", &())
             .await
             .unwrap();
 
@@ -553,7 +558,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_extract_and_store_with_many_duplicate_hits_promotes_to_fact() {
+    async fn test_extract_memory_entries_with_many_duplicate_hits_promotes_to_fact() {
         // Many Duplicate hits boost alpha enough to trigger auto-promotion to Fact.
         // confidence = 0.9 → alpha=9.0, beta=1.0; increment = min(0.9, 5.0) = 0.9
         // 5 duplicate hits → alpha = min(9.0 + 0.9*5, 100) = 13.5 → score ≈ 0.931 ≥ 0.9 → promote
@@ -581,7 +586,7 @@ mod tests {
         );
 
         let result = extractor(Arc::clone(&store), strategy, classifier)
-            .extract_and_store("ignored", ())
+            .extract_memory_entries("ignored", &())
             .await
             .unwrap();
 
@@ -592,7 +597,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_extract_and_store_with_single_duplicate_hit_merges_entries() {
+    async fn test_extract_memory_entries_with_single_duplicate_hit_merges_entries() {
         // Duplicate hit → same ID deduplicated → 1 delete, 1 merged insert.
         // confidence = 0.7 → alpha=7.0, beta=3.0; increment = min(0.7, 5.0) = 0.7
         // 1 duplicate → alpha = 7.7 → score ≈ 0.72 (between thresholds → merged)
@@ -614,7 +619,10 @@ mod tests {
         );
 
         let extractor = extractor(Arc::clone(&store), strategy, classifier);
-        let result = extractor.extract_and_store("ignored", ()).await.unwrap();
+        let result = extractor
+            .extract_memory_entries("ignored", &())
+            .await
+            .unwrap();
 
         assert_eq!(result.merged.len(), 1);
         assert!(result.inserted.is_empty());
@@ -644,8 +652,8 @@ mod tests {
         assert!((config.min_alpha_for_promotion - 12.0).abs() < f64::EPSILON);
     }
 
-    #[test]
-    fn test_counter_caps_are_respected() {
+    #[tokio::test]
+    async fn test_counter_caps_are_respected() {
         // Verify that max_counter_increment and max_counter are honoured.
         // confidence = 0.9, seed = 10 → alpha=9.0, beta=1.0
         // max_counter_increment = 1.0, max_counter = 9.5
@@ -680,9 +688,10 @@ mod tests {
 
         let extractor = MemoryExtractor::new(Arc::clone(&store), strategy, classifier, config);
 
-        tokio::runtime::Runtime::new().unwrap().block_on(async {
-            extractor.extract_and_store("ignored", ()).await.unwrap();
-        });
+        extractor
+            .extract_memory_entries("ignored", &())
+            .await
+            .unwrap();
 
         let state = store.snapshot();
         let inputs = state

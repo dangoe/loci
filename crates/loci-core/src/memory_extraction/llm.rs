@@ -2,35 +2,41 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // This file is part of loci-core.
 
-use std::{collections::HashMap, future::Future, sync::Arc};
+use std::{collections::HashMap, num::NonZeroUsize, sync::Arc};
 
-use futures::StreamExt as _;
+use futures::StreamExt;
 
-use serde::Deserialize as _;
+use serde::Deserialize;
 
 use crate::{
+    BoxFuture,
     error::MemoryExtractionError,
     memory::{MemoryInput, MemoryTrust, TrustEvidence},
     memory_extraction::{Chunker, SentenceAwareChunker},
     model_provider::text_generation::{
-        ResponseFormat, TextGenerationModelProvider, TextGenerationRequest, ThinkingMode,
+        TextGenerationModelProvider, TextGenerationRequest, ThinkingMode,
     },
 };
 
 use super::MemoryExtractionStrategy;
 
-/// Optional chunking configuration for LLM-based extraction strategies.
+/// The strategy for chunking input text before extracting entries.
 #[derive(Clone)]
-pub struct ChunkingConfig {
-    /// If set, the input text is processed in non-overlapping chunks of this
-    /// size (in characters) to extract entries from long inputs that exceed
-    /// the model context window. `None` means no chunking (i.e. one prompt
-    /// for the entire input).
-    pub chunk_size: Option<usize>,
-    /// If set, the input text is processed in overlapping chunks of this size
-    /// (in characters) to extract more entries from long inputs. The overlap
-    /// helps ensure that entries spanning chunk boundaries
-    pub overlap_size: Option<usize>,
+pub enum ChunkingStrategy {
+    /// The entire input is sent as a single prompt without chunking.
+    WholeInput,
+    /// Sentence-aware chunking is performed; the input is split into chunks
+    /// based on sentence boundaries to avoid splitting entries.
+    SentenceAware {
+        chunk_size: NonZeroUsize,
+        overlap_size: usize,
+    },
+}
+
+impl Default for ChunkingStrategy {
+    fn default() -> Self {
+        Self::WholeInput
+    }
 }
 
 /// Parameters shared by all LLM-based memory extraction strategies.
@@ -38,25 +44,43 @@ pub struct ChunkingConfig {
 pub struct LlmMemoryExtractionStrategyParams {
     /// Optional instructions appended to the extraction prompt to guide or
     /// constrain what the model should extract.
-    pub guidelines: Option<String>,
+    guidelines: Option<String>,
     /// Metadata key/value pairs attached to every extracted entry.
-    pub metadata: HashMap<String, String>,
+    metadata: HashMap<String, String>,
     /// If set, at most this many entries are returned (applied both as a
     /// prompt hint and as a hard post-processing cap, after confidence filtering).
-    pub max_entries: Option<usize>,
+    max_entries: Option<usize>,
     /// If set, entries whose LLM-assigned confidence score is below this
     /// threshold are discarded before storing. In [0.0, 1.0].
-    pub min_confidence: Option<f64>,
+    min_confidence: Option<f64>,
     /// Thinking mode forwarded to the model provider.  Extraction produces
     /// structured JSON output, so thinking is rarely beneficial; callers
     /// should pass [`ThinkingMode::Disabled`] explicitly unless they have a
     /// specific reason to enable it.  `None` defers to the provider default.
-    pub thinking_mode: Option<ThinkingMode>,
-    /// Optional chunking configuration for long inputs that may exceed the model
-    /// context window. If set, the input is split into chunks according to the
-    /// configuration and each chunk is processed separately, with results aggregated
-    /// into a single output list.
-    pub chunking: Option<ChunkingConfig>,
+    thinking_mode: Option<ThinkingMode>,
+    /// The strategy for chunking input text before extracting entries.
+    chunking_strategy: ChunkingStrategy,
+}
+
+impl LlmMemoryExtractionStrategyParams {
+    /// Creates a new [`LlmMemoryExtractionStrategyParams`] instance with the given parameters.
+    pub fn new(
+        guidelines: Option<String>,
+        metadata: HashMap<String, String>,
+        max_entries: Option<usize>,
+        min_confidence: Option<f64>,
+        thinking_mode: Option<ThinkingMode>,
+        chunking_strategy: ChunkingStrategy,
+    ) -> Self {
+        Self {
+            guidelines,
+            metadata,
+            max_entries,
+            min_confidence,
+            thinking_mode,
+            chunking_strategy,
+        }
+    }
 }
 
 const EXTRACTION_SYSTEM_PROMPT: &str = "\
@@ -96,135 +120,6 @@ Your previous output was not a valid JSON array. Output ONLY a JSON array \
 starting with `[` and ending with `]`. No prose, no markdown fences, no \
 explanation. If there are no facts to extract, output `[]`.";
 
-/// Extracts the entries array from a model response, tolerating several
-/// shapes that local models produce under structured-output modes:
-///
-/// 1. A top-level JSON array: `[{...}, {...}]`.
-/// 2. A JSON object that wraps the array under any key, e.g.
-///    `{"entries": [...]}`, `{"memories": [...]}`, `{"facts": [...]}`.
-/// 3. Prose that contains an embedded JSON array somewhere inside.
-///
-/// Empty objects / unrelated JSON become an empty entry list — the pipeline
-/// treats that as "no facts this run" and moves on. A lone entry object
-/// (`{"content": "…"}` at the top level) is **not** promoted to a one-entry
-/// list: it's a protocol violation that suggests the model was too eager to
-/// stop, so we surface it as a parse error to trigger the retry path.
-fn locate_entries_array(response: &str) -> Result<Vec<serde_json::Value>, MemoryExtractionError> {
-    let trimmed = response.trim();
-
-    // Case 1: full response parses as a JSON value directly.
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
-        return coerce_to_entries(value);
-    }
-
-    // Case 2: response has an embedded array — scan from the first `[` and let
-    // the streaming deserializer tolerate trailing content.
-    if let Some(start) = response.find('[') {
-        let mut de = serde_json::Deserializer::from_str(&response[start..]);
-        if let Ok(arr) = Vec::<serde_json::Value>::deserialize(&mut de) {
-            return Ok(arr);
-        }
-    }
-
-    // Case 3: response has an embedded object — try to parse it and coerce.
-    if let Some(start) = response.find('{') {
-        let mut de = serde_json::Deserializer::from_str(&response[start..]);
-        if let Ok(value) = serde_json::Value::deserialize(&mut de) {
-            return coerce_to_entries(value);
-        }
-    }
-
-    Err(MemoryExtractionError::Parse(
-        "no JSON array or entry object found in model response".to_string(),
-    ))
-}
-
-/// Given a parsed JSON value, returns the list of entry objects.
-///
-/// - Arrays are returned as-is.
-/// - Objects with an array-valued field (any name) surface that array.
-/// - Objects that are a lone entry (have a top-level `content` field) are
-///   rejected so the retry path kicks in and forces a proper array.
-/// - Anything else yields an empty list.
-fn coerce_to_entries(
-    value: serde_json::Value,
-) -> Result<Vec<serde_json::Value>, MemoryExtractionError> {
-    match value {
-        serde_json::Value::Array(arr) => Ok(arr),
-        serde_json::Value::Object(map) => {
-            for (_, v) in &map {
-                if let serde_json::Value::Array(arr) = v {
-                    return Ok(arr.clone());
-                }
-            }
-            if map.contains_key("content") {
-                return Err(MemoryExtractionError::Parse(
-                    "model returned a single entry object instead of an array".to_string(),
-                ));
-            }
-            Ok(Vec::new())
-        }
-        _ => Ok(Vec::new()),
-    }
-}
-
-fn build_extraction_prompt(input: &str, params: &LlmMemoryExtractionStrategyParams) -> String {
-    let mut parts: Vec<String> = Vec::new();
-
-    if let Some(guidelines) = &params.guidelines {
-        parts.push(format!("Additional guidelines: {guidelines}"));
-    }
-    if let Some(max) = params.max_entries {
-        parts.push(format!("Extract at most {max} entries."));
-    }
-
-    parts.push("Text to extract memories from:".to_string());
-    parts.push(input.to_string());
-
-    parts.join("\n\n")
-}
-
-pub(super) fn parse_extraction_response(
-    response: &str,
-    params: LlmMemoryExtractionStrategyParams,
-) -> Result<Vec<MemoryInput>, MemoryExtractionError> {
-    let raw = locate_entries_array(response)?;
-
-    let mut entries: Vec<(String, f64)> = raw
-        .into_iter()
-        .filter_map(|v| {
-            let content = v.get("content")?.as_str()?.to_owned();
-            let confidence = v
-                .get("confidence")
-                .and_then(|c| c.as_f64())
-                .map(MemoryTrust::clamp_confidence)
-                .unwrap_or(0.5);
-            Some((content, confidence))
-        })
-        .collect();
-
-    if let Some(min) = params.min_confidence {
-        entries.retain(|(_, confidence)| *confidence >= min);
-    }
-
-    let entries = match params.max_entries {
-        Some(max) => entries.into_iter().take(max).collect::<Vec<_>>(),
-        None => entries,
-    };
-
-    Ok(entries
-        .into_iter()
-        .map(|(content, confidence)| MemoryInput {
-            content,
-            metadata: params.metadata.clone(),
-            trust: Some(MemoryTrust::Extracted {
-                confidence,
-                evidence: TrustEvidence::default(),
-            }),
-        })
-        .collect())
-}
-
 /// LLM-based memory extraction strategy that works with any
 /// [`TextGenerationModelProvider`].
 ///
@@ -251,22 +146,28 @@ impl<P: TextGenerationModelProvider> LlmMemoryExtractionStrategy<P> {
 impl<P: TextGenerationModelProvider + Send + Sync>
     MemoryExtractionStrategy<LlmMemoryExtractionStrategyParams> for LlmMemoryExtractionStrategy<P>
 {
-    fn extract(
-        &self,
-        input: &str,
-        params: LlmMemoryExtractionStrategyParams,
-    ) -> impl Future<Output = Result<Vec<MemoryInput>, MemoryExtractionError>> + Send {
+    fn extract<'a>(
+        &'a self,
+        input: &'a str,
+        params: &'a LlmMemoryExtractionStrategyParams,
+    ) -> BoxFuture<'a, Result<Vec<MemoryInput>, MemoryExtractionError>> {
         let provider = Arc::clone(&self.provider);
         let model = self.model.clone();
-        let input = input.to_owned();
 
-        async move {
-            let chunks = chunks_for(&input, params.chunking.as_ref());
-            let total = chunks.len();
+        Box::pin(async move {
+            let chunks = match params.chunking_strategy {
+                ChunkingStrategy::WholeInput => vec![input.to_string()],
+                ChunkingStrategy::SentenceAware {
+                    chunk_size,
+                    overlap_size,
+                } => SentenceAwareChunker::new(chunk_size, overlap_size).chunk(input),
+            };
+
+            let chunk_count = chunks.len();
 
             let mut all_entries: Vec<MemoryInput> = Vec::new();
             for (idx, chunk) in chunks.into_iter().enumerate() {
-                match extract_one_chunk(provider.as_ref(), &model, &chunk, params.clone()).await {
+                match extract_one_chunk(provider.as_ref(), &model, &chunk, params).await {
                     Ok(entries) => all_entries.extend(entries),
                     // Parse failures are the small-model-output problem, not a
                     // hard failure of the whole extraction. Drop the chunk so
@@ -275,7 +176,7 @@ impl<P: TextGenerationModelProvider + Send + Sync>
                         log::warn!(
                             "skipping chunk {}/{} after parse error: {msg}",
                             idx + 1,
-                            total,
+                            chunk_count,
                         );
                     }
                     Err(other) => return Err(other),
@@ -283,19 +184,127 @@ impl<P: TextGenerationModelProvider + Send + Sync>
             }
 
             Ok(all_entries)
-        }
+        })
     }
 }
 
-/// Splits `input` into chunks honouring the caller's [`ChunkingConfig`]. When
-/// no config is supplied, returns the entire input as a single chunk.
-fn chunks_for(input: &str, config: Option<&ChunkingConfig>) -> Vec<String> {
-    let chunk_size = config.and_then(|c| c.chunk_size).unwrap_or(0);
-    if chunk_size == 0 {
-        return vec![input.to_owned()];
+/// Given a parsed JSON value, returns the list of entry objects.
+///
+/// - Arrays are returned as-is.
+/// - Objects with an array-valued field (any name) surface that array.
+/// - Objects that are a lone entry (have a top-level `content` field) are
+///   rejected so the retry path kicks in and forces a proper array.
+/// - Anything else yields an empty list.
+fn coerce_to_entries(
+    value: serde_json::Value,
+) -> Result<Vec<serde_json::Value>, MemoryExtractionError> {
+    match value {
+        serde_json::Value::Array(arr) => Ok(arr),
+        serde_json::Value::Object(map) => {
+            let has_content = map.contains_key("content");
+            for v in map.into_values() {
+                if let serde_json::Value::Array(arr) = v {
+                    return Ok(arr);
+                }
+            }
+            if has_content {
+                return Err(MemoryExtractionError::Parse(
+                    "model returned a single entry object instead of an array".to_string(),
+                ));
+            }
+            Ok(Vec::new())
+        }
+        _ => Ok(Vec::new()),
     }
-    let overlap = config.and_then(|c| c.overlap_size).unwrap_or(0);
-    SentenceAwareChunker::new(chunk_size, overlap).chunk(input)
+}
+
+fn build_extraction_prompt(input: &str, params: &LlmMemoryExtractionStrategyParams) -> String {
+    let mut parts: Vec<String> = Vec::new();
+
+    if let Some(guidelines) = &params.guidelines {
+        parts.push(format!("Additional guidelines: {guidelines}"));
+    }
+    if let Some(max) = params.max_entries {
+        parts.push(format!("Extract at most {max} entries."));
+    }
+
+    parts.push("Text to extract memories from:".to_string());
+    parts.push(input.to_string());
+
+    parts.join("\n\n")
+}
+
+/// Given a response from the LLM, extracts the list of memory entries from it.
+fn parse_extraction_response(
+    response: &str,
+    params: &LlmMemoryExtractionStrategyParams,
+) -> Result<Vec<MemoryInput>, MemoryExtractionError> {
+    fn locate_entries_array(
+        response: &str,
+    ) -> Result<Vec<serde_json::Value>, MemoryExtractionError> {
+        let trimmed = response.trim();
+
+        // Case 1: full response parses as a JSON value directly.
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            return coerce_to_entries(value);
+        }
+
+        // Case 2: response has an embedded array — scan from the first `[` and let
+        // the streaming deserializer tolerate trailing content.
+        if let Some(start) = response.find('[') {
+            let mut de = serde_json::Deserializer::from_str(&response[start..]);
+            if let Ok(arr) = Vec::<serde_json::Value>::deserialize(&mut de) {
+                return Ok(arr);
+            }
+        }
+
+        // Case 3: response has an embedded object — try to parse it and coerce.
+        if let Some(start) = response.find('{') {
+            let mut de = serde_json::Deserializer::from_str(&response[start..]);
+            if let Ok(value) = serde_json::Value::deserialize(&mut de) {
+                return coerce_to_entries(value);
+            }
+        }
+
+        Err(MemoryExtractionError::Parse(
+            "no JSON array or entry object found in model response".to_string(),
+        ))
+    }
+
+    let raw = locate_entries_array(response)?;
+
+    let mut entries: Vec<(String, f64)> = raw
+        .into_iter()
+        .filter_map(|v| {
+            let content = v.get("content")?.as_str()?.to_owned();
+            let confidence = v
+                .get("confidence")
+                .and_then(|c| c.as_f64())
+                .map(MemoryTrust::clamp_confidence)
+                .unwrap_or(0.5);
+            Some((content, confidence))
+        })
+        .collect();
+
+    if let Some(min) = params.min_confidence {
+        entries.retain(|(_, confidence)| *confidence >= min);
+    }
+
+    if let Some(max) = params.max_entries {
+        entries.truncate(max);
+    }
+
+    Ok(entries
+        .into_iter()
+        .map(|(content, confidence)| MemoryInput {
+            content,
+            metadata: params.metadata.clone(),
+            trust: Some(MemoryTrust::Extracted {
+                confidence,
+                evidence: TrustEvidence::default(),
+            }),
+        })
+        .collect())
 }
 
 /// Runs a single extraction round for one chunk. On parse failure, retries
@@ -309,15 +318,15 @@ async fn extract_one_chunk<P: TextGenerationModelProvider>(
     provider: &P,
     model: &str,
     chunk: &str,
-    params: LlmMemoryExtractionStrategyParams,
+    params: &LlmMemoryExtractionStrategyParams,
 ) -> Result<Vec<MemoryInput>, MemoryExtractionError> {
-    let prompt = build_extraction_prompt(chunk, &params);
-    let first = call_model(provider, model, &prompt, &params, false).await?;
-    match parse_extraction_response(&first, params.clone()) {
+    let prompt = build_extraction_prompt(chunk, params);
+    let first = call_model(provider, model, &prompt, params).await?;
+    match parse_extraction_response(&first, params) {
         Ok(entries) => Ok(entries),
         Err(MemoryExtractionError::Parse(_)) => {
             let repair_prompt = format!("{prompt}\n\n{REPAIR_REINFORCEMENT}");
-            let second = call_model(provider, model, &repair_prompt, &params, false).await?;
+            let second = call_model(provider, model, &repair_prompt, params).await?;
             parse_extraction_response(&second, params)
         }
         Err(e) => Err(e),
@@ -325,20 +334,15 @@ async fn extract_one_chunk<P: TextGenerationModelProvider>(
 }
 
 /// Issues one streaming generate call and returns the concatenated text.
-/// `json_mode` toggles provider-side structured-output enforcement.
 async fn call_model<P: TextGenerationModelProvider>(
     provider: &P,
     model: &str,
     prompt: &str,
     params: &LlmMemoryExtractionStrategyParams,
-    json_mode: bool,
 ) -> Result<String, MemoryExtractionError> {
     let mut req = TextGenerationRequest::new(model, prompt)
         .with_system(EXTRACTION_SYSTEM_PROMPT)
         .with_temperature(0.1);
-    if json_mode {
-        req = req.with_response_format(ResponseFormat::Json);
-    }
     if let Some(mode) = params.thinking_mode.clone() {
         req = req.with_thinking(mode);
     }
@@ -357,6 +361,7 @@ async fn call_model<P: TextGenerationModelProvider>(
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::num::NonZeroUsize;
     use std::sync::Arc;
 
     use pretty_assertions::assert_eq;
@@ -367,7 +372,7 @@ mod tests {
     use crate::testing::{MockTextGenerationModelProvider, ProviderBehavior};
 
     use super::{
-        ChunkingConfig, LlmMemoryExtractionStrategy, LlmMemoryExtractionStrategyParams,
+        ChunkingStrategy, LlmMemoryExtractionStrategy, LlmMemoryExtractionStrategyParams,
         parse_extraction_response,
     };
 
@@ -377,8 +382,8 @@ mod tests {
             metadata: HashMap::new(),
             max_entries: None,
             min_confidence: None,
-            chunking: None,
             thinking_mode: None,
+            chunking_strategy: ChunkingStrategy::WholeInput,
         }
     }
 
@@ -389,7 +394,7 @@ mod tests {
     #[test]
     fn test_parse_clean_json_array() {
         let response = r#"[{"content": "fact one", "confidence": 0.9}, {"content": "fact two", "confidence": 0.8}, {"content": "fact three", "confidence": 0.7}]"#;
-        let result = parse_extraction_response(response, default_params()).unwrap();
+        let result = parse_extraction_response(response, &default_params()).unwrap();
         assert_eq!(result.len(), 3);
         assert_eq!(result[0].content, "fact one");
         assert_eq!(result[2].content, "fact three");
@@ -398,7 +403,7 @@ mod tests {
     #[test]
     fn test_parse_json_embedded_in_prose() {
         let response = r#"Here are the extracted memories: [{"content": "fact one", "confidence": 0.9}, {"content": "fact two", "confidence": 0.8}] Hope that helps!"#;
-        let result = parse_extraction_response(response, default_params()).unwrap();
+        let result = parse_extraction_response(response, &default_params()).unwrap();
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].content, "fact one");
     }
@@ -406,14 +411,14 @@ mod tests {
     #[test]
     fn test_parse_empty_array() {
         let response = "[]";
-        let result = parse_extraction_response(response, default_params()).unwrap();
+        let result = parse_extraction_response(response, &default_params()).unwrap();
         assert!(result.is_empty());
     }
 
     #[test]
     fn test_parse_uses_extracted_memory_kind() {
         let response = r#"[{"content": "a fact", "confidence": 0.9}]"#;
-        let result = parse_extraction_response(response, default_params()).unwrap();
+        let result = parse_extraction_response(response, &default_params()).unwrap();
         assert!(matches!(
             result[0].trust,
             Some(MemoryTrust::Extracted { .. })
@@ -423,7 +428,7 @@ mod tests {
     #[test]
     fn test_parse_stores_confidence_on_entry() {
         let response = r#"[{"content": "a fact", "confidence": 0.85}]"#;
-        let result = parse_extraction_response(response, default_params()).unwrap();
+        let result = parse_extraction_response(response, &default_params()).unwrap();
         assert!(matches!(
             result[0].trust,
             Some(MemoryTrust::Extracted { confidence, .. }) if (confidence - 0.85).abs() < f64::EPSILON
@@ -433,7 +438,7 @@ mod tests {
     #[test]
     fn test_parse_missing_confidence_defaults_to_0_5() {
         let response = r#"[{"content": "a fact"}]"#;
-        let result = parse_extraction_response(response, default_params()).unwrap();
+        let result = parse_extraction_response(response, &default_params()).unwrap();
         assert!(matches!(
             result[0].trust,
             Some(MemoryTrust::Extracted { confidence, .. }) if (confidence - 0.5).abs() < f64::EPSILON
@@ -443,7 +448,7 @@ mod tests {
     #[test]
     fn test_parse_clamps_confidence_at_boundary() {
         let response = r#"[{"content": "fact at one", "confidence": 1.0}, {"content": "fact at zero", "confidence": 0.0}]"#;
-        let result = parse_extraction_response(response, default_params()).unwrap();
+        let result = parse_extraction_response(response, &default_params()).unwrap();
         let conf0 = match result[0].trust {
             Some(MemoryTrust::Extracted { confidence, .. }) => confidence,
             _ => panic!("expected Extracted"),
@@ -465,7 +470,7 @@ mod tests {
             ..default_params()
         };
         let response = r#"[{"content": "fact one", "confidence": 0.9}, {"content": "fact two", "confidence": 0.8}]"#;
-        let result = parse_extraction_response(response, params).unwrap();
+        let result = parse_extraction_response(response, &params).unwrap();
         assert_eq!(
             result[0].metadata.get("source").map(|s| s.as_str()),
             Some("test")
@@ -483,7 +488,7 @@ mod tests {
             ..default_params()
         };
         let response = r#"[{"content": "one", "confidence": 0.9}, {"content": "two", "confidence": 0.8}, {"content": "three", "confidence": 0.7}, {"content": "four", "confidence": 0.6}]"#;
-        let result = parse_extraction_response(response, params).unwrap();
+        let result = parse_extraction_response(response, &params).unwrap();
         assert_eq!(result.len(), 2);
     }
 
@@ -494,7 +499,7 @@ mod tests {
             ..default_params()
         };
         let response = r#"[{"content": "high", "confidence": 0.9}, {"content": "low", "confidence": 0.5}, {"content": "borderline", "confidence": 0.75}]"#;
-        let result = parse_extraction_response(response, params).unwrap();
+        let result = parse_extraction_response(response, &params).unwrap();
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].content, "high");
         assert_eq!(result[1].content, "borderline");
@@ -508,7 +513,7 @@ mod tests {
             ..default_params()
         };
         let response = r#"[{"content": "good", "confidence": 0.9}, {"content": "also good", "confidence": 0.8}, {"content": "bad", "confidence": 0.3}]"#;
-        let result = parse_extraction_response(response, params).unwrap();
+        let result = parse_extraction_response(response, &params).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].content, "good");
     }
@@ -516,13 +521,13 @@ mod tests {
     #[test]
     fn test_parse_error_on_missing_array() {
         let response = "nothing to see here";
-        assert!(parse_extraction_response(response, default_params()).is_err());
+        assert!(parse_extraction_response(response, &default_params()).is_err());
     }
 
     #[test]
     fn test_parse_skips_objects_without_content_field() {
         let response = r#"[{"confidence": 0.9}, {"content": "valid", "confidence": 0.8}]"#;
-        let result = parse_extraction_response(response, default_params()).unwrap();
+        let result = parse_extraction_response(response, &default_params()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].content, "valid");
     }
@@ -533,7 +538,7 @@ mod tests {
         // should parse the array and silently ignore the trailing text.
         let response = r#"[{"content": "fact", "confidence": 0.9}]
 Note: [confidence values] are rough estimates."#;
-        let result = parse_extraction_response(response, default_params()).unwrap();
+        let result = parse_extraction_response(response, &default_params()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].content, "fact");
     }
@@ -551,7 +556,7 @@ Note: [confidence values] are rough estimates."#;
         ));
         let strategy = LlmMemoryExtractionStrategy::new(Arc::clone(&provider), "m");
 
-        let result = strategy.extract("input", default_params()).await.unwrap();
+        let result = strategy.extract("input", &default_params()).await.unwrap();
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].content, "recovered fact");
@@ -572,7 +577,7 @@ Note: [confidence values] are rough estimates."#;
         ));
         let strategy = LlmMemoryExtractionStrategy::new(Arc::clone(&provider), "m");
 
-        let result = strategy.extract("input", default_params()).await.unwrap();
+        let result = strategy.extract("input", &default_params()).await.unwrap();
         assert!(result.is_empty());
         assert_eq!(provider.snapshot().request_count, 2);
     }
@@ -586,7 +591,7 @@ Note: [confidence values] are rough estimates."#;
         ));
         let strategy = LlmMemoryExtractionStrategy::new(Arc::clone(&provider), "m");
 
-        let result = strategy.extract("input", default_params()).await.unwrap();
+        let result = strategy.extract("input", &default_params()).await.unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(provider.snapshot().request_count, 1);
     }
@@ -610,14 +615,14 @@ Note: [confidence values] are rough estimates."#;
         let sentence = "The cat sat on the mat in the quiet library room. ";
         let input = sentence.repeat(10);
         let params = LlmMemoryExtractionStrategyParams {
-            chunking: Some(ChunkingConfig {
-                chunk_size: Some(200),
-                overlap_size: Some(0),
-            }),
+            chunking_strategy: ChunkingStrategy::SentenceAware {
+                chunk_size: NonZeroUsize::new(200).unwrap(),
+                overlap_size: 0,
+            },
             ..default_params()
         };
 
-        let result = strategy.extract(&input, params).await.unwrap();
+        let result = strategy.extract(&input, &params).await.unwrap();
 
         assert!(
             provider.snapshot().request_count >= 2,
@@ -639,7 +644,7 @@ Note: [confidence values] are rough estimates."#;
         let strategy = LlmMemoryExtractionStrategy::new(Arc::clone(&provider), "m");
 
         strategy
-            .extract("some long text", default_params())
+            .extract("some long text", &default_params())
             .await
             .unwrap();
 
@@ -649,7 +654,7 @@ Note: [confidence values] are rough estimates."#;
     #[test]
     fn test_parse_object_wrapped_array_key_entries() {
         let response = r#"{"entries": [{"content": "fact", "confidence": 0.9}]}"#;
-        let result = parse_extraction_response(response, default_params()).unwrap();
+        let result = parse_extraction_response(response, &default_params()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].content, "fact");
     }
@@ -658,7 +663,7 @@ Note: [confidence values] are rough estimates."#;
     fn test_parse_object_wrapped_array_arbitrary_key() {
         // Key name is not one we special-case — first array-valued field wins.
         let response = r#"{"whatever_key": [{"content": "x", "confidence": 0.8}]}"#;
-        let result = parse_extraction_response(response, default_params()).unwrap();
+        let result = parse_extraction_response(response, &default_params()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].content, "x");
     }
@@ -669,7 +674,7 @@ Note: [confidence values] are rough estimates."#;
         // protocol violation that the retry path should fix by forcing the
         // model to emit a real array.
         let response = r#"{"content": "lonely fact", "confidence": 0.85}"#;
-        let err = parse_extraction_response(response, default_params())
+        let err = parse_extraction_response(response, &default_params())
             .expect_err("bare entry object should error out");
         assert!(matches!(err, crate::error::MemoryExtractionError::Parse(_)));
     }
@@ -677,14 +682,14 @@ Note: [confidence values] are rough estimates."#;
     #[test]
     fn test_parse_empty_object_yields_empty_list() {
         // `{}` under strict JSON mode → treat as "no facts this run", not error.
-        let result = parse_extraction_response("{}", default_params()).unwrap();
+        let result = parse_extraction_response("{}", &default_params()).unwrap();
         assert!(result.is_empty());
     }
 
     #[test]
     fn test_parse_unrelated_json_object_yields_empty_list() {
         let response = r#"{"status": "done", "count": 0}"#;
-        let result = parse_extraction_response(response, default_params()).unwrap();
+        let result = parse_extraction_response(response, &default_params()).unwrap();
         assert!(result.is_empty());
     }
 
@@ -702,7 +707,7 @@ Note: [confidence values] are rough estimates."#;
         ));
         let strategy = LlmMemoryExtractionStrategy::new(Arc::clone(&provider), "m");
 
-        let result = strategy.extract("input", default_params()).await.unwrap();
+        let result = strategy.extract("input", &default_params()).await.unwrap();
 
         assert_eq!(result.len(), 2);
         assert_eq!(provider.snapshot().request_count, 2);
@@ -718,7 +723,7 @@ Note: [confidence values] are rough estimates."#;
         ));
         let strategy = LlmMemoryExtractionStrategy::new(Arc::clone(&provider), "m");
 
-        strategy.extract("input", default_params()).await.unwrap();
+        strategy.extract("input", &default_params()).await.unwrap();
 
         // Only the last request is captured; it must be the retry, which must
         // have JSON mode turned off.
@@ -740,7 +745,7 @@ Note: [confidence values] are rough estimates."#;
             ProviderBehavior::Stream(vec![done_chunk(r#"[{"content": "x", "confidence": 0.9}]"#)]),
         ));
         let strategy = LlmMemoryExtractionStrategy::new(Arc::clone(&provider), "m");
-        strategy.extract("input", default_params()).await.unwrap();
+        strategy.extract("input", &default_params()).await.unwrap();
 
         let req = provider.snapshot().last_request.expect("request captured");
         assert!(

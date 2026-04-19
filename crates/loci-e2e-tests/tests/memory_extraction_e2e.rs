@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use loci_core::memory::{MemoryQuery, MemoryQueryMode, MemoryTrust, Score};
+use loci_core::memory_extraction::llm::ChunkingStrategy;
 use loci_core::memory_extraction::{
     LlmMemoryExtractionStrategy, LlmMemoryExtractionStrategyParams, MemoryExtractionStrategy,
     MemoryExtractor, MemoryExtractorConfig,
@@ -26,14 +27,36 @@ const RICH_INPUT: &str = "Alice is a senior Rust developer with ten years of exp
     She works remotely from Berlin and her preferred communication tool is Zulip.";
 
 fn base_params() -> LlmMemoryExtractionStrategyParams {
-    LlmMemoryExtractionStrategyParams {
-        guidelines: None,
-        metadata: HashMap::new(),
-        max_entries: None,
-        min_confidence: None,
-        thinking_mode: None,
-        chunking: None,
-    }
+    LlmMemoryExtractionStrategyParams::new(
+        None,
+        HashMap::new(),
+        None,
+        None,
+        None,
+        ChunkingStrategy::default(),
+    )
+}
+
+fn base_params_with_metadata(meta: HashMap<String, String>) -> LlmMemoryExtractionStrategyParams {
+    LlmMemoryExtractionStrategyParams::new(
+        None,
+        meta,
+        None,
+        None,
+        None,
+        ChunkingStrategy::default(),
+    )
+}
+
+fn base_params_with_max_entries(max_entries: Option<usize>) -> LlmMemoryExtractionStrategyParams {
+    LlmMemoryExtractionStrategyParams::new(
+        None,
+        HashMap::new(),
+        max_entries,
+        None,
+        None,
+        ChunkingStrategy::default(),
+    )
 }
 
 #[tokio::test]
@@ -45,7 +68,7 @@ async fn test_extract_yields_entries_from_fact_rich_text() {
     let strategy = LlmMemoryExtractionStrategy::new(Arc::clone(&provider), text_model());
 
     let entries = strategy
-        .extract(RICH_INPUT, base_params())
+        .extract(RICH_INPUT, &base_params())
         .await
         .expect("extraction should succeed");
 
@@ -84,7 +107,7 @@ async fn test_extracted_entries_carry_extracted_memory_kind() {
     let strategy = LlmMemoryExtractionStrategy::new(Arc::clone(&provider), text_model());
 
     let entries = strategy
-        .extract(RICH_INPUT, base_params())
+        .extract(RICH_INPUT, &base_params())
         .await
         .expect("extraction should succeed");
 
@@ -113,13 +136,10 @@ async fn test_extracted_entries_carry_configured_metadata() {
     meta.insert("source".to_string(), "conversation".to_string());
     meta.insert("session_id".to_string(), "abc-123".to_string());
 
-    let params = LlmMemoryExtractionStrategyParams {
-        metadata: meta,
-        ..base_params()
-    };
+    let params = base_params_with_metadata(meta);
 
     let entries = strategy
-        .extract(RICH_INPUT, params)
+        .extract(RICH_INPUT, &params)
         .await
         .expect("extraction should succeed");
 
@@ -149,13 +169,10 @@ async fn test_max_entries_cap_is_honoured() {
     let provider = Arc::new(ollama_provider());
     let strategy = LlmMemoryExtractionStrategy::new(Arc::clone(&provider), text_model());
 
-    let params = LlmMemoryExtractionStrategyParams {
-        max_entries: Some(1),
-        ..base_params()
-    };
+    let params = base_params_with_max_entries(Some(1));
 
     let entries = strategy
-        .extract(RICH_INPUT, params)
+        .extract(RICH_INPUT, &params)
         .await
         .expect("extraction should succeed");
 
@@ -176,7 +193,7 @@ async fn test_extract_from_sparse_text_does_not_error() {
 
     // Very little semantic content — the model should return an empty array,
     // not an error.
-    let result = strategy.extract("ok", base_params()).await;
+    let result = strategy.extract("ok", &base_params()).await;
 
     assert!(
         result.is_ok(),
@@ -208,7 +225,7 @@ async fn test_extract_and_store_persists_entries() {
     );
 
     let result = extractor
-        .extract_and_store(RICH_INPUT, base_params())
+        .extract_memory_entries(RICH_INPUT, &base_params())
         .await
         .expect("extract_and_store should succeed");
 
@@ -267,7 +284,7 @@ async fn test_extracted_entries_are_semantically_retrievable() {
     );
 
     extractor
-        .extract_and_store(RICH_INPUT, base_params())
+        .extract_memory_entries(RICH_INPUT, &base_params())
         .await
         .expect("extract_and_store should succeed");
 
@@ -331,13 +348,10 @@ async fn test_stored_entries_have_configured_metadata() {
     let mut meta = HashMap::new();
     meta.insert("source".to_string(), "e2e-test".to_string());
 
-    let params = LlmMemoryExtractionStrategyParams {
-        metadata: meta,
-        ..base_params()
-    };
+    let params = base_params_with_metadata(meta);
 
     let result = extractor
-        .extract_and_store(RICH_INPUT, params)
+        .extract_memory_entries(RICH_INPUT, &params)
         .await
         .expect("extract_and_store should succeed");
 
@@ -389,7 +403,7 @@ async fn test_stored_entries_have_extracted_memory_kind() {
     );
 
     let result = extractor
-        .extract_and_store(RICH_INPUT, base_params())
+        .extract_memory_entries(RICH_INPUT, &base_params())
         .await
         .expect("extract_and_store should succeed");
 

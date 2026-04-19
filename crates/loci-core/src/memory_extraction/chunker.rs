@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // This file is part of loci-core.
 
+use std::num::NonZeroUsize;
+
 /// Splits text into a sequence of chunks suitable for downstream processing.
 pub trait Chunker: Send + Sync {
-    fn chunk(&self, text: &str) -> Vec<String>;
+    fn chunk(&self, input: &str) -> Vec<String>;
 }
 
 /// A [`Chunker`] that splits at paragraph and sentence boundaries using
@@ -17,7 +19,7 @@ pub struct SentenceAwareChunker {
     /// Target maximum number of characters per chunk. The splitter finishes
     /// the current word before cutting, so actual chunks may be slightly
     /// larger.
-    chunk_size: usize,
+    chunk_size: NonZeroUsize,
     /// Characters of overlap between consecutive chunks. Clamped to
     /// `chunk_size - 1`. The overlap region always starts at a word boundary
     /// so it never begins mid-word.
@@ -26,20 +28,24 @@ pub struct SentenceAwareChunker {
 
 impl SentenceAwareChunker {
     /// Creates a new [`SentenceAwareChunker`] with the given `chunk_size` and `overlap_size`.
-    pub fn new(chunk_size: usize, overlap_size: usize) -> Self {
+    pub fn new(chunk_size: NonZeroUsize, overlap_size: usize) -> Self {
         Self {
             chunk_size,
             overlap_size,
         }
     }
 
+    pub fn chunk_size(&self) -> usize {
+        self.chunk_size.get()
+    }
+
     /// Splits `text` into a flat list of segments at paragraph then sentence
     /// boundaries. Blank lines (one or more) are treated as paragraph separators.
-    fn split_into_segments(text: &str) -> Vec<String> {
+    fn split_into_segments(input: &str) -> Vec<String> {
         let mut segments = Vec::new();
         let mut paragraph_lines: Vec<&str> = Vec::new();
 
-        for line in text.lines() {
+        for line in input.lines() {
             if line.trim().is_empty() {
                 if !paragraph_lines.is_empty() {
                     segments.extend(Self::split_into_sentences(&paragraph_lines.join(" ")));
@@ -57,12 +63,10 @@ impl SentenceAwareChunker {
         segments
     }
 
-    /// Splits `text` into sentences, breaking after `.`, `!`, or `?` when followed
-    /// by whitespace or end-of-string.
-    fn split_into_sentences(text: &str) -> Vec<String> {
+    fn split_into_sentences(input: &str) -> Vec<String> {
         let mut sentences = Vec::new();
         let mut current = String::new();
-        let mut chars = text.chars().peekable();
+        let mut chars = input.chars().peekable();
 
         while let Some(ch) = chars.next() {
             current.push(ch);
@@ -89,90 +93,56 @@ impl SentenceAwareChunker {
     /// Appends sub-segments of `s` to `out`, each at most `max_chars` characters
     /// long. Cuts at word boundaries — the last word of each sub-segment is always
     /// completed even if it slightly exceeds `max_chars`.
-    fn split_at_word_boundaries(s: &str, max_chars: usize, out: &mut Vec<String>) {
+    fn split_at_word_boundaries(input: &str, max_chars: usize, out: &mut Vec<String>) {
         let mut start = 0;
-        while start < s.len() {
-            let end = Self::word_boundary_end(s, start + max_chars);
-            let sub = s[start..end].trim().to_string();
+        while start < input.len() {
+            // Convert char count to byte offset within the remaining slice.
+            let char_byte_offset = input[start..]
+                .char_indices()
+                .nth(max_chars)
+                .map(|(i, _)| i)
+                .unwrap_or(input[start..].len());
+            let end = Self::word_boundary_end(input, start + char_byte_offset);
+            let sub = input[start..end].trim().to_string();
             if !sub.is_empty() {
                 out.push(sub);
             }
             start = end;
-            while start < s.len() && s.as_bytes()[start].is_ascii_whitespace() {
-                start += 1;
-            }
+            let skipped: usize = input[start..]
+                .chars()
+                .take_while(|c| c.is_whitespace())
+                .map(|c| c.len_utf8())
+                .sum();
+            start += skipped;
         }
     }
 
-    /// Returns the byte index just past the end of the word that contains byte
-    /// position `pos` in `s`.
-    ///
-    /// - If `pos >= s.len()`, returns `s.len()`.
-    /// - If `pos` falls inside a word, advances to the end of that word.
-    /// - If `pos` falls on whitespace, returns `pos` unchanged (already a boundary).
-    ///
-    /// Always returns a valid UTF-8 character boundary.
-    fn word_boundary_end(s: &str, pos: usize) -> usize {
-        let pos = Self::ceil_char_boundary(s, pos.min(s.len()));
-        if pos == s.len() || s[pos..].starts_with(char::is_whitespace) {
+    fn word_boundary_end(input: &str, pos: usize) -> usize {
+        let pos = ceil_char_boundary(input, pos.min(input.len()));
+        if pos == input.len() || input[pos..].starts_with(char::is_whitespace) {
             return pos;
         }
-        s[pos..]
+        input[pos..]
             .find(char::is_whitespace)
             .map(|i| pos + i)
-            .unwrap_or(s.len())
-    }
-
-    /// Returns the suffix of `s` that begins at the first word boundary at or
-    /// after `s.len() - overlap_size`, ensuring the overlap region never starts
-    /// mid-word.
-    ///
-    /// If `s` is shorter than `overlap_size`, the entire string is returned.
-    fn overlap_tail(s: &str, overlap_size: usize) -> String {
-        if overlap_size == 0 {
-            return String::new();
-        }
-        if s.len() <= overlap_size {
-            return s.to_string();
-        }
-        let raw_start = Self::ceil_char_boundary(s, s.len() - overlap_size);
-        let start = if !s[raw_start..].starts_with(char::is_whitespace) {
-            s[raw_start..]
-                .find(char::is_whitespace)
-                .map(|i| raw_start + i)
-                .unwrap_or(s.len())
-        } else {
-            raw_start
-        };
-        s[start..].trim_start().to_string()
-    }
-
-    /// Advances `pos` to the nearest valid UTF-8 character boundary in `s`.
-    fn ceil_char_boundary(s: &str, pos: usize) -> usize {
-        let mut p = pos;
-        while p < s.len() && !s.is_char_boundary(p) {
-            p += 1;
-        }
-        p
+            .unwrap_or(input.len())
     }
 }
 
 impl Chunker for SentenceAwareChunker {
-    fn chunk(&self, text: &str) -> Vec<String> {
-        if self.chunk_size == 0 {
-            return vec![text.to_string()];
-        }
+    fn chunk(&self, input: &str) -> Vec<String> {
+        let chunk_size = self.chunk_size();
 
-        let overlap_size = self.overlap_size.min(self.chunk_size.saturating_sub(1));
-        let segments = Self::split_into_segments(text);
+        let overlap_size = self.overlap_size.min(chunk_size.saturating_sub(1));
+        let segments = Self::split_into_segments(input);
 
         // Break any segment that exceeds chunk_size characters at word boundaries.
         let mut fine_segments: Vec<String> = Vec::new();
         for seg in &segments {
-            if seg.len() <= self.chunk_size {
+            if seg.chars().count() <= chunk_size {
                 fine_segments.push(seg.clone());
             } else {
-                Self::split_at_word_boundaries(seg, self.chunk_size, &mut fine_segments);
+                Self::split_at_word_boundaries(seg, chunk_size, &mut fine_segments);
             }
         }
 
@@ -181,14 +151,14 @@ impl Chunker for SentenceAwareChunker {
 
         for seg in &fine_segments {
             let would_len = if current.is_empty() {
-                seg.len()
+                seg.chars().count()
             } else {
-                current.len() + 1 + seg.len() // +1 for the joining space
+                current.chars().count() + 1 + seg.chars().count() // +1 for the joining space
             };
 
-            if !current.is_empty() && would_len > self.chunk_size {
+            if !current.is_empty() && would_len > chunk_size {
                 let prev = std::mem::take(&mut current);
-                current = Self::overlap_tail(&prev, overlap_size);
+                current = overlap_tail(&prev, overlap_size);
                 chunks.push(prev);
             }
 
@@ -203,21 +173,62 @@ impl Chunker for SentenceAwareChunker {
         }
 
         if chunks.is_empty() {
-            vec![text.to_string()]
+            vec![input.to_string()]
         } else {
             chunks
         }
     }
 }
 
+/// Returns the suffix of `s` that begins at the first word boundary at or
+/// after `s.len() - overlap_size`, ensuring the overlap region never starts
+/// mid-word.
+///
+/// If `s` is shorter than `overlap_size`, the entire string is returned.
+fn overlap_tail(input: &str, overlap_size: usize) -> String {
+    if overlap_size == 0 {
+        return String::new();
+    }
+    let char_count = input.chars().count();
+    if char_count <= overlap_size {
+        return input.to_string();
+    }
+    // Find the byte offset of the character at position (char_count - overlap_size).
+    let raw_start = input
+        .char_indices()
+        .nth(char_count - overlap_size)
+        .map(|(i, _)| i)
+        .unwrap_or(input.len());
+    let start = if !input[raw_start..].starts_with(char::is_whitespace) {
+        input[raw_start..]
+            .find(char::is_whitespace)
+            .map(|i| raw_start + i)
+            .unwrap_or(input.len())
+    } else {
+        raw_start
+    };
+    input[start..].trim_start().to_string()
+}
+
+/// Advances `pos` to the nearest valid UTF-8 character boundary in `s`.
+fn ceil_char_boundary(input: &str, pos: usize) -> usize {
+    let mut p = pos;
+    while p < input.len() && !input.is_char_boundary(p) {
+        p += 1;
+    }
+    p
+}
+
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroUsize;
+
     use pretty_assertions::assert_eq;
 
     use super::{Chunker, SentenceAwareChunker};
 
     fn split_into_chunks(text: &str, chunk_size: usize, overlap_size: usize) -> Vec<String> {
-        SentenceAwareChunker::new(chunk_size, overlap_size).chunk(text)
+        SentenceAwareChunker::new(NonZeroUsize::new(chunk_size).unwrap(), overlap_size).chunk(text)
     }
 
     #[test]
@@ -280,8 +291,8 @@ mod tests {
             .take(30)
             .map(|c| std::str::from_utf8(&[c; 4]).unwrap().to_string())
             .collect();
-        let text = words.join(" ");
-        let chunks = split_into_chunks(&text, 50, 15);
+        let input = words.join(" ");
+        let chunks = split_into_chunks(&input, 50, 15);
         assert!(chunks.len() >= 2, "expected multiple chunks");
 
         // The tail of chunk[0] should appear at the start of chunk[1].
@@ -305,8 +316,8 @@ mod tests {
     fn test_zero_overlap_no_word_repeated_across_chunks() {
         // All words are unique; with zero overlap no word should appear in two chunks.
         let words: Vec<String> = (0..100).map(|i| format!("unique{i}")).collect();
-        let text = words.join(" ");
-        let chunks = split_into_chunks(&text, 100, 0);
+        let input = words.join(" ");
+        let chunks = split_into_chunks(&input, 100, 0);
         assert!(chunks.len() >= 2, "expected multiple chunks");
 
         let mut seen = std::collections::HashSet::new();
@@ -330,16 +341,16 @@ mod tests {
     fn test_overlap_clamped_to_chunk_size_minus_one() {
         // overlap_size >= chunk_size should not panic or loop infinitely.
         let words: Vec<String> = (0..50).map(|i| format!("w{i}")).collect();
-        let text = words.join(" ");
-        let chunks = split_into_chunks(&text, 30, 50); // overlap > chunk_size
+        let input = words.join(" ");
+        let chunks = split_into_chunks(&input, 30, 50); // overlap > chunk_size
         assert!(!chunks.is_empty());
     }
 
     #[test]
     fn test_multiple_blank_lines_treated_as_paragraph_separator() {
         let para = "word ".repeat(40); // 200 chars
-        let text = format!("{}\n\n\n\n{}", para.trim(), para.trim());
-        let chunks = split_into_chunks(&text, 250, 0);
+        let input = format!("{}\n\n\n\n{}", para.trim(), para.trim());
+        let chunks = split_into_chunks(&input, 250, 0);
         assert!(
             chunks.len() >= 2,
             "expected split on multiple blank lines: {chunks:?}"
@@ -348,26 +359,20 @@ mod tests {
 
     #[test]
     fn test_sentence_aware_chunker_short_text() {
-        let text = "Hello world. This is a short text.";
-        let chunker = SentenceAwareChunker {
-            chunk_size: 200,
-            overlap_size: 20,
-        };
-        let chunks = chunker.chunk(text);
+        let input = "Hello world. This is a short text.";
+        let chunker = SentenceAwareChunker::new(NonZeroUsize::new(200).unwrap(), 20);
+        let chunks = chunker.chunk(input);
         assert_eq!(chunks.len(), 1);
-        assert_eq!(chunks[0], text);
+        assert_eq!(chunks[0], input);
     }
 
     #[test]
     fn test_sentence_aware_chunker_respects_chunk_size() {
         // 200 words of "wordN", chunk_size=100 chars → many chunks.
         let words: Vec<String> = (0..200).map(|i| format!("word{i}")).collect();
-        let text = words.join(" ");
-        let chunker = SentenceAwareChunker {
-            chunk_size: 100,
-            overlap_size: 0,
-        };
-        let chunks = chunker.chunk(&text);
+        let input = words.join(" ");
+        let chunker = SentenceAwareChunker::new(NonZeroUsize::new(100).unwrap(), 0);
+        let chunks = chunker.chunk(&input);
         assert!(
             chunks.len() >= 4,
             "expected at least 4 chunks, got: {chunks:?}"

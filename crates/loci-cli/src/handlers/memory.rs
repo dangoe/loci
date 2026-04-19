@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // This file is part of loci-cli.
 
+use std::num::NonZeroUsize;
 use std::{
     collections::HashMap,
     error::Error as StdError,
@@ -19,7 +20,7 @@ use loci_core::{
     memory_extraction::{
         LlmMemoryExtractionStrategy, LlmMemoryExtractionStrategyParams, MemoryExtractionStrategy,
         MemoryExtractor, MemoryExtractorConfig, MemoryExtractorSearchResultsConfig,
-        llm::ChunkingConfig as CoreChunkingConfig,
+        llm::ChunkingStrategy,
     },
     model_provider::text_generation::TextGenerationModelProvider,
     store::MemoryStore as CoreMemoryStore,
@@ -185,28 +186,30 @@ where
                 }
                 let input = read_extraction_input(text, &files, std::io::stdin())?;
 
-                let params = LlmMemoryExtractionStrategyParams {
-                    guidelines: match (guidelines, &self.extraction_config.guidelines) {
+                let params = LlmMemoryExtractionStrategyParams::new(
+                    match (guidelines, &self.extraction_config.guidelines) {
                         (Some(cli), Some(cfg)) => Some(format!("{cfg}\n\n{cli}")),
                         (Some(cli), None) => Some(cli),
                         (None, Some(cfg)) => Some(cfg.clone()),
                         (None, None) => None,
                     },
-                    metadata: pairs_to_map(metadata),
-                    max_entries: max_entries.or(self.extraction_config.max_entries),
-                    min_confidence: min_confidence.or(self.extraction_config.min_confidence),
-                    thinking_mode: self
-                        .extraction_config
+                    pairs_to_map(metadata),
+                    max_entries.or(self.extraction_config.max_entries),
+                    min_confidence.or(self.extraction_config.min_confidence),
+                    self.extraction_config
                         .thinking
                         .as_ref()
                         .map(model_thinking_to_core),
-                    chunking: self.extraction_config.chunking.as_ref().map(|c| {
-                        CoreChunkingConfig {
-                            chunk_size: Some(c.chunk_size),
-                            overlap_size: Some(c.overlap_size),
-                        }
-                    }),
-                };
+                    self.extraction_config
+                        .chunking
+                        .as_ref()
+                        .map(|c| ChunkingStrategy::SentenceAware {
+                            chunk_size: NonZeroUsize::new(c.chunk_size)
+                                .expect("chunk_size must be > 0"),
+                            overlap_size: c.overlap_size,
+                        })
+                        .unwrap_or(ChunkingStrategy::WholeInput),
+                );
 
                 let strategy = LlmMemoryExtractionStrategy::new(
                     Arc::clone(&self.provider),
@@ -215,7 +218,7 @@ where
 
                 if dry_run {
                     let entries = strategy
-                        .extract(&input, params)
+                        .extract(&input, &params)
                         .await
                         .map_err(|e| Box::new(e) as Box<dyn StdError>)?;
                     let json: Vec<_> = entries
@@ -243,7 +246,7 @@ where
                         config_extractor_config_to_core(extractor_cfg),
                     );
                     let result = extractor
-                        .extract_and_store(&input, params)
+                        .extract_memory_entries(&input, &params)
                         .await
                         .map_err(|e| Box::new(e) as Box<dyn StdError>)?;
                     writeln!(
