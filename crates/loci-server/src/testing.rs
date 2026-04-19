@@ -167,8 +167,14 @@ pub fn minimal_app_config(
                 chunking: None,
                 extractor: MemoryExtractorConfig {
                     classification_model: "test-classification-model".to_string(),
-                    direct_search: MemoryExtractorSearchResultsConfig { max_results: 5, min_score: 0.70 },
-                    inverted_search: MemoryExtractorSearchResultsConfig { max_results: 3, min_score: 0.60 },
+                    direct_search: MemoryExtractorSearchResultsConfig {
+                        max_results: 5,
+                        min_score: 0.70,
+                    },
+                    inverted_search: MemoryExtractorSearchResultsConfig {
+                        max_results: 3,
+                        min_score: 0.60,
+                    },
                     bayesian_seed_weight: 10.0,
                     max_counter_increment: 5.0,
                     max_counter: 100.0,

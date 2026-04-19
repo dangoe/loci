@@ -7,7 +7,10 @@ pub fn entry_to_json(e: &loci_core::memory::MemoryQueryResult) -> serde_json::Va
     use loci_core::memory::MemoryTrust;
     let (confidence, trust_evidence) = match &e.memory_entry.trust {
         MemoryTrust::Fact => (1.0_f64, serde_json::Value::Null),
-        MemoryTrust::Extracted { confidence, evidence } => (
+        MemoryTrust::Extracted {
+            confidence,
+            evidence,
+        } => (
             evidence.bayesian_confidence().unwrap_or(*confidence),
             serde_json::json!({
                 "alpha": evidence.alpha,
@@ -36,7 +39,7 @@ mod tests {
     use std::collections::HashMap;
 
     use loci_core::memory::{
-        MemoryEntry as CoreMemoryEntry, MemoryTrust, MemoryQueryResult as CoreMemoryQueryResult,
+        MemoryEntry as CoreMemoryEntry, MemoryQueryResult as CoreMemoryQueryResult, MemoryTrust,
         Score as CoreScore,
     };
     use serde_json::Value as JsonValue;

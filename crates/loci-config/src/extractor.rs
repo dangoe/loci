@@ -133,9 +133,7 @@ default = "qdrant"
     #[test]
     fn test_extractor_section_required() {
         use std::io::Write as _;
-        let raw = format!(
-            "{BASE}\n[memory.extraction]\nmodel = \"default\"\n"
-        );
+        let raw = format!("{BASE}\n[memory.extraction]\nmodel = \"default\"\n");
         let mut f = tempfile::NamedTempFile::new().unwrap();
         f.write_all(raw.as_bytes()).unwrap();
         let err = crate::load_config(f.path()).unwrap_err();
@@ -248,9 +246,6 @@ classification_model = "x"
             tmp
         };
         let cfg2 = load_config(f.path()).unwrap();
-        assert_eq!(
-            cfg2.memory.extraction.extractor.decay_rate,
-            0.99
-        );
+        assert_eq!(cfg2.memory.extraction.extractor.decay_rate, 0.99);
     }
 }

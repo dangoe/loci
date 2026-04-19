@@ -188,7 +188,10 @@ async fn test_get_entry_returns_added_entry() {
 
     assert_eq!(fetched.memory_entry.id, saved.memory_entry.id);
     assert_eq!(fetched.memory_entry.content, "fetch me");
-    assert!(matches!(fetched.memory_entry.trust, MemoryTrust::Extracted { .. }));
+    assert!(matches!(
+        fetched.memory_entry.trust,
+        MemoryTrust::Extracted { .. }
+    ));
     assert_eq!(fetched.memory_entry.seen_count, 1);
 }
 
@@ -211,7 +214,10 @@ async fn test_metadata_is_persisted_and_restored() {
     let results = store.query(query("tagged content query", 1)).await.unwrap();
 
     assert_eq!(results[0].memory_entry.metadata, metadata);
-    assert!(matches!(results[0].memory_entry.trust, MemoryTrust::Extracted { .. }));
+    assert!(matches!(
+        results[0].memory_entry.trust,
+        MemoryTrust::Extracted { .. }
+    ));
 }
 
 #[tokio::test]
@@ -344,7 +350,10 @@ async fn test_query_respects_expiration() {
 
     for trust in [
         MemoryTrust::Fact,
-        MemoryTrust::Extracted { confidence: 0.5, evidence: Default::default() },
+        MemoryTrust::Extracted {
+            confidence: 0.5,
+            evidence: Default::default(),
+        },
     ] {
         let content = trust.as_str().to_string();
         valid_entries.push(

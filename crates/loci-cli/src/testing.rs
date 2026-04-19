@@ -10,7 +10,8 @@ use std::sync::Arc;
 use loci_config::{
     AppConfig, EmbeddingModelConfig, EmbeddingRoutingConfig, MemoryConfig, MemoryExtractionConfig,
     MemoryExtractorConfig, MemoryRoutingConfig, MemorySection, ModelProviderConfig,
-    ModelProviderKind, ModelsConfig, RoutingConfig, StoreConfig, TextModelConfig, TextRoutingConfig,
+    ModelProviderKind, ModelsConfig, RoutingConfig, StoreConfig, TextModelConfig,
+    TextRoutingConfig,
 };
 use loci_core::model_provider::text_generation::TextGenerationModelProvider;
 use loci_core::store::MemoryStore;

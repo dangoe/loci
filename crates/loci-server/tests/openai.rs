@@ -8,7 +8,7 @@ mod common;
 
 use std::sync::Arc;
 
-use loci_core::memory::{TrustEvidence, MemoryTrust};
+use loci_core::memory::{MemoryTrust, TrustEvidence};
 use loci_core::model_provider::text_generation::{TextGenerationResponse, TokenUsage};
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
@@ -279,7 +279,10 @@ async fn test_non_streaming_memory_entries_injected_into_system_prompt() {
     let memory = make_result(
         Uuid::new_v4(),
         "user prefers dark mode",
-        MemoryTrust::Extracted { confidence: 0.5, evidence: TrustEvidence::default() },
+        MemoryTrust::Extracted {
+            confidence: 0.5,
+            evidence: TrustEvidence::default(),
+        },
         0.9,
     );
     let store = Arc::new(

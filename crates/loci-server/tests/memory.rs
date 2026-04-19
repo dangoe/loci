@@ -16,7 +16,7 @@ use pretty_assertions::assert_eq;
 use rstest::rstest;
 use uuid::Uuid;
 
-use loci_core::memory::{TrustEvidence, MemoryQueryMode, MemoryTrust};
+use loci_core::memory::{MemoryQueryMode, MemoryTrust, TrustEvidence};
 use loci_core::model_provider::text_generation::TextGenerationResponse;
 use loci_server::loci::memory::v1::{
     MemoryKind as ProtoMemoryKind, MemoryServiceAddEntryRequest, MemoryServiceDeleteEntryRequest,
@@ -42,7 +42,15 @@ fn default_provider() -> Arc<MockTextGenerationModelProvider> {
 #[tokio::test]
 async fn test_memory_add_entry_uses_real_server_and_preserves_request_mapping() {
     let id = Uuid::new_v4();
-    let stored = make_result(id, "stored content", MemoryTrust::Extracted { confidence: 0.5, evidence: TrustEvidence::default() }, 0.73);
+    let stored = make_result(
+        id,
+        "stored content",
+        MemoryTrust::Extracted {
+            confidence: 0.5,
+            evidence: TrustEvidence::default(),
+        },
+        0.73,
+    );
     let store = Arc::new(MockStore::new().with_add(stored.clone()).with_get(stored));
     let server =
         TestServer::start_with_components(mock_config(), Arc::clone(&store), default_provider())
@@ -160,7 +168,15 @@ async fn test_memory_get_entry_translates_not_found_errors() {
 #[case("set_kind")]
 #[tokio::test]
 async fn test_memory_rpcs_reject_invalid_ids(#[case] method: &str) {
-    let result = make_result(Uuid::new_v4(), "unused", MemoryTrust::Extracted { confidence: 0.5, evidence: TrustEvidence::default() }, 0.12);
+    let result = make_result(
+        Uuid::new_v4(),
+        "unused",
+        MemoryTrust::Extracted {
+            confidence: 0.5,
+            evidence: TrustEvidence::default(),
+        },
+        0.12,
+    );
     let store = Arc::new(MockStore::new().with_add(result.clone()).with_get(result));
     let server =
         TestServer::start_with_components(mock_config(), Arc::clone(&store), default_provider())
@@ -220,7 +236,15 @@ async fn test_memory_rpcs_reject_invalid_ids(#[case] method: &str) {
 #[tokio::test]
 async fn test_memory_update_entry_preserves_request_mapping() {
     let id = Uuid::new_v4();
-    let updated = make_result(id, "updated content", MemoryTrust::Extracted { confidence: 0.5, evidence: TrustEvidence::default() }, 0.85);
+    let updated = make_result(
+        id,
+        "updated content",
+        MemoryTrust::Extracted {
+            confidence: 0.5,
+            evidence: TrustEvidence::default(),
+        },
+        0.85,
+    );
     let store = Arc::new(MockStore::new().with_update(updated));
     let server =
         TestServer::start_with_components(mock_config(), Arc::clone(&store), default_provider())

@@ -18,8 +18,7 @@ use crate::classification::{ClassificationError, ClassificationModelProvider, Hi
 use crate::embedding::{Embedding, TextEmbedder};
 use crate::error::{EmbeddingError, MemoryStoreError};
 use crate::memory::{
-    TrustEvidence, MemoryEntry, MemoryInput, MemoryQuery, MemoryQueryResult, MemoryTrust,
-    Score,
+    MemoryEntry, MemoryInput, MemoryQuery, MemoryQueryResult, MemoryTrust, Score, TrustEvidence,
 };
 use crate::model_provider::{
     common::ModelProviderResult,

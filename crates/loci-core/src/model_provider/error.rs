@@ -83,7 +83,10 @@ mod tests {
         ModelProviderError::Other { message: "something unexpected".to_string() },
         "something unexpected"
     )]
-    fn test_display_formats_error_message_for_each_variant(#[case] err: ModelProviderError, #[case] expected: &str) {
+    fn test_display_formats_error_message_for_each_variant(
+        #[case] err: ModelProviderError,
+        #[case] expected: &str,
+    ) {
         assert_eq!(err.to_string(), expected);
     }
 }

@@ -15,12 +15,12 @@ use std::path::Path;
 pub use embedding::EmbeddingModelConfig;
 pub use error::ConfigError;
 pub use extraction::{ChunkingConfig, MemoryExtractionConfig};
+pub use extractor::{MemoryExtractorConfig, MemoryExtractorSearchResultsConfig};
 pub use init::{ConfigInitError, DEFAULT_CONFIG_TEMPLATE, init_config};
 pub use memory::{MemoryConfig, MemorySection};
 pub use model::{
     ModelThinkingConfig, ModelThinkingEffortLevel, ModelTuningConfig, ModelsConfig, TextModelConfig,
 };
-pub use extractor::{MemoryExtractorConfig, MemoryExtractorSearchResultsConfig};
 pub use provider::{ModelProviderConfig, ModelProviderKind};
 pub use routing::{EmbeddingRoutingConfig, MemoryRoutingConfig, RoutingConfig, TextRoutingConfig};
 pub use store::StoreConfig;

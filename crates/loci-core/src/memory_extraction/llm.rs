@@ -11,7 +11,7 @@ use serde::Deserialize as _;
 use crate::{
     error::MemoryExtractionError,
     memory::{MemoryInput, MemoryTrust, TrustEvidence},
-    memory_extraction::chunker::split_into_chunks,
+    memory_extraction::{Chunker, SentenceAwareChunker},
     model_provider::text_generation::{
         ResponseFormat, TextGenerationModelProvider, TextGenerationRequest, ThinkingMode,
     },
@@ -295,7 +295,7 @@ fn chunks_for(input: &str, config: Option<&ChunkingConfig>) -> Vec<String> {
         return vec![input.to_owned()];
     }
     let overlap = config.and_then(|c| c.overlap_size).unwrap_or(0);
-    split_into_chunks(input, chunk_size, overlap)
+    SentenceAwareChunker::new(chunk_size, overlap).chunk(input)
 }
 
 /// Runs a single extraction round for one chunk. On parse failure, retries
