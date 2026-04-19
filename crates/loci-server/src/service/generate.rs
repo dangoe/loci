@@ -16,10 +16,10 @@ use loci_core::contextualization::{
     ContextualizerSystemMode,
 };
 use loci_core::memory::Score;
+use loci_core::memory_store::MemoryStore;
 use loci_core::model_provider::text_generation::{
     TextGenerationModelProvider, TokenUsage as CoreTokenUsage,
 };
-use loci_core::store::MemoryStore;
 
 use crate::loci::generate::v1::{
     GenerateServiceGenerateRequestView, GenerateServiceGenerateResponse, MemoryMode, SystemMode,

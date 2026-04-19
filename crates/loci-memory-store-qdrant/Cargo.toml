@@ -9,6 +9,7 @@ testing = ["dep:testcontainers"]
 background-delete = ["dep:tokio"]
 
 [dependencies]
+futures.workspace = true
 tokio = { workspace = true, optional = true }
 loci-core = { path = "../loci-core" }
 chrono.workspace = true

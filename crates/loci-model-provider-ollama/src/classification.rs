@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // This file is part of loci-model-provider-ollama.
 
-use std::future::Future;
 use std::sync::Arc;
 
+use futures::future::BoxFuture;
 use loci_core::classification::{
     ClassificationError, ClassificationModelProvider, HitClass, parse_hit_class,
 };
@@ -44,25 +44,25 @@ impl<P: TextGenerationModelProvider> LlmClassificationModelProvider<P> {
     }
 }
 
-impl<P: TextGenerationModelProvider> ClassificationModelProvider
+impl<P: TextGenerationModelProvider + Send + Sync> ClassificationModelProvider
     for LlmClassificationModelProvider<P>
 {
-    fn classify_hit(
-        &self,
-        candidate: &str,
-        hit: &str,
-    ) -> impl Future<Output = Result<HitClass, ClassificationError>> + Send {
+    fn classify_hit<'a>(
+        &'a self,
+        candidate: &'a str,
+        hit: &'a str,
+    ) -> BoxFuture<'a, Result<HitClass, ClassificationError>> {
         let prompt = format!("Candidate: {candidate}\n\nExisting memory: {hit}");
         let req = TextGenerationRequest::new(self.model.clone(), prompt).with_system(SYSTEM_PROMPT);
         let provider = Arc::clone(&self.provider);
 
-        async move {
+        Box::pin(async move {
             let response = provider
                 .generate(req)
                 .await
                 .map_err(ClassificationError::ModelProvider)?;
 
-            let text = response.text;
+            let text = response.text().to_owned();
 
             // Strip thinking tokens: find the first `{` in the response.
             let json_str = text
@@ -86,7 +86,7 @@ impl<P: TextGenerationModelProvider> ClassificationModelProvider
                 );
                 HitClass::Unrelated
             }))
-        }
+        })
     }
 }
 
@@ -126,12 +126,11 @@ mod tests {
             _req: TextGenerationRequest,
         ) -> ModelProviderResult<TextGenerationResponse> {
             match &self.text {
-                Some(text) => Ok(TextGenerationResponse {
-                    text: text.clone(),
-                    model: "mock".to_string(),
-                    usage: None,
-                    done: true,
-                }),
+                Some(text) => Ok(TextGenerationResponse::new_done(
+                    text.clone(),
+                    "mock".to_string(),
+                    None,
+                )),
                 None => Err(ModelProviderError::Timeout),
             }
         }

@@ -5,83 +5,116 @@
 mod chunker;
 pub mod llm;
 
-use chunker::{Chunker, SentenceAwareChunker};
+use futures::future::BoxFuture;
 pub use llm::{LlmMemoryExtractionStrategy, LlmMemoryExtractionStrategyParams};
 
-use std::{
-    collections::{HashMap, HashSet},
-    marker::PhantomData,
-    sync::Arc,
-};
+use std::{collections::HashSet, marker::PhantomData, num::NonZeroUsize, sync::Arc};
 
 use uuid::Uuid;
 
 use crate::{
-    BoxFuture,
     classification::{ClassificationModelProvider, HitClass},
     error::{MemoryExtractionError, MemoryStoreError},
     memory::{
-        MemoryInput, MemoryQuery, MemoryQueryMode, MemoryQueryResult, MemoryTrust, Score,
-        TrustEvidence,
+        MemoryEntry, MemoryTrust, Score, TrustEvidence,
+        store::{MemoryInput, MemoryQuery, MemoryQueryMode, MemoryStore},
     },
-    store::MemoryStore,
 };
-
-/// Extracts memory entries from a source.
-pub trait MemoryExtractionStrategy<P: Send + Sync>: Send + Sync {
-    fn extract<'a>(
-        &'a self,
-        input: &'a str,
-        params: &'a P,
-    ) -> BoxFuture<'a, Result<Vec<MemoryInput>, MemoryExtractionError>>;
-}
 
 /// Configuration for the initial search stage.
 #[derive(Debug, Clone)]
-pub struct MemoryExtractorSearchResultsConfig {
+pub struct MemoryQueryOptions {
     /// Maximum number of results to retrieve in semantic search.
-    pub max_results: usize,
+    max_results: NonZeroUsize,
     /// Minimum score threshold for search results.
-    pub min_score: f64,
+    min_score: Score,
 }
+
+impl MemoryQueryOptions {
+    /// Creates a new `MemoryQueryOptions` with the given parameters.
+    pub fn new(max_results: NonZeroUsize, min_score: Score) -> Self {
+        Self {
+            max_results,
+            min_score,
+        }
+    }
+
+    /// Validates the parameters and creates a new `MemoryQueryOptions`.
+    pub fn try_new(
+        max_results: usize,
+        min_score: f64,
+    ) -> Result<Self, InvalidMemoryQueryOptionsError> {
+        let max_results = NonZeroUsize::new(max_results).ok_or_else(|| {
+            InvalidMemoryQueryOptionsError::MaxResults(format!(
+                "max_results must be greater than 0, got {max_results}"
+            ))
+        })?;
+
+        let min_score = Score::try_new(min_score).map_err(|e| {
+            InvalidMemoryQueryOptionsError::MinScore(format!(
+                "min_score must be between 0.0 and 1.0, got {min_score}: {e}"
+            ))
+        })?;
+
+        Ok(Self::new(max_results, min_score))
+    }
+}
+
+/// Errors related to invalid search results configuration.
+#[derive(Debug)]
+pub enum InvalidMemoryQueryOptionsError {
+    MaxResults(String),
+    MinScore(String),
+}
+
+impl std::fmt::Display for InvalidMemoryQueryOptionsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MaxResults(msg) => write!(f, "invalid max_results: {msg}"),
+            Self::MinScore(msg) => write!(f, "invalid min_score: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for InvalidMemoryQueryOptionsError {}
 
 /// Configuration for the memory extractor.
 #[derive(Debug, Clone)]
 pub struct MemoryExtractorConfig {
     /// Configuration for direct semantic search stage.
-    pub direct_search: MemoryExtractorSearchResultsConfig,
+    direct_search: MemoryQueryOptions,
     /// Configuration for inverted semantic search stage.
-    pub inverted_search: MemoryExtractorSearchResultsConfig,
+    inverted_search: MemoryQueryOptions,
     /// Seed weight `W` used to initialise Bayesian counters from LLM confidence.
     /// `α = confidence × W`, `β = (1 − confidence) × W`. Default: 10.0.
-    pub bayesian_seed_weight: f64,
+    bayesian_seed_weight: f64,
     /// Maximum increment applied to a counter per evidence event. Default: 5.0.
-    pub max_counter_increment: f64,
+    max_counter_increment: f64,
     /// Upper bound for each Bayesian counter (α and β). Default: 100.0.
-    pub max_counter: f64,
+    max_counter: f64,
     /// Score at or below which an entry is automatically discarded. Default: 0.1.
-    pub auto_discard_threshold: f64,
+    auto_discard_threshold: f64,
     /// Score at or above which an entry is automatically promoted to Fact. Default: 0.9.
-    pub auto_promotion_threshold: f64,
+    auto_promotion_threshold: f64,
     /// Minimum accumulated `α` (evidence weight) required for auto-promotion
     /// to Fact — even when the Bayesian score clears `auto_promotion_threshold`.
     /// Prevents a single high-confidence observation from being promoted in
     /// isolation: a Fact should be corroborated, not just asserted once.
     /// Default: 12.0 (seed weight 10 + one strong corroborating observation).
-    pub min_alpha_for_promotion: f64,
+    min_alpha_for_promotion: f64,
 }
 
 impl Default for MemoryExtractorConfig {
     fn default() -> Self {
         Self {
-            direct_search: MemoryExtractorSearchResultsConfig {
-                max_results: 5,
-                min_score: 0.70,
-            },
-            inverted_search: MemoryExtractorSearchResultsConfig {
-                max_results: 3,
-                min_score: 0.60,
-            },
+            direct_search: MemoryQueryOptions::new(
+                NonZeroUsize::new(5).unwrap(),
+                Score::try_new(0.70).unwrap_or(Score::ZERO),
+            ),
+            inverted_search: MemoryQueryOptions::new(
+                NonZeroUsize::new(3).unwrap(),
+                Score::try_new(0.60).unwrap_or(Score::ZERO),
+            ),
             bayesian_seed_weight: 10.0,
             max_counter_increment: 5.0,
             max_counter: 100.0,
@@ -96,9 +129,23 @@ impl Default for MemoryExtractorConfig {
 #[derive(Debug, Clone)]
 pub struct DiscardedEntry {
     /// The content of the discarded entry.
-    pub content: String,
+    content: String,
     /// The reason the entry was discarded.
-    pub reason: DiscardReason,
+    reason: DiscardReason,
+}
+
+impl DiscardedEntry {
+    fn new(content: String, reason: DiscardReason) -> Self {
+        Self { content, reason }
+    }
+
+    pub fn content(&self) -> &str {
+        &self.content
+    }
+
+    pub fn reason(&self) -> &DiscardReason {
+        &self.reason
+    }
 }
 
 /// Why a candidate was discarded by the extractor.
@@ -113,14 +160,37 @@ pub enum DiscardReason {
 /// Outcome of a [`MemoryExtractor::extract_memory_entries`] call.
 #[derive(Debug)]
 pub struct MemoryExtractionResult {
-    /// Newly inserted entries (no prior match).
-    pub inserted: Vec<MemoryQueryResult>,
-    /// Entries that replaced existing duplicates/complements.
-    pub merged: Vec<MemoryQueryResult>,
-    /// Entries whose score reached `auto_promotion_threshold` and were stored as Facts.
-    pub promoted: Vec<MemoryQueryResult>,
-    /// Entries that were discarded (low score or contradicts a Fact).
-    pub discarded: Vec<DiscardedEntry>,
+    inserted: Vec<MemoryEntry>,
+    merged: Vec<MemoryEntry>,
+    promoted: Vec<MemoryEntry>,
+    discarded: Vec<DiscardedEntry>,
+}
+
+impl MemoryExtractionResult {
+    pub fn inserted(&self) -> &[MemoryEntry] {
+        &self.inserted
+    }
+
+    pub fn merged(&self) -> &[MemoryEntry] {
+        &self.merged
+    }
+
+    pub fn promoted(&self) -> &[MemoryEntry] {
+        &self.promoted
+    }
+
+    pub fn discarded(&self) -> &[DiscardedEntry] {
+        &self.discarded
+    }
+}
+
+/// Extracts memory entries from a source.
+pub trait MemoryExtractionStrategy<P: Send + Sync>: Send + Sync {
+    fn extract<'a>(
+        &'a self,
+        input: &'a str,
+        params: &'a P,
+    ) -> BoxFuture<'a, Result<Vec<MemoryInput>, MemoryExtractionError>>;
 }
 
 /// Orchestrates memory extraction:
@@ -180,8 +250,8 @@ where
         };
 
         for candidate in candidates {
-            let raw_confidence = match &candidate.trust {
-                Some(MemoryTrust::Extracted { confidence, .. }) => *confidence,
+            let raw_confidence = match candidate.trust() {
+                MemoryTrust::Extracted { confidence, .. } => *confidence,
                 _ => 0.5,
             };
             let confidence = MemoryTrust::clamp_confidence(raw_confidence);
@@ -189,15 +259,14 @@ where
             let classified_hits = self.collect_classified_hits(&candidate).await?;
 
             let contradicts_fact = classified_hits.iter().any(|(hit, class)| {
-                matches!(hit.memory_entry.trust, MemoryTrust::Fact)
-                    && *class == HitClass::Contradiction
+                matches!(hit.trust(), MemoryTrust::Fact) && *class == HitClass::Contradiction
             });
 
             if contradicts_fact {
-                result.discarded.push(DiscardedEntry {
-                    content: candidate.content.clone(),
-                    reason: DiscardReason::ContradictsAFact,
-                });
+                result.discarded.push(DiscardedEntry::new(
+                    candidate.content().to_string(),
+                    DiscardReason::ContradictsAFact,
+                ));
                 continue;
             }
 
@@ -206,10 +275,10 @@ where
             let score = trust_evidence.bayesian_confidence().unwrap_or(0.0);
 
             if score <= self.config.auto_discard_threshold {
-                result.discarded.push(DiscardedEntry {
-                    content: candidate.content.clone(),
-                    reason: DiscardReason::LowScore,
-                });
+                result.discarded.push(DiscardedEntry::new(
+                    candidate.content().to_string(),
+                    DiscardReason::LowScore,
+                ));
                 continue;
             }
 
@@ -239,11 +308,11 @@ where
                     result.merged.extend(merged);
                 }
             } else {
-                let input = MemoryInput {
-                    content: candidate.content.clone(),
-                    metadata: candidate.metadata.clone(),
-                    trust: Some(final_trust),
-                };
+                let input = MemoryInput::new(
+                    candidate.content().to_string(),
+                    final_trust,
+                    candidate.metadata().clone(),
+                );
                 let added = self.add_entries_or_fail(vec![input]).await?;
                 if is_promoted {
                     result.promoted.extend(added);
@@ -261,18 +330,18 @@ where
         candidate: &MemoryInput,
         trust: MemoryTrust,
         match_ids: Vec<Uuid>,
-    ) -> Result<Vec<MemoryQueryResult>, MemoryExtractionError> {
-        let merged_input = MemoryInput {
-            content: candidate.content.clone(),
-            metadata: candidate.metadata.clone(),
-            trust: Some(trust),
-        };
+    ) -> Result<Vec<MemoryEntry>, MemoryExtractionError> {
+        let merged_input = MemoryInput::new(
+            candidate.content().to_string(),
+            trust,
+            candidate.metadata().clone(),
+        );
 
         let add_result = self.add_entries_or_fail(vec![merged_input]).await?;
 
         for id in &match_ids {
             self.store
-                .delete_entry(*id)
+                .delete_entry(id)
                 .await
                 .map_err(MemoryExtractionError::MemoryStore)?;
         }
@@ -283,25 +352,25 @@ where
     async fn add_entries_or_fail(
         &self,
         inputs: Vec<MemoryInput>,
-    ) -> Result<Vec<MemoryQueryResult>, MemoryExtractionError> {
+    ) -> Result<Vec<MemoryEntry>, MemoryExtractionError> {
         let add_result = self
             .store
-            .add_entries(inputs)
+            .add_entries(&inputs)
             .await
             .map_err(MemoryExtractionError::MemoryStore)?;
 
-        if !add_result.failures.is_empty() {
+        if !add_result.failures().is_empty() {
             let msg = add_result
-                .failures
-                .into_iter()
-                .map(|f| f.error.to_string())
+                .failures()
+                .iter()
+                .map(|f| f.error().to_string())
                 .collect::<Vec<_>>()
                 .join(", ");
             Err(MemoryExtractionError::MemoryStore(
                 MemoryStoreError::GenericSave(msg),
             ))
         } else {
-            Ok(add_result.added)
+            Ok(add_result.added().to_vec())
         }
     }
 
@@ -313,7 +382,7 @@ where
     /// hits), each bounded by `max_counter_increment` and `max_counter`.
     fn compute_trust_evidence(
         &self,
-        classified_hits: &[(MemoryQueryResult, HitClass)],
+        classified_hits: &[(MemoryEntry, HitClass)],
         confidence: f64,
     ) -> TrustEvidence {
         let mut trust_evidence =
@@ -341,13 +410,13 @@ where
     async fn collect_classified_hits(
         &self,
         candidate: &MemoryInput,
-    ) -> Result<Vec<(MemoryQueryResult, HitClass)>, MemoryExtractionError> {
-        let mut classified_hits: Vec<(MemoryQueryResult, HitClass)> = Vec::new();
+    ) -> Result<Vec<(MemoryEntry, HitClass)>, MemoryExtractionError> {
+        let mut classified_hits: Vec<(MemoryEntry, HitClass)> = Vec::new();
 
         for direct_hit in self.query_direct_hits(candidate).await? {
             let class = self
                 .classifier
-                .classify_hit(&candidate.content, &direct_hit.memory_entry.content)
+                .classify_hit(candidate.content(), direct_hit.content())
                 .await
                 .map_err(|e| MemoryExtractionError::Other(e.to_string()))?;
             classified_hits.push((direct_hit, class));
@@ -356,7 +425,7 @@ where
         for inverted_hit in self.query_inverted_hits(candidate).await? {
             let class = self
                 .classifier
-                .classify_hit(&candidate.content, &inverted_hit.memory_entry.content)
+                .classify_hit(candidate.content(), inverted_hit.content())
                 .await
                 .map_err(|e| MemoryExtractionError::Other(e.to_string()))?;
             classified_hits.push((inverted_hit, class));
@@ -368,35 +437,34 @@ where
     async fn query_direct_hits(
         &self,
         candidate: &MemoryInput,
-    ) -> Result<Vec<MemoryQueryResult>, MemoryExtractionError> {
-        self.query_memory_store(MemoryQuery {
-            topic: candidate.content.clone(),
-            max_results: self.config.direct_search.max_results,
-            min_score: Score::new(self.config.direct_search.min_score).unwrap_or(Score::ZERO),
-            filters: HashMap::new(),
-            mode: MemoryQueryMode::Lookup,
-        })
+    ) -> Result<Vec<MemoryEntry>, MemoryExtractionError> {
+        self.query_memory_store(
+            MemoryQuery::new(candidate.content().to_string(), MemoryQueryMode::Lookup)
+                .with_max_results(self.config.direct_search.max_results)
+                .with_min_score(self.config.direct_search.min_score),
+        )
         .await
     }
 
     async fn query_inverted_hits(
         &self,
         candidate: &MemoryInput,
-    ) -> Result<Vec<MemoryQueryResult>, MemoryExtractionError> {
-        self.query_memory_store(MemoryQuery {
-            topic: format!("the opposite of {}", candidate.content),
-            max_results: self.config.inverted_search.max_results,
-            min_score: Score::new(self.config.inverted_search.min_score).unwrap_or(Score::ZERO),
-            filters: HashMap::new(),
-            mode: MemoryQueryMode::Lookup,
-        })
+    ) -> Result<Vec<MemoryEntry>, MemoryExtractionError> {
+        self.query_memory_store(
+            MemoryQuery::new(
+                format!("the opposite of {}", candidate.content()),
+                MemoryQueryMode::Lookup,
+            )
+            .with_max_results(self.config.inverted_search.max_results)
+            .with_min_score(self.config.inverted_search.min_score),
+        )
         .await
     }
 
     async fn query_memory_store(
         &self,
         query: MemoryQuery,
-    ) -> Result<Vec<MemoryQueryResult>, MemoryExtractionError> {
+    ) -> Result<Vec<MemoryEntry>, MemoryExtractionError> {
         self.store
             .query(query)
             .await
@@ -404,12 +472,12 @@ where
     }
 }
 
-fn extract_match_ids(classified_hits: &[(MemoryQueryResult, HitClass)]) -> Vec<Uuid> {
+fn extract_match_ids(classified_hits: &[(MemoryEntry, HitClass)]) -> Vec<Uuid> {
     let mut seen_ids: HashSet<Uuid> = HashSet::new();
     classified_hits
         .iter()
         .filter(|(_, class)| matches!(class, HitClass::Duplicate | HitClass::Complementary))
-        .map(|(hit, _)| hit.memory_entry.id)
+        .map(|(hit, _)| *hit.id())
         .filter(|id| seen_ids.insert(*id))
         .collect()
 }
@@ -419,12 +487,13 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
+    use futures::future::BoxFuture;
     use pretty_assertions::assert_eq;
 
-    use crate::BoxFuture;
     use crate::classification::HitClass;
     use crate::error::MemoryExtractionError;
-    use crate::memory::{MemoryInput, MemoryTrust, TrustEvidence};
+    use crate::memory::store::MemoryInput;
+    use crate::memory::{MemoryTrust, TrustEvidence};
     use crate::testing::{
         AddEntriesBehavior, ClassifyBehavior, MockClassificationModelProvider, MockStore,
         QueryBehavior, make_extracted_result, make_fact_result,
@@ -446,14 +515,14 @@ mod tests {
     }
 
     fn make_candidate(content: &str, confidence: f64) -> MemoryInput {
-        MemoryInput {
-            content: content.to_string(),
-            metadata: HashMap::new(),
-            trust: Some(MemoryTrust::Extracted {
+        MemoryInput::new(
+            content.to_string(),
+            MemoryTrust::Extracted {
                 confidence,
                 evidence: TrustEvidence::default(),
-            }),
-        }
+            },
+            HashMap::new(),
+        )
     }
 
     fn extractor(
@@ -640,10 +709,10 @@ mod tests {
     #[test]
     fn test_extractor_config_defaults() {
         let config = MemoryExtractorConfig::default();
-        assert_eq!(config.direct_search.max_results, 5);
-        assert!((config.direct_search.min_score - 0.70).abs() < f64::EPSILON);
-        assert_eq!(config.inverted_search.max_results, 3);
-        assert!((config.inverted_search.min_score - 0.60).abs() < f64::EPSILON);
+        assert_eq!(config.direct_search.max_results.get(), 5);
+        assert!((config.direct_search.min_score.value() - 0.70).abs() < f64::EPSILON);
+        assert_eq!(config.inverted_search.max_results.get(), 3);
+        assert!((config.inverted_search.min_score.value() - 0.60).abs() < f64::EPSILON);
         assert!((config.bayesian_seed_weight - 10.0).abs() < f64::EPSILON);
         assert!((config.max_counter_increment - 5.0).abs() < f64::EPSILON);
         assert!((config.max_counter - 100.0).abs() < f64::EPSILON);
@@ -697,10 +766,8 @@ mod tests {
         let inputs = state
             .add_inputs
             .expect("add_entries should have been called");
-        let alpha = match &inputs[0].trust {
-            Some(MemoryTrust::Extracted { evidence, .. }) => {
-                evidence.alpha.expect("alpha should be set")
-            }
+        let alpha = match inputs[0].trust() {
+            MemoryTrust::Extracted { evidence, .. } => evidence.alpha.expect("alpha should be set"),
             _ => panic!("expected Extracted trust"),
         };
         // alpha must not exceed max_counter = 9.5

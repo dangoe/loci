@@ -77,7 +77,7 @@ pub enum MemoryStoreError {
     Query(String),
     /// An error occurred while embedding a memory.
     Embedding(EmbeddingError),
-    /// No memory with the given ID exists in the store.
+    /// The requested memory entry was not found in the store.
     NotFound(Uuid),
     /// An error occurred while saving a memory to the store.
     GenericSave(String),

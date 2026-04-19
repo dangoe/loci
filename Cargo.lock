@@ -1611,6 +1611,7 @@ name = "loci-memory-store-qdrant"
 version = "0.2.0-dev"
 dependencies = [
  "chrono",
+ "futures",
  "loci-core",
  "log",
  "pretty_assertions",

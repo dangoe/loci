@@ -13,7 +13,7 @@ use loci_core::memory_extraction::{
     LlmMemoryExtractionStrategy, LlmMemoryExtractionStrategyParams, MemoryExtractionStrategy,
     MemoryExtractor, MemoryExtractorConfig,
 };
-use loci_core::store::MemoryStore;
+use loci_core::memory_store::MemoryStore;
 use loci_model_provider_ollama::classification::LlmClassificationModelProvider;
 use loci_model_provider_ollama::testing::{
     classification_model, ensure_ollama_available, ollama_provider, text_model,

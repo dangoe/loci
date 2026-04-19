@@ -5,8 +5,8 @@
 use std::sync::Arc;
 
 use loci_config::AppConfig;
+use loci_core::memory_store::MemoryStore;
 use loci_core::model_provider::text_generation::TextGenerationModelProvider;
-use loci_core::store::MemoryStore;
 
 /// Shared application state injected into every axum handler.
 pub(crate) struct AppState<M, E>

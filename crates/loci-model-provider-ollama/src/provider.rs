@@ -4,12 +4,12 @@
 
 use futures::StreamExt as _;
 use loci_core::model_provider::{
-    common::ModelProviderResult,
+    common::{ModelProviderResult, TokenUsage},
     embedding::{EmbeddingModelProvider, EmbeddingRequest, EmbeddingResponse},
     error::ModelProviderError,
     text_generation::{
         ResponseFormat, TextGenerationModelProvider, TextGenerationRequest, TextGenerationResponse,
-        ThinkingEffortLevel, ThinkingMode, TokenUsage,
+        ThinkingMode,
     },
 };
 use log::debug;
@@ -86,7 +86,7 @@ struct OllamaStreamChunk {
 #[derive(Debug, Serialize)]
 struct OllamaEmbeddingRequest<'a> {
     model: &'a str,
-    input: &'a Vec<String>,
+    input: &'a [String],
     #[serde(skip_serializing_if = "Option::is_none")]
     dimensions: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -116,9 +116,9 @@ impl OllamaModelProvider {
         if let Some(timeout) = config.timeout {
             builder = builder.timeout(timeout);
         }
-        let client = builder.build().map_err(|e| ModelProviderError::Other {
-            message: format!("Failed to build HTTP client: {e}"),
-        })?;
+        let client = builder
+            .build()
+            .map_err(|e| ModelProviderError::Other(format!("Failed to build HTTP client: {e}")))?;
         Ok(Self { config, client })
     }
 
@@ -128,7 +128,7 @@ impl OllamaModelProvider {
     /// - Maps `thinking` into the top-level `think` field:
     ///   - `Enabled` -> `true`
     ///   - `Disabled` -> `false`
-    ///   - `Preset { preset_name }` -> string preset name
+    ///   - `Effort { level }` -> string level via `Display`
     ///   - `Budgeted { .. }` -> fallback to `true` (enabled) per instructions
     /// - Formats `keep_alive` as a duration string like "5m" or "30s".
     fn build_text_request<'a>(
@@ -138,28 +138,28 @@ impl OllamaModelProvider {
     ) -> OllamaTextGenerationRequest<'a> {
         // Start with extras
         let mut opts_map = serde_json::Map::new();
-        for (k, v) in req.extra_params.iter() {
+        for (k, v) in req.extra_params().iter() {
             opts_map.insert(k.clone(), v.clone());
         }
 
         // Typed fields override extra_params
-        if let Some(t) = req.temperature {
+        if let Some(t) = req.temperature() {
             opts_map.insert("temperature".to_string(), Value::from(t));
         }
-        if let Some(p) = req.top_p {
+        if let Some(p) = req.top_p() {
             opts_map.insert("top_p".to_string(), Value::from(p));
         }
-        if let Some(max) = req.max_tokens {
+        if let Some(max) = req.max_tokens() {
             opts_map.insert("max_tokens".to_string(), Value::from(max));
         }
-        if let Some(stops) = &req.stop {
+        if let Some(stops) = req.stop() {
             let arr: Vec<Value> = stops.iter().map(|s| Value::from(s.clone())).collect();
             opts_map.insert("stop".to_string(), Value::from(arr));
         }
-        if let Some(rp) = req.repeat_penalty {
+        if let Some(rp) = req.repeat_penalty() {
             opts_map.insert("repeat_penalty".to_string(), Value::from(rp));
         }
-        if let Some(rl) = req.repeat_last_n {
+        if let Some(rl) = req.repeat_last_n() {
             opts_map.insert("repeat_last_n".to_string(), Value::from(rl));
         }
 
@@ -170,20 +170,17 @@ impl OllamaModelProvider {
         };
 
         // Map thinking mode to top-level `think` parameter. Budgeted falls back to enabled.
-        let think = match &req.thinking {
+        let think = match req.thinking() {
             Some(ThinkingMode::Enabled) => Some(Value::Bool(true)),
             Some(ThinkingMode::Disabled) => Some(Value::Bool(false)),
-            Some(ThinkingMode::Effort { level }) => Some(match level {
-                ThinkingEffortLevel::Low => Value::String("low".to_string()),
-                ThinkingEffortLevel::Medium => Value::String("medium".to_string()),
-                ThinkingEffortLevel::High => Value::String("high".to_string()),
-            }),
+            Some(ThinkingMode::Effort { level }) => Some(Value::String(level.to_string())),
             Some(ThinkingMode::Budgeted { .. }) => Some(Value::Bool(true)), // fall back to Enabled
+            Some(_) => Some(Value::Bool(true)), // forward-compat: treat unknown modes as enabled
             None => None,
         };
 
         // Format keep_alive as "Xm" if whole minutes, otherwise "Ns"
-        let keep_alive = req.keep_alive.map(|d| {
+        let keep_alive = req.keep_alive().map(|d| {
             let secs = d.as_secs();
             if secs != 0 && secs % 60 == 0 {
                 format!("{}m", secs / 60)
@@ -192,16 +189,17 @@ impl OllamaModelProvider {
             }
         });
 
-        let format = req.response_format.as_ref().map(|format| match format {
+        let format = req.response_format().map(|format| match format {
             ResponseFormat::Json => "json",
+            _ => "json", // forward-compat
         });
 
         OllamaTextGenerationRequest {
-            model: &req.model,
-            prompt: &req.prompt,
+            model: req.model(),
+            prompt: req.prompt(),
             stream,
             think,
-            system: req.system.as_deref(),
+            system: req.system(),
             options,
             format,
             keep_alive,
@@ -224,9 +222,7 @@ impl TextGenerationModelProvider for OllamaModelProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| ModelProviderError::Transport {
-                message: e.to_string(),
-            })?;
+            .map_err(|e| ModelProviderError::Transport(e.to_string()))?;
 
         debug!("Received response from Ollama: {:?}", http_response);
 
@@ -237,18 +233,15 @@ impl TextGenerationModelProvider for OllamaModelProvider {
                 .ok()
                 .and_then(|v| v["error"].as_str().map(str::to_owned))
                 .unwrap_or(body_text);
-            return Err(ModelProviderError::Other {
-                message: format!("Ollama returned HTTP {status}: {detail}"),
-            });
+            return Err(ModelProviderError::Other(format!(
+                "Ollama returned HTTP {status}: {detail}"
+            )));
         }
 
-        let parse_response: OllamaTextGenerationResponse =
-            http_response
-                .json()
-                .await
-                .map_err(|e| ModelProviderError::Parse {
-                    message: format!("error decoding response body: {e}"),
-                })?;
+        let parse_response: OllamaTextGenerationResponse = http_response
+            .json()
+            .await
+            .map_err(|e| ModelProviderError::Parse(format!("error decoding response body: {e}")))?;
 
         debug!("Parsed response from Ollama: {:?}", parse_response);
 
@@ -259,16 +252,15 @@ impl TextGenerationModelProvider for OllamaModelProvider {
             (None, None) => None,
         };
 
-        Ok(TextGenerationResponse {
-            text: parse_response.response,
-            model: parse_response.model,
-            usage: Some(TokenUsage {
-                prompt_tokens: parse_response.prompt_eval_count,
-                completion_tokens: parse_response.eval_count,
+        Ok(TextGenerationResponse::new_done(
+            parse_response.response,
+            parse_response.model,
+            Some(TokenUsage::new(
+                parse_response.prompt_eval_count,
+                parse_response.eval_count,
                 total_tokens,
-            }),
-            done: true,
-        })
+            )),
+        ))
     }
 
     fn generate_stream(
@@ -286,7 +278,7 @@ impl TextGenerationModelProvider for OllamaModelProvider {
                 .json(&body)
                 .send()
                 .await
-                .map_err(|e| ModelProviderError::Transport { message: e.to_string() })?;
+                .map_err(|e| ModelProviderError::Transport(e.to_string()))?;
 
             let status = http_response.status();
             if !status.is_success() {
@@ -295,9 +287,9 @@ impl TextGenerationModelProvider for OllamaModelProvider {
                     .ok()
                     .and_then(|v| v["error"].as_str().map(str::to_owned))
                     .unwrap_or(body_text);
-                Err(ModelProviderError::Other {
-                    message: format!("Ollama returned HTTP {status}: {detail}"),
-                })?;
+                Err(ModelProviderError::Other(format!(
+                    "Ollama returned HTTP {status}: {detail}"
+                )))?;
                 return; // unreachable — satisfies borrow checker that http_response is not reused
             }
 
@@ -305,9 +297,9 @@ impl TextGenerationModelProvider for OllamaModelProvider {
             let mut buffer = String::new();
 
             while let Some(chunk) = byte_stream.next().await {
-                let bytes = chunk.map_err(|e| ModelProviderError::Transport { message: e.to_string() })?;
+                let bytes = chunk.map_err(|e| ModelProviderError::Transport(e.to_string()))?;
                 let text = String::from_utf8(bytes.to_vec())
-                    .map_err(|e| ModelProviderError::Parse { message: e.to_string() })?;
+                    .map_err(|e| ModelProviderError::Parse(e.to_string()))?;
                 buffer.push_str(&text);
 
                 while let Some(newline_pos) = buffer.find('\n') {
@@ -319,7 +311,7 @@ impl TextGenerationModelProvider for OllamaModelProvider {
                     }
 
                     let chunk: OllamaStreamChunk = serde_json::from_str(&line)
-                        .map_err(|e| ModelProviderError::Parse { message: e.to_string() })?;
+                        .map_err(|e| ModelProviderError::Parse(e.to_string()))?;
 
                     let is_done = chunk.done;
                     let usage = if is_done {
@@ -329,21 +321,16 @@ impl TextGenerationModelProvider for OllamaModelProvider {
                             (None, Some(b)) => Some(b),
                             (None, None) => None,
                         };
-                        Some(TokenUsage {
-                            prompt_tokens: chunk.prompt_eval_count,
-                            completion_tokens: chunk.eval_count,
-                            total_tokens: total,
-                        })
+                        Some(TokenUsage::new(
+                            chunk.prompt_eval_count,
+                            chunk.eval_count,
+                            total,
+                        ))
                     } else {
                         None
                     };
 
-                    yield TextGenerationResponse {
-                        text: chunk.response,
-                        model: chunk.model,
-                        usage,
-                        done: is_done,
-                    };
+                    yield TextGenerationResponse::new(chunk.response, chunk.model, usage, is_done);
 
                     if is_done {
                         return;
@@ -357,9 +344,9 @@ impl TextGenerationModelProvider for OllamaModelProvider {
 impl EmbeddingModelProvider for OllamaModelProvider {
     async fn embed(&self, req: EmbeddingRequest) -> ModelProviderResult<EmbeddingResponse> {
         let body = OllamaEmbeddingRequest {
-            model: &req.model,
-            input: &req.input,
-            dimensions: req.embedding_dimension,
+            model: req.model(),
+            input: req.input(),
+            dimensions: req.embedding_dimension().map(|n| n.get()),
             options: None,
             keep_alive: None,
         };
@@ -370,9 +357,7 @@ impl EmbeddingModelProvider for OllamaModelProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| ModelProviderError::Transport {
-                message: format!("Failed to send request: {e}"),
-            })?;
+            .map_err(|e| ModelProviderError::Transport(format!("Failed to send request: {e}")))?;
 
         if !http_response.status().is_success() {
             let status = http_response.status();
@@ -381,23 +366,20 @@ impl EmbeddingModelProvider for OllamaModelProvider {
                 .ok()
                 .and_then(|v| v["error"].as_str().map(str::to_owned))
                 .unwrap_or(body_text);
-            return Err(ModelProviderError::Other {
-                message: format!("Ollama returned HTTP {status}: {detail}"),
-            });
+            return Err(ModelProviderError::Other(format!(
+                "Ollama returned HTTP {status}: {detail}"
+            )));
         }
 
-        let parsed_response: OllamaEmbeddingResponse =
-            http_response
-                .json()
-                .await
-                .map_err(|e| ModelProviderError::Parse {
-                    message: format!("Failed to parse response: {e}"),
-                })?;
+        let parsed_response: OllamaEmbeddingResponse = http_response
+            .json()
+            .await
+            .map_err(|e| ModelProviderError::Parse(format!("Failed to parse response: {e}")))?;
 
-        Ok(EmbeddingResponse {
-            embeddings: parsed_response.embeddings,
-            model: parsed_response.model,
-            usage: None,
-        })
+        Ok(EmbeddingResponse::new(
+            parsed_response.embeddings,
+            parsed_response.model,
+            None,
+        ))
     }
 }

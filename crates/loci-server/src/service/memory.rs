@@ -16,8 +16,8 @@ use loci_core::error::MemoryStoreError;
 use loci_core::memory::{
     MemoryInput, MemoryQuery, MemoryQueryMode, MemoryQueryResult, MemoryTrust, Score,
 };
+use loci_core::memory_store::MemoryStore;
 use loci_core::model_provider::text_generation::TextGenerationModelProvider;
-use loci_core::store::MemoryStore;
 
 use crate::loci::memory::v1::{
     MemoryEntry, MemoryKind, MemoryServiceAddEntryRequestView, MemoryServiceAddEntryResponse,

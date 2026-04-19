@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // This file is part of loci-core.
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
+
+use futures::future::BoxFuture;
 
 use crate::{
     error::EmbeddingError,
@@ -41,10 +44,7 @@ pub trait TextEmbedder: Send + Sync {
     /// Returns the fixed number of dimensions this embedder produces.
     fn embedding_dimension(&self) -> usize;
 
-    fn embed(
-        &self,
-        text: &str,
-    ) -> impl Future<Output = Result<Embedding, EmbeddingError>> + Send + '_;
+    fn embed<'a>(&'a self, text: &'a str) -> BoxFuture<'a, Result<Embedding, EmbeddingError>>;
 }
 
 /// Default [`TextEmbedder`] implementation backed by any [`EmbeddingModelProvider`].
@@ -73,23 +73,23 @@ impl<P: EmbeddingModelProvider> TextEmbedder for DefaultTextEmbedder<P> {
         self.embedding_dimension
     }
 
-    fn embed(
-        &self,
-        text: &str,
-    ) -> impl Future<Output = Result<Embedding, EmbeddingError>> + Send + '_ {
-        let req = EmbeddingRequest::new(self.model.as_str(), text)
-            .with_embedding_dimension(self.embedding_dimension);
-        async move {
+    fn embed<'a>(&'a self, text: &'a str) -> BoxFuture<'a, Result<Embedding, EmbeddingError>> {
+        let req = EmbeddingRequest::new(self.model.as_str(), text);
+        let req = match NonZeroUsize::new(self.embedding_dimension) {
+            Some(dim) => req.with_embedding_dimension(dim),
+            None => req,
+        };
+        Box::pin(async move {
             self.provider
                 .embed(req)
                 .await
                 .map_err(EmbeddingError::ModelProvider)?
-                .embeddings
-                .into_iter()
-                .next()
+                .embeddings()
+                .first()
+                .cloned()
                 .map(Embedding::from)
                 .ok_or(EmbeddingError::EmptyResponse)
-        }
+        })
     }
 }
 
@@ -133,11 +133,11 @@ mod tests {
 
     impl EmbeddingModelProvider for EmptyResponseProvider {
         async fn embed(&self, req: EmbeddingRequest) -> ModelProviderResult<EmbeddingResponse> {
-            Ok(EmbeddingResponse {
-                embeddings: vec![], // empty — should trigger EmptyResponse error
-                model: req.model.clone(),
-                usage: None,
-            })
+            Ok(EmbeddingResponse::new(
+                vec![], // empty — should trigger EmptyResponse error
+                req.model().to_owned(),
+                None,
+            ))
         }
     }
 
@@ -154,18 +154,13 @@ mod tests {
     }
 
     impl EmbeddingModelProvider for FixedProvider {
-        fn embed(
-            &self,
-            req: EmbeddingRequest,
-        ) -> impl Future<Output = ModelProviderResult<EmbeddingResponse>> + Send + '_ {
+        async fn embed(&self, req: EmbeddingRequest) -> ModelProviderResult<EmbeddingResponse> {
             let values = self.values.clone();
-            async move {
-                Ok(EmbeddingResponse {
-                    embeddings: vec![values],
-                    model: req.model.clone(),
-                    usage: None,
-                })
-            }
+            Ok(EmbeddingResponse::new(
+                vec![values],
+                req.model().to_owned(),
+                None,
+            ))
         }
     }
 

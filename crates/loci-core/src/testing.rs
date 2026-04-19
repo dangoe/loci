@@ -7,24 +7,21 @@
 //! Available only when the `testing` feature is enabled.
 
 use std::collections::HashMap;
-use std::future::Future;
 use std::sync::Mutex;
 
-use chrono::Utc;
+use futures::future::BoxFuture;
 use futures::stream;
 use uuid::Uuid;
 
 use crate::classification::{ClassificationError, ClassificationModelProvider, HitClass};
 use crate::embedding::{Embedding, TextEmbedder};
 use crate::error::{EmbeddingError, MemoryStoreError};
-use crate::memory::{
-    MemoryEntry, MemoryInput, MemoryQuery, MemoryQueryResult, MemoryTrust, Score, TrustEvidence,
-};
+use crate::memory::store::{AddEntriesResult, MemoryInput, MemoryQuery, MemoryStore};
+use crate::memory::{MemoryEntry, MemoryTrust, TrustEvidence};
 use crate::model_provider::{
     common::ModelProviderResult,
     text_generation::{TextGenerationModelProvider, TextGenerationRequest, TextGenerationResponse},
 };
-use crate::store::{AddEntriesResult, MemoryStore};
 
 /// Describes an error a [`MockStore`] operation should return.
 #[derive(Debug, Clone)]
@@ -42,17 +39,17 @@ impl MockStoreErrorKind {
     }
 }
 
-/// Configures the outcome of a [`MockStore`] operation that returns a single entry.
+/// Configures the outcome of a [`MockStore`] operation that returns an optional entry.
 #[derive(Debug, Clone)]
 pub enum EntryBehavior {
-    Ok(MemoryQueryResult),
+    Ok(Option<MemoryEntry>),
     Err(MockStoreErrorKind),
 }
 
 /// Configures the outcome of a [`MockStore::add_entries`] call.
 #[derive(Debug, Clone)]
 pub enum AddEntriesBehavior {
-    Ok(Vec<MemoryQueryResult>),
+    Ok(Vec<MemoryEntry>),
     /// Indicates a global operation-level failure (e.g., connection error).
     Err(MockStoreErrorKind),
 }
@@ -60,7 +57,7 @@ pub enum AddEntriesBehavior {
 /// Configures the outcome of a [`MockStore::query`] call.
 #[derive(Debug, Clone)]
 pub enum QueryBehavior {
-    Ok(Vec<MemoryQueryResult>),
+    Ok(Vec<MemoryEntry>),
     Err(MockStoreErrorKind),
 }
 
@@ -77,10 +74,7 @@ pub struct MockStoreState {
     pub add_inputs: Option<Vec<MemoryInput>>,
     pub get_id: Option<Uuid>,
     pub delete_id: Option<Uuid>,
-    pub update_id: Option<Uuid>,
-    pub update_input: Option<MemoryInput>,
-    pub set_trust_id: Option<Uuid>,
-    pub set_trust: Option<MemoryTrust>,
+    pub promote_id: Option<Uuid>,
     pub query: Option<MemoryQuery>,
     pub query_calls: usize,
 }
@@ -108,8 +102,7 @@ pub struct MockStore {
     add_entries_behavior: AddEntriesBehavior,
     get_behavior: EntryBehavior,
     query_behavior: QueryBehavior,
-    update_behavior: EntryBehavior,
-    set_kind_behavior: EntryBehavior,
+    promote_behavior: EntryBehavior,
     delete_behavior: UnitBehavior,
     prune_behavior: UnitBehavior,
 }
@@ -124,10 +117,10 @@ impl MockStore {
     /// Creates a new mock store with default behaviors.
     ///
     /// Defaults:
-    /// - `add_entry` → `Err(Connection("mock: not configured"))`
-    /// - `get_entry` → `Err(NotFound(Uuid::nil()))`
+    /// - `add_entries` → `Err(Connection("mock: not configured"))`
+    /// - `get_entry` → `Ok(None)`
     /// - `query` → `Ok(vec![])`
-    /// - `update_entry` → `Err(NotFound(Uuid::nil()))`
+    /// - `promote` → `Ok(None)`
     /// - `delete_entry` → `Ok(())`
     /// - `prune_expired` → `Ok(())`
     pub fn new() -> Self {
@@ -136,10 +129,9 @@ impl MockStore {
             add_entries_behavior: AddEntriesBehavior::Err(MockStoreErrorKind::Connection(
                 "mock: not configured".into(),
             )),
-            get_behavior: EntryBehavior::Err(MockStoreErrorKind::NotFound(Uuid::nil())),
+            get_behavior: EntryBehavior::Ok(None),
             query_behavior: QueryBehavior::Ok(vec![]),
-            update_behavior: EntryBehavior::Err(MockStoreErrorKind::NotFound(Uuid::nil())),
-            set_kind_behavior: EntryBehavior::Err(MockStoreErrorKind::NotFound(Uuid::nil())),
+            promote_behavior: EntryBehavior::Ok(None),
             delete_behavior: UnitBehavior::Ok,
             prune_behavior: UnitBehavior::Ok,
         }
@@ -155,33 +147,21 @@ impl MockStore {
 
     // -- Convenience builders (set Ok result directly) ----------------------
 
-    /// Configures `add_entry` to return the given result.
-    pub fn with_add(mut self, result: MemoryQueryResult) -> Self {
+    /// Configures `add_entries` to return the given entry.
+    pub fn with_add(mut self, result: MemoryEntry) -> Self {
         self.add_entries_behavior = AddEntriesBehavior::Ok(vec![result]);
         self
     }
 
-    /// Configures `get_entry` to return the given result.
-    pub fn with_get(mut self, result: MemoryQueryResult) -> Self {
+    /// Configures `get_entry` to return the given entry.
+    pub fn with_get(mut self, result: Option<MemoryEntry>) -> Self {
         self.get_behavior = EntryBehavior::Ok(result);
         self
     }
 
     /// Configures `query` to return the given results.
-    pub fn with_query(mut self, results: Vec<MemoryQueryResult>) -> Self {
+    pub fn with_query(mut self, results: Vec<MemoryEntry>) -> Self {
         self.query_behavior = QueryBehavior::Ok(results);
-        self
-    }
-
-    /// Configures `update_entry` to return the given result.
-    pub fn with_update(mut self, result: MemoryQueryResult) -> Self {
-        self.update_behavior = EntryBehavior::Ok(result);
-        self
-    }
-
-    /// Configures `set_entry_trust` to return the given result.
-    pub fn with_set_kind(mut self, result: MemoryQueryResult) -> Self {
-        self.set_kind_behavior = EntryBehavior::Ok(result);
         self
     }
 
@@ -205,15 +185,9 @@ impl MockStore {
         self
     }
 
-    /// Configures the behavior of `update_entry`.
-    pub fn with_update_behavior(mut self, behavior: EntryBehavior) -> Self {
-        self.update_behavior = behavior;
-        self
-    }
-
-    /// Configures the behavior of `set_entry_trust`.
-    pub fn with_set_kind_behavior(mut self, behavior: EntryBehavior) -> Self {
-        self.set_kind_behavior = behavior;
+    /// Configures the behavior of `promote`.
+    pub fn with_promote_behavior(mut self, behavior: EntryBehavior) -> Self {
+        self.promote_behavior = behavior;
         self
     }
 
@@ -231,119 +205,94 @@ impl MockStore {
 }
 
 impl MemoryStore for MockStore {
-    fn add_entries(
-        &self,
-        inputs: Vec<MemoryInput>,
-    ) -> impl Future<Output = Result<AddEntriesResult, MemoryStoreError>> + Send + '_ {
+    fn add_entries<'a>(
+        &'a self,
+        inputs: &'a [MemoryInput],
+    ) -> BoxFuture<'a, Result<AddEntriesResult, MemoryStoreError>> {
         self.state
             .lock()
             .expect("mock store mutex poisoned")
-            .add_inputs = Some(inputs.clone());
+            .add_inputs = Some(inputs.to_vec());
         let behavior = self.add_entries_behavior.clone();
-        async move {
+        Box::pin(async move {
             match behavior {
-                AddEntriesBehavior::Ok(entries) => Ok(AddEntriesResult {
-                    added: entries,
-                    failures: Vec::new(),
-                }),
+                AddEntriesBehavior::Ok(entries) => Ok(AddEntriesResult::new(entries, vec![])),
                 AddEntriesBehavior::Err(error) => Err(error.into_memory_store_error()),
             }
-        }
+        })
     }
 
-    fn get_entry(
-        &self,
-        id: Uuid,
-    ) -> impl Future<Output = Result<MemoryQueryResult, MemoryStoreError>> + Send + '_ {
-        self.state.lock().expect("mock store mutex poisoned").get_id = Some(id);
+    fn get_entry<'a>(
+        &'a self,
+        id: &'a Uuid,
+    ) -> BoxFuture<'a, Result<Option<MemoryEntry>, MemoryStoreError>> {
+        self.state.lock().expect("mock store mutex poisoned").get_id = Some(*id);
         let behavior = self.get_behavior.clone();
-        async move {
+        Box::pin(async move {
             match behavior {
                 EntryBehavior::Ok(result) => Ok(result),
                 EntryBehavior::Err(error) => Err(error.into_memory_store_error()),
             }
-        }
+        })
     }
 
     fn query(
         &self,
         query: MemoryQuery,
-    ) -> impl Future<Output = Result<Vec<MemoryQueryResult>, MemoryStoreError>> + Send + '_ {
+    ) -> BoxFuture<'_, Result<Vec<MemoryEntry>, MemoryStoreError>> {
         let mut state = self.state.lock().expect("mock store mutex poisoned");
         state.query = Some(query);
         state.query_calls += 1;
         drop(state);
 
         let behavior = self.query_behavior.clone();
-        async move {
+        Box::pin(async move {
             match behavior {
                 QueryBehavior::Ok(results) => Ok(results),
                 QueryBehavior::Err(error) => Err(error.into_memory_store_error()),
             }
-        }
+        })
     }
 
-    fn update_entry(
-        &self,
-        id: Uuid,
-        input: MemoryInput,
-    ) -> impl Future<Output = Result<MemoryQueryResult, MemoryStoreError>> + Send + '_ {
-        let mut state = self.state.lock().expect("mock store mutex poisoned");
-        state.update_id = Some(id);
-        state.update_input = Some(input);
-        drop(state);
-
-        let behavior = self.update_behavior.clone();
-        async move {
+    fn promote<'a>(
+        &'a self,
+        id: &'a Uuid,
+    ) -> BoxFuture<'a, Result<Option<MemoryEntry>, MemoryStoreError>> {
+        self.state
+            .lock()
+            .expect("mock store mutex poisoned")
+            .promote_id = Some(*id);
+        let behavior = self.promote_behavior.clone();
+        Box::pin(async move {
             match behavior {
                 EntryBehavior::Ok(result) => Ok(result),
                 EntryBehavior::Err(error) => Err(error.into_memory_store_error()),
             }
-        }
+        })
     }
 
-    async fn set_entry_trust(
-        &self,
-        id: Uuid,
-        trust: MemoryTrust,
-    ) -> Result<MemoryQueryResult, MemoryStoreError> {
-        let mut state = self.state.lock().expect("mock store mutex poisoned");
-        state.set_trust_id = Some(id);
-        state.set_trust = Some(trust);
-        drop(state);
-
-        let behavior = self.set_kind_behavior.clone();
-        match behavior {
-            EntryBehavior::Ok(result) => Ok(result),
-            EntryBehavior::Err(error) => Err(error.into_memory_store_error()),
-        }
-    }
-
-    fn delete_entry(
-        &self,
-        id: Uuid,
-    ) -> impl Future<Output = Result<(), MemoryStoreError>> + Send + '_ {
+    fn delete_entry<'a>(&'a self, id: &'a Uuid) -> BoxFuture<'a, Result<(), MemoryStoreError>> {
         self.state
             .lock()
             .expect("mock store mutex poisoned")
-            .delete_id = Some(id);
+            .delete_id = Some(*id);
         let behavior = self.delete_behavior.clone();
-        async move {
+        Box::pin(async move {
             match behavior {
                 UnitBehavior::Ok => Ok(()),
                 UnitBehavior::Err(error) => Err(error.into_memory_store_error()),
             }
-        }
+        })
     }
 
-    fn prune_expired(&self) -> impl Future<Output = Result<(), MemoryStoreError>> + Send + '_ {
+    fn prune_expired(&self) -> BoxFuture<'_, Result<(), MemoryStoreError>> {
         let behavior = self.prune_behavior.clone();
-        async move {
+        Box::pin(async move {
             match behavior {
                 UnitBehavior::Ok => Ok(()),
                 UnitBehavior::Err(error) => Err(error.into_memory_store_error()),
             }
-        }
+        })
     }
 }
 
@@ -384,7 +333,7 @@ impl MockTextGenerationModelProvider {
     /// Creates a mock that streams back a single `"ok"` done-chunk.
     pub fn ok() -> Self {
         Self::new(ProviderBehavior::Stream(vec![
-            TextGenerationResponse::done("ok".to_string(), "mock".to_string(), None),
+            TextGenerationResponse::new_done("ok".to_string(), "mock".to_string(), None),
         ]))
     }
 
@@ -396,11 +345,8 @@ impl MockTextGenerationModelProvider {
         let responses: Vec<TextGenerationResponse> = chunks
             .into_iter()
             .enumerate()
-            .map(|(i, text)| TextGenerationResponse {
-                text: text.into(),
-                model: "mock".to_string(),
-                usage: None,
-                done: i + 1 == n,
+            .map(|(i, text)| {
+                TextGenerationResponse::new(text.into(), "mock".to_string(), None, i + 1 == n)
             })
             .collect();
         Self::new(ProviderBehavior::Stream(responses))
@@ -433,10 +379,9 @@ impl TextGenerationModelProvider for MockTextGenerationModelProvider {
                 .cloned()
                 .unwrap_or_default(),
         };
-        let response = chunks
-            .last()
-            .cloned()
-            .unwrap_or_else(|| TextGenerationResponse::done(String::new(), req.model, None));
+        let response = chunks.last().cloned().unwrap_or_else(|| {
+            TextGenerationResponse::new_done(String::new(), req.model().to_owned(), None)
+        });
         async move { Ok(response) }
     }
 
@@ -487,41 +432,24 @@ impl TextEmbedder for MockTextEmbedder {
         self.dim
     }
 
-    fn embed(
-        &self,
-        text: &str,
-    ) -> impl Future<Output = Result<Embedding, EmbeddingError>> + Send + '_ {
+    fn embed<'a>(&'a self, text: &'a str) -> BoxFuture<'a, Result<Embedding, EmbeddingError>> {
         let values = self
             .mappings
             .get(text)
             .cloned()
             .unwrap_or_else(|| vec![0.0; self.dim]);
-        async move { Ok(Embedding::new(values)) }
+        Box::pin(async move { Ok(Embedding::new(values)) })
     }
 }
 
-/// Builds a [`MemoryQueryResult`] with the given trust level and score.
-pub fn make_result(id: Uuid, content: &str, trust: MemoryTrust, score: f64) -> MemoryQueryResult {
-    let now = Utc::now();
-    MemoryQueryResult {
-        memory_entry: MemoryEntry {
-            id,
-            content: content.to_string(),
-            metadata: HashMap::from([("source".to_string(), "test".to_string())]),
-            trust,
-            seen_count: 2,
-            first_seen: now,
-            last_seen: now,
-            expires_at: None,
-            created_at: now,
-        },
-        score: Score::new(score).expect("score should be valid"),
-    }
+/// Builds a [`MemoryEntry`] with the given trust level for use in tests.
+pub fn make_result(id: Uuid, content: &str, trust: MemoryTrust, _score: f64) -> MemoryEntry {
+    MemoryEntry::new_for_testing(id, content.to_string(), HashMap::new(), trust)
 }
 
-/// Convenience wrapper: builds an `Extracted` [`MemoryQueryResult`] where
-/// `confidence` doubles as the retrieval score.
-pub fn make_extracted_result(id: Uuid, content: &str, score: f64) -> MemoryQueryResult {
+/// Convenience wrapper: builds an `Extracted` [`MemoryEntry`] where
+/// `confidence` is used as the trust confidence score.
+pub fn make_extracted_result(id: Uuid, content: &str, score: f64) -> MemoryEntry {
     make_result(
         id,
         content,
@@ -533,8 +461,8 @@ pub fn make_extracted_result(id: Uuid, content: &str, score: f64) -> MemoryQuery
     )
 }
 
-/// Convenience wrapper: builds a `Fact` [`MemoryQueryResult`].
-pub fn make_fact_result(id: Uuid, content: &str, score: f64) -> MemoryQueryResult {
+/// Convenience wrapper: builds a `Fact` [`MemoryEntry`].
+pub fn make_fact_result(id: Uuid, content: &str, score: f64) -> MemoryEntry {
     make_result(id, content, MemoryTrust::Fact, score)
 }
 
@@ -598,23 +526,23 @@ impl MockClassificationModelProvider {
 }
 
 impl ClassificationModelProvider for MockClassificationModelProvider {
-    fn classify_hit(
-        &self,
-        candidate: &str,
-        hit: &str,
-    ) -> impl Future<Output = Result<HitClass, ClassificationError>> + Send {
+    fn classify_hit<'a>(
+        &'a self,
+        candidate: &'a str,
+        hit: &'a str,
+    ) -> BoxFuture<'a, Result<HitClass, ClassificationError>> {
         self.state
             .lock()
             .expect("mock classification mutex poisoned")
             .calls
             .push((candidate.to_string(), hit.to_string()));
         let behavior = self.behavior.clone();
-        async move {
+        Box::pin(async move {
             match behavior {
                 ClassifyBehavior::Ok(class) => Ok(class),
                 ClassifyBehavior::Err(msg) => Err(ClassificationError::Parse(msg)),
             }
-        }
+        })
     }
 }
 

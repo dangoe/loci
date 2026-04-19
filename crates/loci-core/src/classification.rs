@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // This file is part of loci-core.
 
-use std::future::Future;
+use std::fmt;
+
+use futures::future::BoxFuture;
 
 use crate::model_provider::error::ModelProviderError;
 
@@ -22,8 +24,8 @@ pub enum ClassificationError {
     Parse(String),
 }
 
-impl std::fmt::Display for ClassificationError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for ClassificationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ModelProvider(e) => write!(f, "model provider error: {e}"),
             Self::Parse(msg) => write!(f, "parse error: {msg}"),
@@ -42,11 +44,11 @@ impl std::error::Error for ClassificationError {
 
 /// A model provider capable of classifying a hit against a candidate memory entry.
 pub trait ClassificationModelProvider: Send + Sync {
-    fn classify_hit(
-        &self,
-        candidate: &str,
-        hit: &str,
-    ) -> impl Future<Output = Result<HitClass, ClassificationError>> + Send;
+    fn classify_hit<'a>(
+        &'a self,
+        candidate: &'a str,
+        hit: &'a str,
+    ) -> BoxFuture<'a, Result<HitClass, ClassificationError>>;
 }
 
 /// Maps a string label to a [`HitClass`] variant (case-insensitive, trimmed).

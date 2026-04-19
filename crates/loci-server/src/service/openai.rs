@@ -12,8 +12,8 @@ use loci_core::contextualization::{
 };
 use loci_core::error::ContextualizerError;
 use loci_core::memory::Score;
+use loci_core::memory_store::MemoryStore;
 use loci_core::model_provider::text_generation::TextGenerationModelProvider;
-use loci_core::store::MemoryStore;
 
 use crate::state::AppState;
 

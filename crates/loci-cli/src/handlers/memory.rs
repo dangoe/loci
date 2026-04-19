@@ -19,11 +19,10 @@ use loci_core::{
     },
     memory_extraction::{
         LlmMemoryExtractionStrategy, LlmMemoryExtractionStrategyParams, MemoryExtractionStrategy,
-        MemoryExtractor, MemoryExtractorConfig, MemoryExtractorSearchResultsConfig,
-        llm::ChunkingStrategy,
+        MemoryExtractor, MemoryExtractorConfig, MemoryQueryOptions, llm::ChunkingStrategy,
     },
+    memory_store::MemoryStore as CoreMemoryStore,
     model_provider::text_generation::TextGenerationModelProvider,
-    store::MemoryStore as CoreMemoryStore,
 };
 use loci_model_provider_ollama::classification::LlmClassificationModelProvider;
 use log::debug;
@@ -118,14 +117,15 @@ where
                     "query memory: topic={topic}, max_results={max_results}, min_score={min_score}, filters={:?}",
                     filters
                 );
-                let query = CoreMemoryQuery {
-                    topic,
-                    max_results,
-                    min_score: CoreScore::new(min_score)
-                        .map_err(|e| format!("invalid min_score: {e}"))?,
-                    filters: pairs_to_map(filters),
-                    mode: CoreMemoryQueryMode::Lookup,
-                };
+                let query = CoreMemoryQuery::new(topic, CoreMemoryQueryMode::Lookup)
+                    .with_max_results(
+                        NonZeroUsize::new(max_results).ok_or("max_results must be > 0")?,
+                    )
+                    .with_min_score(
+                        CoreScore::try_new(min_score)
+                            .map_err(|e| format!("invalid min_score: {e}"))?,
+                    )
+                    .with_filters(pairs_to_map(filters));
                 let entries = self.store.query(query).await?;
                 let json: Vec<_> = entries.iter().map(entry_to_json).collect();
                 writeln!(out, "{}", serde_json::to_string_pretty(&json)?)?;
@@ -270,11 +270,11 @@ fn config_extractor_config_to_core(
     cfg: &loci_config::MemoryExtractorConfig,
 ) -> MemoryExtractorConfig {
     MemoryExtractorConfig {
-        direct_search: MemoryExtractorSearchResultsConfig {
+        direct_search: MemoryQueryOptions {
             max_results: cfg.direct_search.max_results,
             min_score: cfg.direct_search.min_score,
         },
-        inverted_search: MemoryExtractorSearchResultsConfig {
+        inverted_search: MemoryQueryOptions {
             max_results: cfg.inverted_search.max_results,
             min_score: cfg.inverted_search.min_score,
         },

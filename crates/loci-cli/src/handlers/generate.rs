@@ -16,11 +16,11 @@ use loci_core::{
     },
     error::ContextualizerError,
     memory::Score as CoreScore,
+    memory_store::MemoryStore as CoreMemoryStore,
     model_provider::text_generation::{
         TextGenerationModelProvider as CoreTextGenerationModelProvider,
         TextGenerationResponse as CoreTextGenerationResponse,
     },
-    store::MemoryStore as CoreMemoryStore,
 };
 
 use crate::{
@@ -84,7 +84,7 @@ impl<'a, S: CoreMemoryStore, T: CoreTextGenerationModelProvider + 'static, W: Wr
                 .clone()
         };
         let min_score =
-            CoreScore::new(command.min_score).map_err(|e| format!("invalid min_score: {e}"))?;
+            CoreScore::try_new(command.min_score).map_err(|e| format!("invalid min_score: {e}"))?;
 
         let ctx_config = CoreContextualizerConfig {
             system: command.system.map(|system| CoreContextualizerSystemConfig {

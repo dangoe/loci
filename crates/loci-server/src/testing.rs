@@ -11,7 +11,9 @@ use loci_config::{
     ModelProviderConfig, ModelProviderKind, ModelsConfig, RoutingConfig, StoreConfig,
     TextModelConfig, TextRoutingConfig,
 };
-use loci_core::{model_provider::text_generation::TextGenerationModelProvider, store::MemoryStore};
+use loci_core::{
+    memory_store::MemoryStore, model_provider::text_generation::TextGenerationModelProvider,
+};
 
 use crate::{
     infra::{build_llm_provider, build_store},
