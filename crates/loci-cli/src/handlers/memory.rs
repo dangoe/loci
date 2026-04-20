@@ -816,7 +816,7 @@ default = "x"
     }
 
     #[test]
-    fn pairs_to_map_converts_pairs() {
+    fn test_pairs_to_map_returns_entries_when_pairs_are_provided() {
         let pairs = vec![
             ("a".to_string(), "1".to_string()),
             ("b".to_string(), "two".to_string()),

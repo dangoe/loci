@@ -584,9 +584,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_generate_handle_system_mode_append_succeeds() {
+    async fn test_generate_handle_includes_custom_system_prompt_when_system_mode_is_append() {
         let store = MockStore::new().with_query(vec![]);
-        let provider = MockTextGenerationModelProvider::ok();
+        let provider = Arc::new(MockTextGenerationModelProvider::ok());
         let config = testing::minimal_ollama_config();
         let mut out = Vec::new();
 
@@ -594,19 +594,35 @@ mod tests {
         args.system = Some("be brief".to_string());
         args.system_mode = GenerateSystemMode::Append;
 
-        let handler = GenerateCommandHandler::new(Arc::new(store), Arc::new(provider), &config);
+        let handler = GenerateCommandHandler::new(Arc::new(store), Arc::clone(&provider), &config);
         handler
             .handle(GenerateCommand::Execute(args), &mut out)
             .await
             .unwrap();
 
-        assert!(!out.is_empty(), "should produce output");
+        let request = provider
+            .snapshot()
+            .last_request
+            .expect("provider should capture request");
+        let system = request
+            .system()
+            .expect("request should contain a system prompt");
+        assert!(
+            system.contains("be brief"),
+            "append mode should keep the custom system prompt, got: {system:?}"
+        );
+        assert!(
+            system.contains(
+                "You are a helpful assistant with a long-term memory of past conversations."
+            ),
+            "append mode should retain the base contextualizer prompt, got: {system:?}"
+        );
     }
 
     #[tokio::test]
-    async fn test_generate_handle_system_mode_replace_succeeds() {
+    async fn test_generate_handle_replaces_base_prompt_when_system_mode_is_replace() {
         let store = MockStore::new().with_query(vec![]);
-        let provider = MockTextGenerationModelProvider::ok();
+        let provider = Arc::new(MockTextGenerationModelProvider::ok());
         let config = testing::minimal_ollama_config();
         let mut out = Vec::new();
 
@@ -614,12 +630,28 @@ mod tests {
         args.system = Some("you are a pirate".to_string());
         args.system_mode = GenerateSystemMode::Replace;
 
-        let handler = GenerateCommandHandler::new(Arc::new(store), Arc::new(provider), &config);
+        let handler = GenerateCommandHandler::new(Arc::new(store), Arc::clone(&provider), &config);
         handler
             .handle(GenerateCommand::Execute(args), &mut out)
             .await
             .unwrap();
 
-        assert!(!out.is_empty(), "should produce output");
+        let request = provider
+            .snapshot()
+            .last_request
+            .expect("provider should capture request");
+        let system = request
+            .system()
+            .expect("request should contain a system prompt");
+        assert!(
+            system.starts_with("you are a pirate"),
+            "replace mode should start with the custom system prompt, got: {system:?}"
+        );
+        assert!(
+            !system.contains(
+                "You are a helpful assistant with a long-term memory of past conversations."
+            ),
+            "replace mode should not include the base contextualizer prompt, got: {system:?}"
+        );
     }
 }

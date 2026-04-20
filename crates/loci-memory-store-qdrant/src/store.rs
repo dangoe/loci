@@ -754,6 +754,7 @@ mod tests {
     use chrono::Utc;
 
     use loci_core::memory::{MemoryEntry, MemoryTrust, TrustEvidence};
+    use pretty_assertions::assert_eq;
 
     use crate::store::build_memory_trust;
 
@@ -786,13 +787,13 @@ mod tests {
     }
 
     #[test]
-    fn blend_score_fact_uses_full_confidence() {
+    fn test_blend_score_returns_full_confidence_for_fact_entries() {
         let score = blend_score(1.0, &fact_entry()).unwrap();
         assert!((score.value() - 1.0).abs() < 1e-9);
     }
 
     #[test]
-    fn blend_score_extracted_memory_uses_bayesian_confidence() {
+    fn test_blend_score_uses_bayesian_confidence_when_evidence_is_present() {
         // alpha=9, beta=1 → confidence = 0.9
         let entry = extracted_with_evidence(9.0, 1.0);
         let score = blend_score(1.0, &entry).unwrap();
@@ -800,21 +801,21 @@ mod tests {
     }
 
     #[test]
-    fn blend_score_extracted_memory_falls_back_to_stored_confidence() {
+    fn test_blend_score_falls_back_to_stored_confidence_when_evidence_is_absent() {
         let entry = extracted_with_confidence(0.7);
         let score = blend_score(1.0, &entry).unwrap();
         assert!((score.value() - 0.7).abs() < 1e-9);
     }
 
     #[test]
-    fn blend_score_extracted_memory_defaults_to_half_when_no_confidence() {
+    fn test_blend_score_defaults_to_half_when_extracted_confidence_is_missing() {
         let entry = MemoryEntry::new("".to_string(), HashMap::new());
         let score = blend_score(1.0, &entry).unwrap();
         assert!((score.value() - 0.5).abs() < 1e-9);
     }
 
     #[test]
-    fn blend_score_zero_similarity_yields_zero() {
+    fn test_blend_score_returns_zero_when_similarity_is_zero() {
         for entry in [
             fact_entry(),
             extracted_with_evidence(9.0, 1.0),
@@ -831,7 +832,7 @@ mod tests {
     }
 
     #[test]
-    fn blend_score_scales_similarity_by_confidence() {
+    fn test_blend_score_scales_similarity_by_effective_confidence() {
         // alpha=8, beta=2 → confidence = 0.8; similarity = 0.5 → score = 0.4
         let entry = extracted_with_evidence(8.0, 2.0);
         let score = blend_score(0.5, &entry).unwrap();
@@ -839,31 +840,31 @@ mod tests {
     }
 
     #[test]
-    fn is_expired_none_expires_at_is_never_expired() {
+    fn test_is_expired_returns_false_when_expires_at_is_none() {
         assert!(!is_expired(None, Utc::now()));
     }
 
     #[test]
-    fn is_expired_future_timestamp_is_not_expired() {
+    fn test_is_expired_returns_false_when_expires_at_is_in_the_future() {
         let future = Utc::now() + chrono::Duration::days(1);
         assert!(!is_expired(Some(future), Utc::now()));
     }
 
     #[test]
-    fn is_expired_past_timestamp_is_expired() {
+    fn test_is_expired_returns_true_when_expires_at_is_in_the_past() {
         let past = Utc::now() - chrono::Duration::days(1);
         assert!(is_expired(Some(past), Utc::now()));
     }
 
     #[test]
-    fn is_expired_exact_now_is_expired() {
+    fn test_is_expired_returns_true_when_expires_at_matches_now() {
         // The function uses `<=`, so a timestamp equal to `now` is expired.
         let now = Utc::now();
         assert!(is_expired(Some(now), now));
     }
 
     #[test]
-    fn metadata_matches_for_dedup_identical_maps_match() {
+    fn test_metadata_matches_for_dedup_returns_true_for_identical_maps() {
         let meta: HashMap<String, String> = [("lang".to_string(), "rust".to_string())]
             .into_iter()
             .collect();
@@ -871,12 +872,12 @@ mod tests {
     }
 
     #[test]
-    fn metadata_matches_for_dedup_empty_maps_match() {
+    fn test_metadata_matches_for_dedup_returns_true_for_empty_maps() {
         assert!(metadata_matches_for_dedup(&HashMap::new(), &HashMap::new()));
     }
 
     #[test]
-    fn metadata_matches_for_dedup_differing_values_do_not_match() {
+    fn test_metadata_matches_for_dedup_returns_false_when_values_differ() {
         let existing: HashMap<String, String> = [("env".to_string(), "prod".to_string())]
             .into_iter()
             .collect();
@@ -887,7 +888,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_matches_for_dedup_different_keys_do_not_match() {
+    fn test_metadata_matches_for_dedup_returns_false_when_keys_differ() {
         let existing: HashMap<String, String> =
             [("a".to_string(), "1".to_string())].into_iter().collect();
         let incoming: HashMap<String, String> =
@@ -896,7 +897,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_matches_for_dedup_source_key_is_excluded_from_comparison() {
+    fn test_metadata_matches_for_dedup_ignores_source_key_differences() {
         let existing: HashMap<String, String> = [
             ("source".to_string(), "wiki".to_string()),
             ("lang".to_string(), "rust".to_string()),
@@ -913,7 +914,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_matches_for_dedup_source_only_maps_match() {
+    fn test_metadata_matches_for_dedup_returns_true_when_only_source_differs() {
         let existing: HashMap<String, String> = [("source".to_string(), "a".to_string())]
             .into_iter()
             .collect();

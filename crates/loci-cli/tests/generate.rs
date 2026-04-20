@@ -6,6 +6,8 @@
 
 mod common;
 
+use pretty_assertions::assert_eq;
+
 use loci_core::memory::store::MemoryQueryMode;
 
 use loci_cli::commands::generate::{GenerateArgs, GenerateMemoryMode, GenerateSystemMode};
@@ -48,7 +50,7 @@ async fn test_generate_streams_response_to_stdout() {
     assert_eq!(
         query.mode(),
         MemoryQueryMode::Use,
-        "generate should query with Use mode to update access counters"
+        "generate should query with Use mode for prompt-context retrieval"
     );
 }
 

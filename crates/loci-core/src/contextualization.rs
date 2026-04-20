@@ -674,9 +674,13 @@ mod tests {
     #[tokio::test]
     async fn test_contextualize_injects_retrieved_memory_entries_into_system_prompt() {
         // The mock store returns this entry regardless of query topic.
-        let entries = vec![make_entry("user prefers dark mode")];
-        let (store, provider) = make_components(entries, "noted");
-        let ctx = Contextualizer::new(Arc::new(store), Arc::new(provider), default_config());
+        let store = MockStore::new()
+            .with_add_entries_behavior(AddEntriesBehavior::Ok(vec![]))
+            .with_query_behavior(QueryBehavior::Ok(vec![make_entry(
+                "user prefers dark mode",
+            )]));
+        let provider = Arc::new(CapturingTextGenerationProvider::default());
+        let ctx = Contextualizer::new(Arc::new(store), Arc::clone(&provider), default_config());
         let items: Vec<_> = ctx
             .contextualize("set my preference")
             .await
@@ -684,9 +688,22 @@ mod tests {
             .collect()
             .await;
 
-        // The stream should complete without errors.
         assert_eq!(items.len(), 1);
         assert!(items[0].is_ok());
+
+        let request = provider
+            .last_req
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("provider should capture the generation request");
+        let system = request
+            .system()
+            .expect("contextualize should attach a system prompt");
+        assert!(
+            system.contains("user prefers dark mode"),
+            "retrieved memory entry should be injected into the system prompt; got: {system}",
+        );
     }
 
     #[tokio::test]

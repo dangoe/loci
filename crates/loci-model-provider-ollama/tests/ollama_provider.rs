@@ -12,6 +12,7 @@ use loci_core::model_provider::{
 use loci_model_provider_ollama::testing::{
     embedding_model, ensure_ollama_available, ollama_provider, text_model,
 };
+use pretty_assertions::assert_eq;
 
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     assert_eq!(a.len(), b.len(), "vectors must have the same dimension");
@@ -157,7 +158,7 @@ async fn test_generate_stream_yields_chunks_ending_with_done() {
 }
 
 #[tokio::test]
-async fn test_generate_with_system_prompt() {
+async fn test_generate_with_system_prompt_returns_brief_response() {
     ensure_ollama_available().await;
 
     let provider = ollama_provider();
@@ -172,9 +173,14 @@ async fn test_generate_with_system_prompt() {
         .expect("generate should succeed");
     let trimmed = resp.text().trim();
 
+    assert!(!trimmed.is_empty(), "response should not be empty");
     assert!(
         trimmed.len() < 30,
-        "response should be very short when instructed to reply in one word, got: {trimmed:?}"
+        "response should stay brief when instructed to reply in one word, got: {trimmed:?}"
+    );
+    assert!(
+        !trimmed.contains('\n'),
+        "response should be a single line, got: {trimmed:?}"
     );
 }
 

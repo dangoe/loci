@@ -40,17 +40,11 @@ fn url(server: &TestServer) -> String {
 fn parse_sse_events(body: &str) -> Vec<Value> {
     body.split("\n\n")
         .filter(|block| !block.is_empty())
-        .filter_map(|block| {
-            block
-                .lines()
-                .find_map(|line| line.strip_prefix("data: "))
-                .and_then(|data| {
-                    if data.trim() == "[DONE]" {
-                        None
-                    } else {
-                        serde_json::from_str(data).ok()
-                    }
-                })
+        .filter_map(|block| block.lines().find_map(|line| line.strip_prefix("data: ")))
+        .filter(|data| data.trim() != "[DONE]")
+        .map(|data| {
+            serde_json::from_str(data)
+                .unwrap_or_else(|err| panic!("failed to parse SSE event JSON: {err}; data: {data}"))
         })
         .collect()
 }
@@ -230,7 +224,7 @@ async fn test_non_streaming_tuning_params_are_forwarded_to_provider() {
 }
 
 #[tokio::test]
-async fn test_non_streaming_missing_model_returns_500() {
+async fn test_non_streaming_missing_model_returns_error_body_with_200_status() {
     let store = Arc::new(
         MockStore::new()
             .with_add_entries_behavior(AddEntriesBehavior::Ok(vec![]))
@@ -255,7 +249,7 @@ async fn test_non_streaming_missing_model_returns_500() {
         .await
         .expect("request should succeed");
 
-    assert_eq!(response.status().as_u16(), 200); // axum JSON body carries the error
+    assert_eq!(response.status().as_u16(), 200); // error details are encoded in the JSON body
     let body: Value = response.json().await.unwrap();
     assert!(
         body["error"]["message"]
