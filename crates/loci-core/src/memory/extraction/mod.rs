@@ -448,35 +448,33 @@ where
             candidate.content()
         );
 
+        let direct_hits = self.query_direct_hits(candidate).await?;
+        let inverted_hits = self.query_inverted_hits(candidate).await?;
+
+        // Deduplicate by ID before classifying — the same entry can surface from
+        // both the direct and inverted searches, which would otherwise cause a
+        // redundant classify call and a double Bayesian counter increment.
+        let mut seen_ids: HashSet<Uuid> = HashSet::new();
+        let unique_hits: Vec<MemoryEntry> = direct_hits
+            .into_iter()
+            .chain(inverted_hits)
+            .filter(|hit| seen_ids.insert(*hit.id()))
+            .collect();
+
         let mut classified_hits: Vec<(MemoryEntry, HitClass)> = Vec::new();
 
-        for direct_hit in self.query_direct_hits(candidate).await? {
+        for hit in unique_hits {
             info!(
-                "Collecting direct hit with content \"{}\" and ID {}.",
-                direct_hit.content(),
-                direct_hit.id()
+                "Collecting hit with content \"{}\" and ID {}.",
+                hit.content(),
+                hit.id()
             );
             let class = self
                 .classifier
-                .classify_hit(candidate.content(), direct_hit.content())
+                .classify_hit(candidate.content(), hit.content())
                 .await
                 .map_err(|e| MemoryExtractionError::Other(e.to_string()))?;
-            classified_hits.push((direct_hit, class));
-        }
-
-        for inverted_hit in self.query_inverted_hits(candidate).await? {
-            info!(
-                "Collecting inverted hit with content \"{}\" and ID {}.",
-                inverted_hit.content(),
-                inverted_hit.id()
-            );
-
-            let class = self
-                .classifier
-                .classify_hit(candidate.content(), inverted_hit.content())
-                .await
-                .map_err(|e| MemoryExtractionError::Other(e.to_string()))?;
-            classified_hits.push((inverted_hit, class));
+            classified_hits.push((hit, class));
         }
 
         debug!(
@@ -684,18 +682,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_extract_memory_entries_with_many_duplicate_hits_promotes_to_fact() {
-        // Many Duplicate hits boost alpha enough to trigger auto-promotion to Fact.
+        // 4 distinct Duplicate hits boost alpha enough to trigger auto-promotion to Fact.
         // confidence = 0.9 → alpha=9.0, beta=1.0; increment = min(0.9, 5.0) = 0.9
-        // 5 duplicate hits → alpha = min(9.0 + 0.9*5, 100) = 13.5 → score ≈ 0.931 ≥ 0.9 → promote
+        // 4 unique duplicate hits → alpha = 9.0 + 0.9*4 = 12.6 ≥ min_alpha_for_promotion(12.0)
+        // score = 12.6/13.6 ≈ 0.926 ≥ 0.9 → promote
         let candidate = make_candidate("cats have nine lives", 0.9);
-        let hit_id = uuid::Uuid::new_v4();
-        let hit = make_extracted_result(hit_id, "cats have nine lives", 0.9);
         let hits = vec![
-            hit.clone(),
-            hit.clone(),
-            hit.clone(),
-            hit.clone(),
-            hit.clone(),
+            make_extracted_result(uuid::Uuid::new_v4(), "cats have nine lives", 0.9),
+            make_extracted_result(uuid::Uuid::new_v4(), "cats have nine lives", 0.9),
+            make_extracted_result(uuid::Uuid::new_v4(), "cats have nine lives", 0.9),
+            make_extracted_result(uuid::Uuid::new_v4(), "cats have nine lives", 0.9),
         ];
         let promoted_result = make_fact_result(uuid::Uuid::new_v4(), "cats have nine lives", 1.0);
 
@@ -719,6 +715,68 @@ mod tests {
         assert!(result.inserted.is_empty());
         assert!(result.merged.is_empty());
         assert!(result.discarded.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_entry_appearing_in_both_direct_and_inverted_results_is_classified_once() {
+        // The mock store returns the same entry from every query call, so the same
+        // ID surfaces from both the direct and the inverted search.  After the fix
+        // the dedup step must ensure exactly one classify call and exactly one
+        // Bayesian counter increment — not two.
+        //
+        // confidence = 0.8 → alpha=8.0, beta=2.0; increment = min(0.8, 5.0) = 0.8
+        // 1 unique Complementary hit  → alpha = 8.0 + 0.8 = 8.8
+        // 2 hits (bugged) would give  → alpha = 8.0 + 0.8*2 = 9.6  (distinguishable)
+        let hit_id = uuid::Uuid::new_v4();
+        let candidate = make_candidate("the sky is blue", 0.8);
+        let hit = make_extracted_result(hit_id, "sky colour is blue", 0.8);
+        let merged_result = make_extracted_result(uuid::Uuid::new_v4(), "the sky is blue", 0.8);
+
+        let store = Arc::new(
+            MockStore::new()
+                .with_query_behavior(QueryBehavior::Ok(vec![hit]))
+                .with_add_entries_behavior(AddEntriesBehavior::Ok(vec![merged_result])),
+        );
+        let strategy = Arc::new(FixedStrategy(vec![candidate]));
+        let classifier = Arc::new(
+            MockClassificationModelProvider::new()
+                .with_behavior(ClassifyBehavior::Ok(HitClass::Complementary)),
+        );
+
+        extractor(Arc::clone(&store), strategy, Arc::clone(&classifier))
+            .extract_memory_entries("ignored", &())
+            .await
+            .unwrap();
+
+        // Both direct and inverted queries are still issued (2 store calls).
+        assert_eq!(
+            store.snapshot().query_calls,
+            2,
+            "both direct and inverted queries must be issued"
+        );
+
+        // The same entry must be classified exactly once despite appearing twice.
+        assert_eq!(
+            classifier.snapshot().calls.len(),
+            1,
+            "same entry must be classified exactly once"
+        );
+
+        // Alpha is incremented exactly once (8.8), not twice (9.6).
+        let state = store.snapshot();
+        let inputs = state
+            .add_inputs
+            .expect("add_entries should have been called");
+        let alpha = match inputs[0].trust() {
+            MemoryTrust::Extracted { evidence, .. } => {
+                evidence.alpha().expect("alpha should be set")
+            }
+            _ => panic!("expected Extracted trust"),
+        };
+        assert!(
+            (alpha - 8.8).abs() < 0.01,
+            "alpha {alpha} should be 8.8 (one increment); double-count would give 9.6"
+        );
     }
 
     #[tokio::test]

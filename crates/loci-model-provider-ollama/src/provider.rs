@@ -240,7 +240,7 @@ impl TextGenerationModelProvider for OllamaModelProvider {
     ) -> ModelProviderResult<TextGenerationResponse> {
         let body = self.build_text_request(&req, false);
 
-        debug!("Sending request to Ollama: {:?}", body);
+        debug!("Sending request to Ollama.");
 
         let http_response = self
             .client
@@ -296,7 +296,7 @@ impl TextGenerationModelProvider for OllamaModelProvider {
         async_stream::try_stream! {
             let body = self.build_text_request(&req, true);
 
-            debug!("Sending streaming request to Ollama: {:?}", body);
+            debug!("Sending streaming request to Ollama.");
 
             let http_response = self
                 .client

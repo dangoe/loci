@@ -67,11 +67,13 @@ impl<P: TextGenerationModelProvider + Send + Sync> ClassificationModelProvider
 
             let text = response.text().to_owned();
 
-            // Strip thinking tokens: find the first `{` in the response.
-            let json_str = text
-                .find('{')
-                .map(|pos| &text[pos..])
-                .unwrap_or(text.as_str());
+            // Isolate the JSON object: find the first `{` and the last `}`.
+            // This strips both thinking tokens (`<think>…</think>`) and markdown
+            // code fences (```json … ```) that small models sometimes emit.
+            let json_str = match (text.find('{'), text.rfind('}')) {
+                (Some(start), Some(end)) if end >= start => &text[start..=end],
+                _ => text.as_str(),
+            };
 
             let parsed: serde_json::Value = serde_json::from_str(json_str).map_err(|e| {
                 ClassificationError::Parse(format!("failed to parse JSON response: {e}"))
@@ -182,6 +184,13 @@ mod tests {
         let p = provider_with("<think>reasoning</think>\n{\"class\": \"contradiction\"}");
         let result = p.classify_hit("a", "b").await;
         assert_eq!(result.unwrap(), HitClass::Contradiction);
+    }
+
+    #[tokio::test]
+    async fn test_classify_hit_with_markdown_fenced_response_returns_correct_class() {
+        let p = provider_with("```json\n{\"class\": \"complementary\"}\n```");
+        let result = p.classify_hit("a", "b").await;
+        assert_eq!(result.unwrap(), HitClass::Complementary);
     }
 
     #[tokio::test]
