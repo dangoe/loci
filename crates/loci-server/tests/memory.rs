@@ -21,8 +21,8 @@ use loci_core::memory::{MemoryTrust, TrustEvidence};
 use loci_core::model_provider::text_generation::TextGenerationResponse;
 use loci_server::loci::memory::v1::{
     MemoryKind as ProtoMemoryKind, MemoryServiceAddEntryRequest, MemoryServiceDeleteEntryRequest,
-    MemoryServiceGetEntryRequest, MemoryServicePruneExpiredRequest, MemoryServiceQueryRequest,
-    MemoryServiceSetEntryKindRequest, MemoryServiceUpdateEntryRequest,
+    MemoryServiceGetEntryRequest, MemoryServicePromoteRequest, MemoryServicePruneExpiredRequest,
+    MemoryServiceQueryRequest,
 };
 
 use common::{
@@ -169,8 +169,7 @@ async fn test_memory_get_entry_translates_not_found_errors() {
 #[rstest]
 #[case("get")]
 #[case("delete")]
-#[case("update")]
-#[case("set_kind")]
+#[case("promote")]
 #[tokio::test]
 async fn test_memory_rpcs_reject_invalid_ids(#[case] method: &str) {
     let result = make_result(
@@ -207,22 +206,13 @@ async fn test_memory_rpcs_reject_invalid_ids(#[case] method: &str) {
             })
             .await
             .expect_err("delete_entry should reject invalid ids"),
-        "update" => client
-            .update_entry(MemoryServiceUpdateEntryRequest {
+        "promote" => client
+            .promote(MemoryServicePromoteRequest {
                 id: "not-a-uuid".to_string(),
-                content: "irrelevant".to_string(),
                 ..Default::default()
             })
             .await
-            .expect_err("update_entry should reject invalid ids"),
-        "set_kind" => client
-            .set_entry_kind(MemoryServiceSetEntryKindRequest {
-                id: "not-a-uuid".to_string(),
-                kind: EnumValue::from(ProtoMemoryKind::MEMORY_KIND_FACT),
-                ..Default::default()
-            })
-            .await
-            .expect_err("set_entry_kind should reject invalid ids"),
+            .expect_err("promote should reject invalid ids"),
         _ => unreachable!(),
     };
 
@@ -242,30 +232,7 @@ async fn test_memory_rpcs_reject_invalid_ids(#[case] method: &str) {
 }
 
 #[tokio::test]
-async fn test_memory_update_entry_returns_internal_error() {
-    let id = Uuid::new_v4();
-    let store = Arc::new(MockStore::new());
-    let server =
-        TestServer::start_with_components(mock_config(), Arc::clone(&store), default_provider())
-            .await;
-
-    let error = server
-        .memory_client()
-        .update_entry(MemoryServiceUpdateEntryRequest {
-            id: id.to_string(),
-            content: "new content".to_string(),
-            metadata: HashMap::from([("source".to_string(), "test".to_string())]),
-            kind: EnumValue::from(ProtoMemoryKind::MEMORY_KIND_EXTRACTED_MEMORY),
-            ..Default::default()
-        })
-        .await
-        .expect_err("update_entry should return internal error");
-
-    assert_eq!(error.code, ErrorCode::Internal);
-}
-
-#[tokio::test]
-async fn test_memory_set_entry_kind_returns_updated_entry() {
+async fn test_memory_promote_returns_updated_entry() {
     let id = Uuid::new_v4();
     let result = make_result(id, "promoted content", MemoryTrust::Fact, 0.95);
     let store = Arc::new(MockStore::new().with_promote_behavior(EntryBehavior::Ok(Some(result))));
@@ -275,13 +242,12 @@ async fn test_memory_set_entry_kind_returns_updated_entry() {
 
     let response = server
         .memory_client()
-        .set_entry_kind(MemoryServiceSetEntryKindRequest {
+        .promote(MemoryServicePromoteRequest {
             id: id.to_string(),
-            kind: EnumValue::from(ProtoMemoryKind::MEMORY_KIND_FACT),
             ..Default::default()
         })
         .await
-        .expect("set_entry_kind should succeed");
+        .expect("promote should succeed");
 
     let entry = response
         .view()
@@ -373,26 +339,7 @@ async fn test_memory_delete_entry_translates_not_found_errors() {
 }
 
 #[tokio::test]
-async fn test_memory_update_entry_returns_internal_error_for_not_found() {
-    let missing_id = Uuid::new_v4();
-    let store = Arc::new(MockStore::new());
-    let server = TestServer::start_with_components(mock_config(), store, default_provider()).await;
-
-    let error = server
-        .memory_client()
-        .update_entry(MemoryServiceUpdateEntryRequest {
-            id: missing_id.to_string(),
-            content: "new content".to_string(),
-            ..Default::default()
-        })
-        .await
-        .expect_err("update_entry should return internal error");
-
-    assert_eq!(error.code, ErrorCode::Internal);
-}
-
-#[tokio::test]
-async fn test_memory_set_entry_kind_translates_not_found_errors() {
+async fn test_memory_promote_translates_not_found_errors() {
     let missing_id = Uuid::new_v4();
     let store = Arc::new(
         MockStore::new()
@@ -402,13 +349,12 @@ async fn test_memory_set_entry_kind_translates_not_found_errors() {
 
     let error = server
         .memory_client()
-        .set_entry_kind(MemoryServiceSetEntryKindRequest {
+        .promote(MemoryServicePromoteRequest {
             id: missing_id.to_string(),
-            kind: EnumValue::from(ProtoMemoryKind::MEMORY_KIND_FACT),
             ..Default::default()
         })
         .await
-        .expect_err("set_entry_kind should return not found");
+        .expect_err("promote should return not found");
 
     assert_eq!(error.code, ErrorCode::NotFound);
     assert_eq!(

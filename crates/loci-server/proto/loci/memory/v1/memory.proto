@@ -10,6 +10,12 @@ enum MemoryKind {
   MEMORY_KIND_EXTRACTED_MEMORY = 2;
 }
 
+enum MemoryExtractionDiscardReason {
+  MEMORY_EXTRACTION_DISCARD_REASON_UNSPECIFIED = 0;
+  MEMORY_EXTRACTION_DISCARD_REASON_LOW_SCORE = 1;
+  MEMORY_EXTRACTION_DISCARD_REASON_CONTRADICTS_A_FACT = 2;
+}
+
 message MemoryEntry {
   string id = 1;
   string content = 2;
@@ -21,6 +27,11 @@ message MemoryEntry {
   google.protobuf.Timestamp expires_at = 9;
   google.protobuf.Timestamp created_at = 10;
   double score = 11;
+}
+
+message MemoryExtractionDiscardedEntry {
+  string content = 1;
+  MemoryExtractionDiscardReason reason = 2;
 }
 
 message MemoryServiceAddEntryRequest {
@@ -52,23 +63,11 @@ message MemoryServiceQueryResponse {
   repeated MemoryEntry entries = 1;
 }
 
-message MemoryServiceUpdateEntryRequest {
+message MemoryServicePromoteRequest {
   string id = 1;
-  string content = 2;
-  map<string, string> metadata = 3;
-  MemoryKind kind = 4;
 }
 
-message MemoryServiceUpdateEntryResponse {
-  MemoryEntry entry = 1;
-}
-
-message MemoryServiceSetEntryKindRequest {
-  string id = 1;
-  MemoryKind kind = 2;
-}
-
-message MemoryServiceSetEntryKindResponse {
+message MemoryServicePromoteResponse {
   MemoryEntry entry = 1;
 }
 
@@ -86,12 +85,27 @@ message MemoryServicePruneExpiredResponse {
   bool pruned = 1;
 }
 
+message MemoryServiceExtractRequest {
+  string text = 1;
+  map<string, string> metadata = 2;
+  optional uint32 max_entries = 3;
+  optional double min_confidence = 4;
+  optional string guidelines = 5;
+}
+
+message MemoryServiceExtractResponse {
+  repeated MemoryEntry inserted = 1;
+  repeated MemoryEntry merged = 2;
+  repeated MemoryEntry promoted = 3;
+  repeated MemoryExtractionDiscardedEntry discarded = 4;
+}
+
 service MemoryService {
   rpc AddEntry(MemoryServiceAddEntryRequest) returns (MemoryServiceAddEntryResponse);
   rpc GetEntry(MemoryServiceGetEntryRequest) returns (MemoryServiceGetEntryResponse);
   rpc Query(MemoryServiceQueryRequest) returns (MemoryServiceQueryResponse);
-  rpc UpdateEntry(MemoryServiceUpdateEntryRequest) returns (MemoryServiceUpdateEntryResponse);
-  rpc SetEntryKind(MemoryServiceSetEntryKindRequest) returns (MemoryServiceSetEntryKindResponse);
+  rpc Promote(MemoryServicePromoteRequest) returns (MemoryServicePromoteResponse);
   rpc DeleteEntry(MemoryServiceDeleteEntryRequest) returns (MemoryServiceDeleteEntryResponse);
   rpc PruneExpired(MemoryServicePruneExpiredRequest) returns (MemoryServicePruneExpiredResponse);
+  rpc Extract(MemoryServiceExtractRequest) returns (MemoryServiceExtractResponse);
 }

@@ -61,7 +61,7 @@ pub enum MemoryCommand {
     #[command(name = "prune-expired")]
     PruneExpired,
     /// Extract discrete memory entries from text using the configured LLM and
-    /// persist them (use --dry-run to preview without persisting).
+    /// persist them.
     #[command(name = "extract")]
     Extract {
         /// Text to extract memories from.
@@ -84,8 +84,6 @@ pub enum MemoryCommand {
         /// Free-form guidelines appended to the extraction prompt.
         #[arg(long)]
         guidelines: Option<String>,
-        #[arg(long)]
-        dry_run: bool,
     },
 }
 

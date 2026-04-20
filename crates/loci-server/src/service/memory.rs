@@ -3,6 +3,7 @@
 // This file is part of loci-server.
 
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use buffa::view::OwnedView;
@@ -12,19 +13,33 @@ use chrono::{DateTime, Utc};
 use connectrpc::{ConnectError, Context};
 use uuid::Uuid;
 
+use loci_config::{
+    MemoryExtractorConfig as ConfigMemoryExtractorConfig, ModelThinkingConfig,
+    ModelThinkingEffortLevel,
+};
 use loci_core::error::MemoryStoreError;
+use loci_core::memory::Score;
+use loci_core::memory::extraction::{
+    DiscardReason, LlmMemoryExtractionStrategy, LlmMemoryExtractionStrategyParams, MemoryExtractor,
+    MemoryExtractorConfig, MemoryQueryOptions,
+};
 use loci_core::memory::store::{MemoryInput, MemoryQuery, MemoryQueryMode, MemoryStore};
 use loci_core::memory::{MemoryEntry as CoreMemoryEntry, MemoryTrust};
-use loci_core::model_provider::text_generation::TextGenerationModelProvider;
+use loci_core::memory_extraction::llm::ChunkingStrategy;
+use loci_core::model_provider::text_generation::{
+    TextGenerationModelProvider, ThinkingEffortLevel, ThinkingMode,
+};
+use loci_model_provider_ollama::classification::LlmClassificationModelProvider;
 
 use crate::loci::memory::v1::{
-    MemoryEntry, MemoryKind, MemoryServiceAddEntryRequestView, MemoryServiceAddEntryResponse,
+    MemoryEntry, MemoryExtractionDiscardReason, MemoryExtractionDiscardedEntry, MemoryKind,
+    MemoryServiceAddEntryRequestView, MemoryServiceAddEntryResponse,
     MemoryServiceDeleteEntryRequestView, MemoryServiceDeleteEntryResponse,
+    MemoryServiceExtractRequestView, MemoryServiceExtractResponse,
     MemoryServiceGetEntryRequestView, MemoryServiceGetEntryResponse,
+    MemoryServicePromoteRequestView, MemoryServicePromoteResponse,
     MemoryServicePruneExpiredRequestView, MemoryServicePruneExpiredResponse,
     MemoryServiceQueryRequestView, MemoryServiceQueryResponse,
-    MemoryServiceSetEntryKindRequestView, MemoryServiceSetEntryKindResponse,
-    MemoryServiceUpdateEntryRequestView, MemoryServiceUpdateEntryResponse,
 };
 use crate::state::AppState;
 
@@ -102,8 +117,6 @@ where
         ctx: Context,
         request: OwnedView<MemoryServiceQueryRequestView<'static>>,
     ) -> Result<(MemoryServiceQueryResponse, Context), ConnectError> {
-        use loci_core::memory::Score;
-        use std::num::NonZeroUsize;
         let min_score = Score::try_new(request.min_score)
             .map_err(|_| ConnectError::invalid_argument("min_score must be in [0.0, 1.0]"))?;
         let max_results = NonZeroUsize::new(request.max_results as usize)
@@ -122,22 +135,11 @@ where
         ))
     }
 
-    async fn update_entry(
-        &self,
-        _ctx: Context,
-        request: OwnedView<MemoryServiceUpdateEntryRequestView<'static>>,
-    ) -> Result<(MemoryServiceUpdateEntryResponse, Context), ConnectError> {
-        let _id = parse_uuid(request.id)?; // validate UUID format even though operation is unsupported
-        Err(ConnectError::internal(
-            "update_entry is not supported by this store implementation",
-        ))
-    }
-
-    async fn set_entry_kind(
+    async fn promote(
         &self,
         ctx: Context,
-        request: OwnedView<MemoryServiceSetEntryKindRequestView<'static>>,
-    ) -> Result<(MemoryServiceSetEntryKindResponse, Context), ConnectError> {
+        request: OwnedView<MemoryServicePromoteRequestView<'static>>,
+    ) -> Result<(MemoryServicePromoteResponse, Context), ConnectError> {
         let id = parse_uuid(request.id)?;
         let result = self
             .state
@@ -147,7 +149,7 @@ where
             .map_err(store_err)?
             .ok_or_else(|| ConnectError::not_found(format!("memory entry not found: {id}")))?;
         Ok((
-            MemoryServiceSetEntryKindResponse {
+            MemoryServicePromoteResponse {
                 entry: MessageField::some(entry_to_proto(&result)),
                 ..Default::default()
             },
@@ -188,6 +190,51 @@ where
         Ok((
             MemoryServicePruneExpiredResponse {
                 pruned: true,
+                ..Default::default()
+            },
+            ctx,
+        ))
+    }
+
+    async fn extract(
+        &self,
+        ctx: Context,
+        request: OwnedView<MemoryServiceExtractRequestView<'static>>,
+    ) -> Result<(MemoryServiceExtractResponse, Context), ConnectError> {
+        let extraction_config = self.state.config().memory().extraction();
+        let strategy = LlmMemoryExtractionStrategy::new(
+            Arc::clone(self.state.llm_provider()),
+            extraction_config.model().to_owned(),
+        );
+        let classifier = Arc::new(LlmClassificationModelProvider::new(
+            Arc::clone(self.state.llm_provider()),
+            extraction_config
+                .extractor()
+                .classification_model()
+                .to_owned(),
+        ));
+        let extractor = MemoryExtractor::new(
+            Arc::clone(self.state.store()),
+            Arc::new(strategy),
+            classifier,
+            config_extractor_config_to_core(extraction_config.extractor()),
+        );
+        let params = build_extraction_params(&request, extraction_config)?;
+        let result = extractor
+            .extract_memory_entries(request.text, &params)
+            .await
+            .map_err(|e| ConnectError::internal(e.to_string()))?;
+
+        Ok((
+            MemoryServiceExtractResponse {
+                inserted: result.inserted().iter().map(entry_to_proto).collect(),
+                merged: result.merged().iter().map(entry_to_proto).collect(),
+                promoted: result.promoted().iter().map(entry_to_proto).collect(),
+                discarded: result
+                    .discarded()
+                    .iter()
+                    .map(discarded_entry_to_proto)
+                    .collect(),
                 ..Default::default()
             },
             ctx,
@@ -241,6 +288,83 @@ fn map_view_to_hashmap(map: &buffa::MapView<'_, &str, &str>) -> HashMap<String, 
         .collect()
 }
 
+fn build_extraction_params(
+    request: &MemoryServiceExtractRequestView<'_>,
+    extraction_config: &loci_config::MemoryExtractionConfig,
+) -> Result<LlmMemoryExtractionStrategyParams, ConnectError> {
+    if let Some(min_confidence) = request.min_confidence {
+        Score::try_new(min_confidence)
+            .map_err(|_| ConnectError::invalid_argument("min_confidence must be in [0.0, 1.0]"))?;
+    }
+
+    Ok(LlmMemoryExtractionStrategyParams::new(
+        match (
+            request.guidelines.map(str::to_owned),
+            extraction_config.guidelines(),
+        ) {
+            (Some(request), Some(config)) => Some(format!("{config}\n\n{request}")),
+            (Some(request), None) => Some(request),
+            (None, Some(config)) => Some(config.to_owned()),
+            (None, None) => None,
+        },
+        map_view_to_hashmap(&request.metadata),
+        request
+            .max_entries
+            .map(|value| value as usize)
+            .or(extraction_config.max_entries()),
+        request
+            .min_confidence
+            .or(extraction_config.min_confidence()),
+        extraction_config.thinking().map(model_thinking_to_core),
+        extraction_config
+            .chunking()
+            .map(|chunking| ChunkingStrategy::SentenceAware {
+                chunk_size: NonZeroUsize::new(chunking.chunk_size())
+                    .expect("chunk_size must be > 0"),
+                overlap_size: chunking.overlap_size(),
+            })
+            .unwrap_or(ChunkingStrategy::WholeInput),
+    ))
+}
+
+fn model_thinking_to_core(thinking: &ModelThinkingConfig) -> ThinkingMode {
+    match thinking {
+        ModelThinkingConfig::Enabled => ThinkingMode::Enabled,
+        ModelThinkingConfig::Disabled => ThinkingMode::Disabled,
+        ModelThinkingConfig::Effort { level } => ThinkingMode::Effort {
+            level: match level {
+                ModelThinkingEffortLevel::Low => ThinkingEffortLevel::Low,
+                ModelThinkingEffortLevel::Medium => ThinkingEffortLevel::Medium,
+                ModelThinkingEffortLevel::High => ThinkingEffortLevel::High,
+            },
+        },
+        ModelThinkingConfig::Budgeted { max_tokens } => ThinkingMode::Budgeted {
+            max_tokens: *max_tokens,
+        },
+    }
+}
+
+fn config_extractor_config_to_core(cfg: &ConfigMemoryExtractorConfig) -> MemoryExtractorConfig {
+    MemoryExtractorConfig::new(
+        MemoryQueryOptions::try_new(
+            cfg.direct_search().max_results(),
+            cfg.direct_search().min_score(),
+        )
+        .expect("invalid extractor config: direct_search"),
+        MemoryQueryOptions::try_new(
+            cfg.inverted_search().max_results(),
+            cfg.inverted_search().min_score(),
+        )
+        .expect("invalid extractor config: inverted_search"),
+        cfg.bayesian_seed_weight(),
+        cfg.max_counter_increment(),
+        cfg.max_counter(),
+        cfg.auto_discard_threshold(),
+        cfg.auto_promotion_threshold(),
+        cfg.min_alpha_for_promotion(),
+    )
+}
+
 fn entry_to_proto(e: &CoreMemoryEntry) -> MemoryEntry {
     MemoryEntry {
         id: e.id().to_string(),
@@ -262,6 +386,23 @@ fn entry_to_proto(e: &CoreMemoryEntry) -> MemoryEntry {
             .unwrap_or_default(),
         created_at: MessageField::some(datetime_to_timestamp(e.created_at())),
         score: e.trust().effective_score().value(),
+        ..Default::default()
+    }
+}
+
+fn discarded_entry_to_proto(
+    discarded: &loci_core::memory::extraction::DiscardedEntry,
+) -> MemoryExtractionDiscardedEntry {
+    MemoryExtractionDiscardedEntry {
+        content: discarded.content().to_owned(),
+        reason: EnumValue::from(match discarded.reason() {
+            DiscardReason::LowScore => {
+                MemoryExtractionDiscardReason::MEMORY_EXTRACTION_DISCARD_REASON_LOW_SCORE
+            }
+            DiscardReason::ContradictsAFact => {
+                MemoryExtractionDiscardReason::MEMORY_EXTRACTION_DISCARD_REASON_CONTRADICTS_A_FACT
+            }
+        }),
         ..Default::default()
     }
 }

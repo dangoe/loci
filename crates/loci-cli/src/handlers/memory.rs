@@ -21,8 +21,8 @@ use loci_core::{
         },
     },
     memory_extraction::{
-        LlmMemoryExtractionStrategy, LlmMemoryExtractionStrategyParams, MemoryExtractionStrategy,
-        MemoryExtractor, MemoryExtractorConfig, MemoryQueryOptions, llm::ChunkingStrategy,
+        LlmMemoryExtractionStrategy, LlmMemoryExtractionStrategyParams, MemoryExtractor,
+        MemoryExtractorConfig, MemoryQueryOptions, llm::ChunkingStrategy,
     },
     model_provider::text_generation::TextGenerationModelProvider,
 };
@@ -190,9 +190,8 @@ where
                 max_entries,
                 min_confidence,
                 guidelines,
-                dry_run,
             } => {
-                debug!("extract memories: dry_run={dry_run}");
+                debug!("extract memories");
                 if text.is_none() && files.is_empty() && std::io::stdin().is_terminal() {
                     return Err(
                         "no input provided: pass text as an argument, pipe via stdin, or use --file"
@@ -228,61 +227,31 @@ where
                     Arc::clone(&self.provider),
                     self.text_model.clone(),
                 );
-
-                if dry_run {
-                    let entries = strategy
-                        .extract(&input, &params)
-                        .await
-                        .map_err(|e| Box::new(e) as Box<dyn StdError>)?;
-                    let json: Vec<_> = entries
-                        .iter()
-                        .map(|e| {
-                            let (kind, confidence) = match e.trust() {
-                                MemoryTrust::Fact => ("fact", 1.0_f64),
-                                MemoryTrust::Extracted {
-                                    confidence,
-                                    evidence,
-                                } => (
-                                    "extracted_memory",
-                                    evidence.bayesian_confidence().unwrap_or(*confidence),
-                                ),
-                            };
-                            serde_json::json!({
-                                "content": e.content(),
-                                "confidence": confidence,
-                                "kind": kind,
-                                "metadata": e.metadata(),
-                            })
-                        })
-                        .collect();
-                    writeln!(out, "{}", serde_json::to_string_pretty(&json)?)?;
-                } else {
-                    let extractor_cfg = self.extraction_config.extractor();
-                    let classification_provider = Arc::new(LlmClassificationModelProvider::new(
-                        Arc::clone(&self.provider),
-                        extractor_cfg.classification_model().to_owned(),
-                    ));
-                    let extractor = MemoryExtractor::new(
-                        Arc::clone(&self.store),
-                        Arc::new(strategy),
-                        classification_provider,
-                        config_extractor_config_to_core(extractor_cfg),
-                    );
-                    let result = extractor
-                        .extract_memory_entries(&input, &params)
-                        .await
-                        .map_err(|e| Box::new(e) as Box<dyn StdError>)?;
-                    writeln!(
-                        out,
-                        "{}",
-                        serde_json::to_string_pretty(&serde_json::json!({
-                            "inserted": result.inserted().len(),
-                            "merged": result.merged().len(),
-                            "promoted": result.promoted().len(),
-                            "discarded": result.discarded().len(),
-                        }))?
-                    )?;
-                }
+                let extractor_cfg = self.extraction_config.extractor();
+                let classification_provider = Arc::new(LlmClassificationModelProvider::new(
+                    Arc::clone(&self.provider),
+                    extractor_cfg.classification_model().to_owned(),
+                ));
+                let extractor = MemoryExtractor::new(
+                    Arc::clone(&self.store),
+                    Arc::new(strategy),
+                    classification_provider,
+                    config_extractor_config_to_core(extractor_cfg),
+                );
+                let result = extractor
+                    .extract_memory_entries(&input, &params)
+                    .await
+                    .map_err(|e| Box::new(e) as Box<dyn StdError>)?;
+                writeln!(
+                    out,
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "inserted": result.inserted().len(),
+                        "merged": result.merged().len(),
+                        "promoted": result.promoted().len(),
+                        "discarded": result.discarded().len(),
+                    }))?
+                )?;
             }
         }
         Ok(())
@@ -648,48 +617,6 @@ default = "x"
     }
 
     #[tokio::test]
-    async fn test_extract_dry_run_prints_candidates_without_persisting() {
-        let provider = extraction_provider(r#"[{"content": "extracted fact", "confidence": 0.9}]"#);
-        let store = Arc::new(MockStore::new()); // add_entries not configured → would err if called
-        let handler = MemoryCommandHandler::new(
-            Arc::clone(&store),
-            Arc::new(provider),
-            "m",
-            test_extraction_config(),
-        );
-        let mut out = Vec::new();
-
-        handler
-            .handle(
-                MemoryCommand::Extract {
-                    text: Some("some input text".to_string()),
-                    files: vec![],
-                    metadata: vec![],
-                    max_entries: None,
-                    min_confidence: None,
-                    guidelines: None,
-                    dry_run: true,
-                },
-                &mut out,
-            )
-            .await
-            .unwrap();
-
-        // Nothing written to store
-        assert!(
-            store.snapshot().add_inputs.is_none(),
-            "dry_run must not write to store"
-        );
-
-        let v = parse_json_output(&out);
-        let arr = v.as_array().unwrap();
-        assert_eq!(arr.len(), 1);
-        assert_eq!(arr[0]["content"].as_str().unwrap(), "extracted fact");
-        assert_eq!(arr[0]["kind"].as_str().unwrap(), "extracted_memory");
-        assert!((arr[0]["confidence"].as_f64().unwrap() - 0.9).abs() < f64::EPSILON);
-    }
-
-    #[tokio::test]
     async fn test_extract_persists_entries_by_default() {
         let provider = extraction_provider(
             r#"[{"content": "fact one", "confidence": 0.9}, {"content": "fact two", "confidence": 0.8}]"#,
@@ -714,7 +641,6 @@ default = "x"
                     max_entries: None,
                     min_confidence: None,
                     guidelines: None,
-                    dry_run: false,
                 },
                 &mut out,
             )
@@ -747,7 +673,7 @@ default = "x"
     }
 
     #[tokio::test]
-    async fn test_extract_entries_have_extracted_memory_kind() {
+    async fn test_extract_entries_persist_as_extracted_memories() {
         let provider = extraction_provider(r#"[{"content": "a fact", "confidence": 0.9}]"#);
         let stored = make_extract_entries(&["a fact"]);
         let store = MockStore::new().with_add_entries_behavior(AddEntriesBehavior::Ok(stored));
@@ -763,15 +689,17 @@ default = "x"
                     max_entries: None,
                     min_confidence: None,
                     guidelines: None,
-                    dry_run: true,
                 },
                 &mut out,
             )
             .await
             .unwrap();
 
-        let v = parse_json_output(&out);
-        assert_eq!(v[0]["kind"].as_str().unwrap(), "extracted_memory");
+        let snapshot = handler.store.snapshot();
+        let inputs = snapshot
+            .add_inputs
+            .expect("store should capture extracted inputs");
+        assert!(matches!(inputs[0].trust(), MemoryTrust::Extracted { .. }));
     }
 
     #[tokio::test]
@@ -791,15 +719,20 @@ default = "x"
                     max_entries: None,
                     min_confidence: None,
                     guidelines: None,
-                    dry_run: true,
                 },
                 &mut out,
             )
             .await
             .unwrap();
 
-        let v = parse_json_output(&out);
-        assert_eq!(v[0]["metadata"]["source"].as_str().unwrap(), "readme");
+        let snapshot = handler.store.snapshot();
+        let inputs = snapshot
+            .add_inputs
+            .expect("store should capture extracted inputs");
+        assert_eq!(
+            inputs[0].metadata().get("source"),
+            Some(&"readme".to_string())
+        );
     }
 
     #[tokio::test]
@@ -821,15 +754,17 @@ default = "x"
                     max_entries: Some(1),
                     min_confidence: None,
                     guidelines: None,
-                    dry_run: true,
                 },
                 &mut out,
             )
             .await
             .unwrap();
 
-        let v = parse_json_output(&out);
-        assert_eq!(v.as_array().unwrap().len(), 1);
+        let snapshot = handler.store.snapshot();
+        let inputs = snapshot
+            .add_inputs
+            .expect("store should capture extracted inputs");
+        assert_eq!(inputs.len(), 1);
     }
 
     #[tokio::test]
@@ -846,7 +781,6 @@ default = "x"
                     max_entries: None,
                     min_confidence: None,
                     guidelines: None,
-                    dry_run: false,
                 },
                 &mut out,
             )
@@ -869,7 +803,6 @@ default = "x"
                     max_entries: None,
                     min_confidence: None,
                     guidelines: None,
-                    dry_run: false,
                 },
                 &mut out,
             )

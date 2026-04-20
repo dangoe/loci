@@ -181,42 +181,6 @@ fn extraction_provider(response_json: &str) -> MockTextGenerationModelProvider {
 }
 
 #[tokio::test]
-async fn test_memory_extract_dry_run_outputs_candidates_without_persisting() {
-    let id = uuid::Uuid::new_v4();
-    let stored = vec![make_result(
-        id,
-        "extracted fact",
-        MemoryTrust::Extracted {
-            confidence: 0.5,
-            evidence: TrustEvidence::default(),
-        },
-        0.0,
-    )];
-    let store = MockStore::new().with_add_entries_behavior(AddEntriesBehavior::Ok(stored));
-    let provider = extraction_provider(r#"[{"content": "extracted fact", "confidence": 0.9}]"#);
-    let cli = TestCli::new(store, provider);
-
-    let output = cli
-        .memory(MemoryCommand::Extract {
-            text: Some("some interesting text".to_string()),
-            files: vec![],
-            metadata: vec![],
-            max_entries: None,
-            min_confidence: None,
-            guidelines: None,
-            dry_run: true,
-        })
-        .await
-        .expect("dry_run extract should succeed");
-
-    let v: serde_json::Value = serde_json::from_str(&output).expect("output should be valid JSON");
-    let arr = v.as_array().expect("output should be a JSON array");
-    assert_eq!(arr.len(), 1);
-    assert_eq!(arr[0]["content"].as_str().unwrap(), "extracted fact");
-    assert_eq!(arr[0]["kind"].as_str().unwrap(), "extracted_memory");
-}
-
-#[tokio::test]
 async fn test_memory_extract_persists_and_outputs_added_result() {
     let id = uuid::Uuid::new_v4();
     let stored = vec![make_result(
@@ -240,7 +204,6 @@ async fn test_memory_extract_persists_and_outputs_added_result() {
             max_entries: None,
             min_confidence: None,
             guidelines: None,
-            dry_run: false,
         })
         .await
         .expect("extract should succeed");
@@ -273,7 +236,6 @@ async fn test_memory_extract_empty_text_returns_error() {
             max_entries: None,
             min_confidence: None,
             guidelines: None,
-            dry_run: false,
         })
         .await;
 
@@ -292,7 +254,6 @@ async fn test_memory_extract_conflicting_input_returns_error() {
             max_entries: None,
             min_confidence: None,
             guidelines: None,
-            dry_run: false,
         })
         .await;
 
