@@ -26,7 +26,7 @@ use loci_cli::handlers::CommandHandler;
 use loci_cli::handlers::config::ConfigCommandHandler;
 use loci_cli::handlers::generate::GenerateCommandHandler;
 use loci_cli::handlers::memory::MemoryCommandHandler;
-use loci_config::{ConfigError, load_config};
+use loci_config::load_config;
 
 use crate::infra::{build_llm_provider, build_store};
 
@@ -61,22 +61,8 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::Memory { command } => {
             let store = Arc::new(build_store(&config).await?);
             let provider = Arc::new(build_llm_provider(&config)?);
-            let text_model = config
-                .models()
-                .text()
-                .get(config.routing().text().default())
-                .ok_or_else(|| ConfigError::MissingKey {
-                    section: "models.text".into(),
-                    key: config.routing().text().default().to_owned(),
-                })?
-                .model()
-                .to_owned();
-            let handler = MemoryCommandHandler::new(
-                store,
-                provider,
-                text_model,
-                config.memory().extraction().clone(),
-            );
+            let handler =
+                MemoryCommandHandler::new(store, provider, config.memory().extraction().clone());
             handler.handle(command, &mut std::io::stdout()).await
         }
         Command::Generate { args } => {

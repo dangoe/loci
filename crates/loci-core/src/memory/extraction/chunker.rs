@@ -4,6 +4,8 @@
 
 use std::num::NonZeroUsize;
 
+use log::debug;
+
 /// Splits text into a sequence of chunks suitable for downstream processing.
 pub trait Chunker: Send + Sync {
     fn chunk(&self, input: &str) -> Vec<String>;
@@ -131,10 +133,19 @@ impl SentenceAwareChunker {
 
 impl Chunker for SentenceAwareChunker {
     fn chunk(&self, input: &str) -> Vec<String> {
+        debug!(
+            "Chunking input of length {} with chunk_size={} and overlap_size={}.",
+            input.chars().count(),
+            self.chunk_size(),
+            self.overlap_size
+        );
+
         let chunk_size = self.chunk_size();
 
         let overlap_size = self.overlap_size.min(chunk_size.saturating_sub(1));
         let segments = Self::split_into_segments(input);
+
+        debug!("Split initially into {} segments.", segments.len());
 
         // Break any segment that exceeds chunk_size characters at word boundaries.
         let mut fine_segments: Vec<String> = Vec::new();
@@ -171,6 +182,8 @@ impl Chunker for SentenceAwareChunker {
         if !current.is_empty() {
             chunks.push(current);
         }
+
+        debug!("Split finally into {} chunks.", chunks.len());
 
         chunks
     }

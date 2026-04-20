@@ -52,7 +52,6 @@ impl From<MemoryKind> for MemoryTrust {
 pub struct MemoryCommandHandler<'a, S: CoreMemoryStore, P: TextGenerationModelProvider> {
     store: Arc<S>,
     provider: Arc<P>,
-    text_model: String,
     extraction_config: MemoryExtractionConfig,
     /// Ties the `'a` lifetime used in `CommandHandler<'a, …>` to this struct
     /// so that Rust can prove `'a: '_` when borrowing `&'_ Self` — identical to
@@ -61,16 +60,10 @@ pub struct MemoryCommandHandler<'a, S: CoreMemoryStore, P: TextGenerationModelPr
 }
 
 impl<'a, S: CoreMemoryStore, P: TextGenerationModelProvider> MemoryCommandHandler<'a, S, P> {
-    pub fn new(
-        store: Arc<S>,
-        provider: Arc<P>,
-        text_model: impl Into<String>,
-        extraction_config: MemoryExtractionConfig,
-    ) -> Self {
+    pub fn new(store: Arc<S>, provider: Arc<P>, extraction_config: MemoryExtractionConfig) -> Self {
         Self {
             store,
             provider,
-            text_model: text_model.into(),
             extraction_config,
             _marker: PhantomData,
         }
@@ -225,7 +218,7 @@ where
 
                 let strategy = LlmMemoryExtractionStrategy::new(
                     Arc::clone(&self.provider),
-                    self.text_model.clone(),
+                    self.extraction_config.model().to_owned(),
                 );
                 let extractor_cfg = self.extraction_config.extractor();
                 let classification_provider = Arc::new(LlmClassificationModelProvider::new(
@@ -346,7 +339,6 @@ default = "x"
         MemoryCommandHandler::new(
             Arc::new(store),
             Arc::new(MockTextGenerationModelProvider::ok()),
-            "test-model",
             test_extraction_config(),
         )
     }
@@ -358,7 +350,6 @@ default = "x"
         MemoryCommandHandler::new(
             Arc::new(store),
             Arc::new(provider),
-            "test-model",
             test_extraction_config(),
         )
     }
@@ -627,7 +618,6 @@ default = "x"
         let handler = MemoryCommandHandler::new(
             Arc::clone(&store),
             Arc::new(provider),
-            "m",
             test_extraction_config(),
         );
         let mut out = Vec::new();
@@ -907,7 +897,6 @@ default = "x"
         let handler = MemoryCommandHandler::new(
             Arc::clone(&store),
             Arc::new(MockTextGenerationModelProvider::ok()),
-            "test-model",
             test_extraction_config(),
         );
         let mut out = Vec::new();

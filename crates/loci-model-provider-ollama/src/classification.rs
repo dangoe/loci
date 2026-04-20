@@ -8,6 +8,7 @@ use futures::future::BoxFuture;
 use loci_core::classification::{
     ClassificationError, ClassificationModelProvider, HitClass, parse_hit_class,
 };
+use loci_core::model_provider::ThinkingMode;
 use loci_core::model_provider::text_generation::{
     TextGenerationModelProvider, TextGenerationRequest,
 };
@@ -21,7 +22,7 @@ Respond with ONLY a JSON object in this exact format:
 Where <value> is exactly one of: \"duplicate\", \"complementary\", \"contradiction\", \"unrelated\"
 
 - duplicate: The hit says essentially the same thing as the candidate
-- complementary: The hit adds related information to the candidate  
+- complementary: The hit adds related information to the candidate
 - contradiction: The hit directly contradicts the candidate
 - unrelated: The hit is not meaningfully related to the candidate";
 
@@ -53,7 +54,9 @@ impl<P: TextGenerationModelProvider + Send + Sync> ClassificationModelProvider
         hit: &'a str,
     ) -> BoxFuture<'a, Result<HitClass, ClassificationError>> {
         let prompt = format!("Candidate: {candidate}\n\nExisting memory: {hit}");
-        let req = TextGenerationRequest::new(self.model.clone(), prompt).with_system(SYSTEM_PROMPT);
+        let req = TextGenerationRequest::new(self.model.clone(), prompt)
+            .with_system(SYSTEM_PROMPT)
+            .with_thinking(ThinkingMode::Disabled);
         let provider = Arc::clone(&self.provider);
 
         Box::pin(async move {

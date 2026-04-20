@@ -6,6 +6,7 @@ use std::{collections::HashMap, num::NonZeroUsize, sync::Arc};
 
 use futures::{StreamExt, future::BoxFuture};
 
+use log::debug;
 use serde::Deserialize;
 
 use crate::{
@@ -20,7 +21,7 @@ use super::MemoryExtractionStrategy;
 use super::chunker::{Chunker, SentenceAwareChunker};
 
 /// The strategy for chunking input text before extracting entries.
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub enum ChunkingStrategy {
     /// The entire input is sent as a single prompt without chunking.
     #[default]
@@ -147,6 +148,15 @@ impl<P: TextGenerationModelProvider + Send + Sync>
     ) -> BoxFuture<'a, Result<Vec<MemoryInput>, MemoryExtractionError>> {
         let provider = Arc::clone(&self.provider);
         let model = self.model.clone();
+
+        debug!(
+            "Starting extraction with model {model} and params: guidelines={:?}, max_entries={:?}, min_confidence={:?}, thinking_mode={:?}, chunking_strategy={:?}.",
+            params.guidelines,
+            params.max_entries,
+            params.min_confidence,
+            params.thinking_mode,
+            params.chunking_strategy
+        );
 
         Box::pin(async move {
             let chunks = match params.chunking_strategy {

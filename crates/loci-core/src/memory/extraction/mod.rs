@@ -7,6 +7,7 @@ pub mod llm;
 
 use futures::future::BoxFuture;
 pub use llm::{LlmMemoryExtractionStrategy, LlmMemoryExtractionStrategyParams};
+use log::{debug, info};
 
 use std::{collections::HashSet, marker::PhantomData, num::NonZeroUsize, sync::Arc};
 
@@ -266,7 +267,14 @@ where
         input: &str,
         params: &P,
     ) -> Result<MemoryExtractionResult, MemoryExtractionError> {
+        debug!("Extracting memory entries for input \"{}\".", input);
+
         let candidates = self.strategy.extract(input, params).await?;
+
+        debug!(
+            "Extracted candidates {:?} from strategy.",
+            candidates.iter().collect::<Vec<_>>()
+        );
 
         let mut result = MemoryExtractionResult {
             inserted: Vec::new(),
@@ -435,9 +443,19 @@ where
         &self,
         candidate: &MemoryInput,
     ) -> Result<Vec<(MemoryEntry, HitClass)>, MemoryExtractionError> {
+        info!(
+            "Collecting classified hits for candidate \"{}\".",
+            candidate.content()
+        );
+
         let mut classified_hits: Vec<(MemoryEntry, HitClass)> = Vec::new();
 
         for direct_hit in self.query_direct_hits(candidate).await? {
+            info!(
+                "Collecting direct hit with content \"{}\" and ID {}.",
+                direct_hit.content(),
+                direct_hit.id()
+            );
             let class = self
                 .classifier
                 .classify_hit(candidate.content(), direct_hit.content())
@@ -447,6 +465,12 @@ where
         }
 
         for inverted_hit in self.query_inverted_hits(candidate).await? {
+            info!(
+                "Collecting inverted hit with content \"{}\" and ID {}.",
+                inverted_hit.content(),
+                inverted_hit.id()
+            );
+
             let class = self
                 .classifier
                 .classify_hit(candidate.content(), inverted_hit.content())
@@ -454,6 +478,14 @@ where
                 .map_err(|e| MemoryExtractionError::Other(e.to_string()))?;
             classified_hits.push((inverted_hit, class));
         }
+
+        debug!(
+            "Collected classified hits: {:?}",
+            classified_hits
+                .iter()
+                .map(|(hit, class)| (hit.content(), class))
+                .collect::<Vec<_>>()
+        );
 
         Ok(classified_hits)
     }
