@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // This file is part of loci-e2e-tests.
 
+#![cfg(feature = "e2e")]
+
 mod support;
 
 use loci_model_provider_ollama::testing::{
@@ -16,7 +18,6 @@ use loci_server::testing::{TestServer, minimal_app_config};
 use support::{EMBEDDING_DIM, start_qdrant_container};
 
 #[tokio::test]
-#[cfg_attr(not(feature = "e2e"), ignore)]
 async fn test_add_and_get_entry_via_server() {
     ensure_ollama_available().await;
 
@@ -72,7 +73,6 @@ async fn test_add_and_get_entry_via_server() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "e2e"), ignore)]
 async fn test_add_and_query_entry_via_server() {
     ensure_ollama_available().await;
 
@@ -117,7 +117,6 @@ async fn test_add_and_query_entry_via_server() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "e2e"), ignore)]
 async fn test_delete_entry_via_server() {
     ensure_ollama_available().await;
 

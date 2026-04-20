@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // This file is part of loci-e2e-tests.
 
+#![cfg(feature = "e2e")]
+
 mod support;
 
 use std::collections::HashMap;
@@ -23,7 +25,6 @@ fn input(content: &str) -> MemoryInput {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "e2e"), ignore)]
 async fn test_add_entry_and_query_with_real_embeddings() {
     ensure_ollama_available().await;
 
@@ -61,7 +62,6 @@ async fn test_add_entry_and_query_with_real_embeddings() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "e2e"), ignore)]
 async fn test_contextualizer_injects_relevant_memory() {
     ensure_ollama_available().await;
 
@@ -97,7 +97,6 @@ async fn test_contextualizer_injects_relevant_memory() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "e2e"), ignore)]
 async fn test_contextualizer_with_no_relevant_memory() {
     ensure_ollama_available().await;
 
@@ -134,7 +133,6 @@ async fn test_contextualizer_with_no_relevant_memory() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "e2e"), ignore)]
 async fn test_deduplication_with_real_embeddings() {
     ensure_ollama_available().await;
 

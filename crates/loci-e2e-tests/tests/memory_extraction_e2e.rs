@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // This file is part of loci-e2e-tests.
 
+#![cfg(feature = "e2e")]
+
 mod support;
 
 use std::collections::HashMap;
@@ -61,7 +63,6 @@ fn base_params_with_max_entries(max_entries: Option<usize>) -> LlmMemoryExtracti
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "e2e"), ignore)]
 async fn test_extract_yields_entries_from_fact_rich_text() {
     ensure_ollama_available().await;
 
@@ -100,7 +101,6 @@ async fn test_extract_yields_entries_from_fact_rich_text() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "e2e"), ignore)]
 async fn test_extracted_entries_carry_extracted_memory_kind() {
     ensure_ollama_available().await;
 
@@ -126,7 +126,6 @@ async fn test_extracted_entries_carry_extracted_memory_kind() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "e2e"), ignore)]
 async fn test_extracted_entries_carry_configured_metadata() {
     ensure_ollama_available().await;
 
@@ -163,7 +162,6 @@ async fn test_extracted_entries_carry_configured_metadata() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "e2e"), ignore)]
 async fn test_max_entries_cap_is_honoured() {
     ensure_ollama_available().await;
 
@@ -185,7 +183,6 @@ async fn test_max_entries_cap_is_honoured() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "e2e"), ignore)]
 async fn test_extract_from_sparse_text_does_not_error() {
     ensure_ollama_available().await;
 
@@ -204,7 +201,6 @@ async fn test_extract_from_sparse_text_does_not_error() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "e2e"), ignore)]
 async fn test_extract_and_store_persists_entries() {
     ensure_ollama_available().await;
 
@@ -260,7 +256,6 @@ async fn test_extract_and_store_persists_entries() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "e2e"), ignore)]
 async fn test_extracted_entries_are_semantically_retrievable() {
     ensure_ollama_available().await;
 
@@ -319,7 +314,6 @@ async fn test_extracted_entries_are_semantically_retrievable() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "e2e"), ignore)]
 async fn test_stored_entries_have_configured_metadata() {
     ensure_ollama_available().await;
 
@@ -372,7 +366,6 @@ async fn test_stored_entries_have_configured_metadata() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(feature = "e2e"), ignore)]
 async fn test_stored_entries_have_extracted_memory_kind() {
     ensure_ollama_available().await;
 
