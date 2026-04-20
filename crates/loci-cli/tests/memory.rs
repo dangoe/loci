@@ -15,11 +15,14 @@ use loci_core::testing::AddEntriesBehavior;
 
 use loci_cli::commands::memory::MemoryCommand;
 
-use common::{MockStore, MockTextGenerationModelProvider, ProviderBehavior, TestCli, make_result};
+use common::{
+    EntryBehavior, MockStore, MockTextGenerationModelProvider, ProviderBehavior, TestCli,
+    make_result,
+};
 
 fn default_provider() -> MockTextGenerationModelProvider {
     MockTextGenerationModelProvider::new(ProviderBehavior::Stream(vec![
-        TextGenerationResponse::done("unused".to_string(), "mock".to_string(), None),
+        TextGenerationResponse::new_done("unused".to_string(), "mock".to_string(), None),
     ]))
 }
 
@@ -89,7 +92,7 @@ async fn test_memory_query_outputs_json_array() {
 async fn test_memory_get_outputs_json() {
     let id = Uuid::new_v4();
     let entry = make_result(id, "found entry", MemoryTrust::Fact, 0.95);
-    let cli = TestCli::new(MockStore::new().with_get(entry), default_provider());
+    let cli = TestCli::new(MockStore::new().with_get(Some(entry)), default_provider());
 
     let output = cli
         .memory(MemoryCommand::Get { id })
@@ -106,7 +109,10 @@ async fn test_memory_get_outputs_json() {
 async fn test_memory_promote_outputs_json() {
     let id = Uuid::new_v4();
     let promoted = make_result(id, "important fact", MemoryTrust::Fact, 1.0);
-    let cli = TestCli::new(MockStore::new().with_set_kind(promoted), default_provider());
+    let cli = TestCli::new(
+        MockStore::new().with_promote_behavior(EntryBehavior::Ok(Some(promoted))),
+        default_provider(),
+    );
 
     let output = cli
         .memory(MemoryCommand::Promote { id })
@@ -170,7 +176,7 @@ async fn test_memory_add_propagates_store_errors() {
 
 fn extraction_provider(response_json: &str) -> MockTextGenerationModelProvider {
     MockTextGenerationModelProvider::new(ProviderBehavior::Stream(vec![
-        TextGenerationResponse::done(response_json.to_string(), "mock".to_string(), None),
+        TextGenerationResponse::new_done(response_json.to_string(), "mock".to_string(), None),
     ]))
 }
 

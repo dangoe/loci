@@ -16,8 +16,8 @@ use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
 use loci_config::load_config;
+use loci_core::memory::store::MemoryStore;
 use loci_core::model_provider::text_generation::TextGenerationModelProvider;
-use loci_core::store::MemoryStore;
 
 use crate::cli::ServerArgs;
 use crate::infra::{build_llm_provider, build_store};

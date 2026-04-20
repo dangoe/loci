@@ -7,11 +7,8 @@
 use std::collections::HashMap;
 
 use chrono::{Duration, Utc};
-use loci_core::error::MemoryStoreError;
-use loci_core::memory::{
-    MemoryInput, MemoryQuery, MemoryQueryMode, MemoryQueryResult, MemoryTrust, Score,
-};
-use loci_core::store::MemoryStore;
+use loci_core::memory::store::{MemoryInput, MemoryQuery, MemoryQueryMode, MemoryStore};
+use loci_core::memory::{MemoryEntry, MemoryTrust, TrustEvidence};
 use loci_core::testing::MockTextEmbedder;
 use loci_memory_store_qdrant::store::QdrantMemoryStore;
 use loci_memory_store_qdrant::testing::{QDRANT_GRPC_PORT, start_store};
@@ -31,21 +28,31 @@ fn unit_vec(index: usize) -> Vec<f32> {
 }
 
 fn input(content: &str) -> MemoryInput {
-    MemoryInput::new(content.to_string(), HashMap::new())
+    MemoryInput::new(
+        content.to_owned(),
+        MemoryTrust::Extracted {
+            confidence: 0.5,
+            evidence: TrustEvidence::default(),
+        },
+        HashMap::new(),
+    )
 }
 
 fn input_with_metadata(content: &str, metadata: HashMap<String, String>) -> MemoryInput {
-    MemoryInput::new(content.to_string(), metadata)
+    MemoryInput::new(
+        content.to_owned(),
+        MemoryTrust::Extracted {
+            confidence: 0.5,
+            evidence: TrustEvidence::default(),
+        },
+        metadata,
+    )
 }
 
 fn query(topic: &str, max_results: usize) -> MemoryQuery {
-    MemoryQuery {
-        topic: topic.to_string(),
-        max_results,
-        min_score: Score::ZERO,
-        filters: HashMap::new(),
-        mode: MemoryQueryMode::Lookup,
-    }
+    use std::num::NonZeroUsize;
+    MemoryQuery::new(topic.to_owned(), MemoryQueryMode::Lookup)
+        .with_max_results(NonZeroUsize::new(max_results).unwrap())
 }
 
 async fn prepare_expired_entry(
@@ -53,7 +60,14 @@ async fn prepare_expired_entry(
     store: &QdrantMemoryStore<MockTextEmbedder>,
 ) {
     let short_lived = store
-        .add_entry(MemoryInput::new("short-lived".to_string(), HashMap::new()))
+        .add_entry(&MemoryInput::new(
+            "short-lived".to_owned(),
+            MemoryTrust::Extracted {
+                confidence: 0.5,
+                evidence: TrustEvidence::default(),
+            },
+            HashMap::new(),
+        ))
         .await
         .unwrap();
 
@@ -71,7 +85,7 @@ async fn prepare_expired_entry(
         .set_payload(
             SetPayloadPointsBuilder::new("memory_entries", expired_payload)
                 .points_selector(PointsIdsList {
-                    ids: vec![short_lived.memory_entry.id.to_string().into()],
+                    ids: vec![short_lived.id().to_string().into()],
                 })
                 .wait(true),
         )
@@ -79,8 +93,8 @@ async fn prepare_expired_entry(
         .unwrap();
 }
 
-fn extract_ids(results: &[MemoryQueryResult]) -> Vec<Uuid> {
-    results.iter().map(|e| e.memory_entry.id).collect()
+fn extract_ids(results: &[MemoryEntry]) -> Vec<Uuid> {
+    results.iter().map(|e| *e.id()).collect()
 }
 
 #[tokio::test]
@@ -92,21 +106,21 @@ async fn test_deduplication_does_not_collapse_different_metadata() {
     let (store, _container) = start_store(embedder, Some(0.9)).await;
 
     let first = store
-        .add_entry(input_with_metadata(
+        .add_entry(&input_with_metadata(
             "same content a",
             HashMap::from([("label".to_string(), "a".to_string())]),
         ))
         .await
         .unwrap();
     let second = store
-        .add_entry(input_with_metadata(
+        .add_entry(&input_with_metadata(
             "same content b",
             HashMap::from([("label".to_string(), "b".to_string())]),
         ))
         .await
         .unwrap();
 
-    assert_ne!(second.memory_entry.id, first.memory_entry.id);
+    assert_ne!(second.id(), first.id());
 }
 
 #[tokio::test]
@@ -117,11 +131,11 @@ async fn test_deduplication_reuses_id_when_score_meets_threshold() {
         .with("near-duplicate", unit_vec(0));
     let (store, _container) = start_store(embedder, Some(0.9)).await;
 
-    let original = store.add_entry(input("original")).await.unwrap();
-    let duplicate = store.add_entry(input("near-duplicate")).await.unwrap();
+    let original = store.add_entry(&input("original")).await.unwrap();
+    let duplicate = store.add_entry(&input("near-duplicate")).await.unwrap();
 
-    assert_eq!(duplicate.memory_entry.id, original.memory_entry.id);
-    assert_eq!(duplicate.memory_entry.seen_count, 2);
+    assert_eq!(duplicate.id(), original.id());
+    assert_eq!(duplicate.seen_count(), 2);
 }
 
 #[tokio::test]
@@ -132,10 +146,10 @@ async fn test_deduplication_stores_new_memory_when_score_below_threshold() {
         .with("y-axis topic", unit_vec(1));
     let (store, _container) = start_store(embedder, Some(0.9)).await;
 
-    let first = store.add_entry(input("x-axis topic")).await.unwrap();
-    let second = store.add_entry(input("y-axis topic")).await.unwrap();
+    let first = store.add_entry(&input("x-axis topic")).await.unwrap();
+    let second = store.add_entry(&input("y-axis topic")).await.unwrap();
 
-    assert_ne!(second.memory_entry.id, first.memory_entry.id);
+    assert_ne!(second.id(), first.id());
 }
 
 #[tokio::test]
@@ -146,36 +160,32 @@ async fn test_deleted_memory_is_not_returned_by_query() {
         .with("query", unit_vec(0));
     let (store, _container) = start_store(embedder, None).await;
 
-    let deleted = store.add_entry(input("to be deleted")).await.unwrap();
-    let survivor = store.add_entry(input("survivor")).await.unwrap();
-    store.delete_entry(deleted.memory_entry.id).await.unwrap();
+    let deleted = store.add_entry(&input("to be deleted")).await.unwrap();
+    let survivor = store.add_entry(&input("survivor")).await.unwrap();
+    store.delete_entry(deleted.id()).await.unwrap();
 
     let results = store.query(query("query", 10)).await.unwrap();
 
     // The surviving entry must still be returned so the assertion below is not vacuously true.
     assert!(
-        results
-            .iter()
-            .any(|e| e.memory_entry.id == survivor.memory_entry.id),
+        results.iter().any(|e| e.id() == survivor.id()),
         "surviving entry must appear in results"
     );
     assert!(
-        results
-            .iter()
-            .all(|e| e.memory_entry.id != deleted.memory_entry.id),
+        results.iter().all(|e| e.id() != deleted.id()),
         "deleted entry must not appear in results"
     );
 }
 
 #[tokio::test]
-async fn test_get_entry_returns_not_found_for_unknown_id() {
+async fn test_get_entry_returns_none_for_unknown_id() {
     let embedder = MockTextEmbedder::new(DIM);
     let (store, _container) = start_store(embedder, None).await;
 
     let unknown_id = Uuid::new_v4();
-    let result = store.get_entry(unknown_id).await;
+    let result = store.get_entry(&unknown_id).await;
 
-    assert!(matches!(result, Err(MemoryStoreError::NotFound(id)) if id == unknown_id));
+    assert!(matches!(result, Ok(None)));
 }
 
 #[tokio::test]
@@ -183,16 +193,13 @@ async fn test_get_entry_returns_added_entry() {
     let embedder = MockTextEmbedder::new(DIM).with("fetch me", unit_vec(0));
     let (store, _container) = start_store(embedder, None).await;
 
-    let saved = store.add_entry(input("fetch me")).await.unwrap();
-    let fetched = store.get_entry(saved.memory_entry.id).await.unwrap();
+    let saved = store.add_entry(&input("fetch me")).await.unwrap();
+    let fetched = store.get_entry(saved.id()).await.unwrap().unwrap();
 
-    assert_eq!(fetched.memory_entry.id, saved.memory_entry.id);
-    assert_eq!(fetched.memory_entry.content, "fetch me");
-    assert!(matches!(
-        fetched.memory_entry.trust,
-        MemoryTrust::Extracted { .. }
-    ));
-    assert_eq!(fetched.memory_entry.seen_count, 1);
+    assert_eq!(fetched.id(), saved.id());
+    assert_eq!(fetched.content(), "fetch me");
+    assert!(matches!(fetched.trust(), MemoryTrust::Extracted { .. }));
+    assert_eq!(fetched.seen_count(), 1);
 }
 
 #[tokio::test]
@@ -207,47 +214,45 @@ async fn test_metadata_is_persisted_and_restored() {
         ("language".to_string(), "en".to_string()),
     ]);
     store
-        .add_entry(input_with_metadata("tagged content", metadata.clone()))
+        .add_entry(&input_with_metadata("tagged content", metadata.clone()))
         .await
         .unwrap();
 
     let results = store.query(query("tagged content query", 1)).await.unwrap();
 
-    assert_eq!(results[0].memory_entry.metadata, metadata);
-    assert!(matches!(
-        results[0].memory_entry.trust,
-        MemoryTrust::Extracted { .. }
-    ));
+    assert_eq!(results[0].metadata(), &metadata);
+    assert!(matches!(results[0].trust(), MemoryTrust::Extracted { .. }));
 }
 
 #[tokio::test]
 async fn test_neither_query_mode_increments_seen_count() {
+    use std::num::NonZeroUsize;
+
     let embedder = MockTextEmbedder::new(DIM)
         .with("remember this", unit_vec(0))
         .with("query", unit_vec(0));
     let (store, _container) = start_store(embedder, None).await;
 
-    let saved = store.add_entry(input("remember this")).await.unwrap();
-    assert_eq!(saved.memory_entry.seen_count, 1);
+    let saved = store.add_entry(&input("remember this")).await.unwrap();
+    assert_eq!(saved.seen_count(), 1);
 
     let after_use = store
-        .query(MemoryQuery {
-            topic: "query".to_string(),
-            max_results: 1,
-            min_score: Score::ZERO,
-            filters: HashMap::new(),
-            mode: MemoryQueryMode::Use,
-        })
+        .query(
+            MemoryQuery::new("query".to_owned(), MemoryQueryMode::Use)
+                .with_max_results(NonZeroUsize::new(1).unwrap()),
+        )
         .await
         .unwrap();
     assert_eq!(
-        after_use[0].memory_entry.seen_count, 1,
+        after_use[0].seen_count(),
+        1,
         "Use mode should not increment seen_count"
     );
 
     let after_lookup = store.query(query("query", 1)).await.unwrap();
     assert_eq!(
-        after_lookup[0].memory_entry.seen_count, 1,
+        after_lookup[0].seen_count(),
+        1,
         "Lookup mode should not increment seen_count"
     );
 }
@@ -261,10 +266,10 @@ async fn test_prune_expired_memory_entries() {
     let (store, container) = start_store(embedder, None).await;
 
     let long_lived = store
-        .add_entry(MemoryInput::new_with_trust(
-            "long-lived".to_string(),
-            HashMap::new(),
+        .add_entry(&MemoryInput::new(
+            "long-lived".to_owned(),
             MemoryTrust::Fact,
+            HashMap::new(),
         ))
         .await
         .unwrap();
@@ -276,11 +281,13 @@ async fn test_prune_expired_memory_entries() {
     let results = store.query(query("query", 10)).await.unwrap();
 
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].memory_entry.id, long_lived.memory_entry.id);
+    assert_eq!(results[0].id(), long_lived.id());
 }
 
 #[tokio::test]
 async fn test_query_filters_by_metadata() {
+    use std::num::NonZeroUsize;
+
     let embedder = MockTextEmbedder::new(DIM)
         .with("doc en", unit_vec(0))
         .with("doc de", unit_vec(0))
@@ -288,14 +295,14 @@ async fn test_query_filters_by_metadata() {
     let (store, _container) = start_store(embedder, None).await;
 
     store
-        .add_entry(input_with_metadata(
+        .add_entry(&input_with_metadata(
             "doc en",
             HashMap::from([("lang".to_string(), "en".to_string())]),
         ))
         .await
         .unwrap();
     store
-        .add_entry(input_with_metadata(
+        .add_entry(&input_with_metadata(
             "doc de",
             HashMap::from([("lang".to_string(), "de".to_string())]),
         ))
@@ -303,18 +310,16 @@ async fn test_query_filters_by_metadata() {
         .unwrap();
 
     let results = store
-        .query(MemoryQuery {
-            topic: "topic".to_string(),
-            max_results: 10,
-            min_score: Score::ZERO,
-            filters: HashMap::from([("lang".to_string(), "en".to_string())]),
-            mode: MemoryQueryMode::Lookup,
-        })
+        .query(
+            MemoryQuery::new("topic".to_owned(), MemoryQueryMode::Lookup)
+                .with_max_results(NonZeroUsize::new(10).unwrap())
+                .with_filters(HashMap::from([("lang".to_string(), "en".to_string())])),
+        )
         .await
         .unwrap();
 
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].memory_entry.content, "doc en");
+    assert_eq!(results[0].content(), "doc en");
 }
 
 #[tokio::test]
@@ -325,16 +330,15 @@ async fn test_query_ranks_results_by_similarity() {
         .with("near x", unit_vec(0));
     let (store, _container) = start_store(embedder, None).await;
 
-    store.add_entry(input("x-axis")).await.unwrap();
-    store.add_entry(input("y-axis")).await.unwrap();
+    store.add_entry(&input("x-axis")).await.unwrap();
+    store.add_entry(&input("y-axis")).await.unwrap();
 
     // "near x" maps to the same vector as "x-axis" so it should rank first
     let results = store.query(query("near x", 2)).await.unwrap();
 
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].memory_entry.content, "x-axis");
-    assert_eq!(results[1].memory_entry.content, "y-axis");
-    assert!(results[0].score.value() > results[1].score.value());
+    assert_eq!(results[0].content(), "x-axis");
+    assert_eq!(results[1].content(), "y-axis");
 }
 
 #[tokio::test]
@@ -346,7 +350,7 @@ async fn test_query_respects_expiration() {
         .with("query", unit_vec(0));
     let (store, container) = start_store(embedder, None).await;
 
-    let mut valid_entries: Vec<MemoryQueryResult> = Vec::new();
+    let mut valid_entries: Vec<MemoryEntry> = Vec::new();
 
     for trust in [
         MemoryTrust::Fact,
@@ -355,10 +359,10 @@ async fn test_query_respects_expiration() {
             evidence: Default::default(),
         },
     ] {
-        let content = trust.as_str().to_string();
+        let content = trust_kind_str(&trust).to_string();
         valid_entries.push(
             store
-                .add_entry(MemoryInput::new_with_trust(content, HashMap::new(), trust))
+                .add_entry(&MemoryInput::new(content, trust, HashMap::new()))
                 .await
                 .unwrap(),
         );
@@ -377,6 +381,14 @@ async fn test_query_respects_expiration() {
     assert_eq!(result_ids, valid_ids);
 }
 
+/// Returns the storage-layer string key for a `MemoryTrust` variant (test helper).
+fn trust_kind_str(trust: &MemoryTrust) -> &'static str {
+    match trust {
+        MemoryTrust::Fact => "fact",
+        MemoryTrust::Extracted { .. } => "extracted_memory",
+    }
+}
+
 #[tokio::test]
 async fn test_query_respects_max_results() {
     let mut embedder = MockTextEmbedder::new(DIM).with("query", unit_vec(0));
@@ -387,7 +399,7 @@ async fn test_query_respects_max_results() {
 
     for i in 0..5 {
         store
-            .add_entry(input(&format!("memory {i}")))
+            .add_entry(&input(&format!("memory {i}")))
             .await
             .unwrap();
     }
@@ -399,6 +411,9 @@ async fn test_query_respects_max_results() {
 
 #[tokio::test]
 async fn test_query_respects_min_score() {
+    use loci_core::memory::Score;
+    use std::num::NonZeroUsize;
+
     // x-axis and y-axis are orthogonal -> cosine = 0
     let embedder = MockTextEmbedder::new(DIM)
         .with("x-axis", unit_vec(0))
@@ -406,23 +421,21 @@ async fn test_query_respects_min_score() {
         .with("query", unit_vec(0));
     let (store, _container) = start_store(embedder, None).await;
 
-    store.add_entry(input("x-axis")).await.unwrap();
-    store.add_entry(input("y-axis")).await.unwrap();
+    store.add_entry(&input("x-axis")).await.unwrap();
+    store.add_entry(&input("y-axis")).await.unwrap();
 
     // weighted min_score of 0.5 should exclude the orthogonal entry
     let results = store
-        .query(MemoryQuery {
-            topic: "query".to_string(),
-            max_results: 10,
-            min_score: Score::new(0.5).unwrap(),
-            filters: HashMap::new(),
-            mode: MemoryQueryMode::Lookup,
-        })
+        .query(
+            MemoryQuery::new("query".to_owned(), MemoryQueryMode::Lookup)
+                .with_max_results(NonZeroUsize::new(10).unwrap())
+                .with_min_score(Score::try_new(0.5).unwrap()),
+        )
         .await
         .unwrap();
 
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].memory_entry.content, "x-axis");
+    assert_eq!(results[0].content(), "x-axis");
 }
 
 #[tokio::test]
@@ -432,64 +445,28 @@ async fn test_added_memory_is_returned_by_query() {
         .with("hello world query", unit_vec(0));
     let (store, _container) = start_store(embedder, None).await;
 
-    let entry = store.add_entry(input("hello world")).await.unwrap();
+    let entry = store.add_entry(&input("hello world")).await.unwrap();
 
     let results = store.query(query("hello world query", 1)).await.unwrap();
 
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].memory_entry.id, entry.memory_entry.id);
-    assert_eq!(results[0].memory_entry.content, "hello world");
-    assert!(results[0].score.value() >= 0.5);
+    assert_eq!(results[0].id(), entry.id());
+    assert_eq!(results[0].content(), "hello world");
 }
 
 #[tokio::test]
-async fn test_set_entry_kind_promotes_to_fact() {
+async fn test_promote_promotes_to_fact() {
     let embedder = MockTextEmbedder::new(DIM).with("curate me", unit_vec(0));
     let (store, _container) = start_store(embedder, None).await;
 
-    let saved = store.add_entry(input("curate me")).await.unwrap();
-    let updated = store
-        .set_entry_trust(saved.memory_entry.id, MemoryTrust::Fact)
-        .await
-        .unwrap();
+    let saved = store.add_entry(&input("curate me")).await.unwrap();
+    let promoted = store.promote(saved.id()).await.unwrap().unwrap();
 
-    assert!(matches!(updated.memory_entry.trust, MemoryTrust::Fact));
-    assert_eq!(updated.memory_entry.expires_at, None);
+    assert!(matches!(promoted.trust(), MemoryTrust::Fact));
+    assert_eq!(promoted.expires_at(), None);
 
     // Verify the trust change is persisted in the store.
-    let fetched = store.get_entry(saved.memory_entry.id).await.unwrap();
-    assert!(matches!(fetched.memory_entry.trust, MemoryTrust::Fact));
-    assert_eq!(fetched.memory_entry.expires_at, None);
-}
-
-#[tokio::test]
-async fn test_update_entry_changes_content_and_returns_updated_entry() {
-    let embedder = MockTextEmbedder::new(DIM)
-        .with("original content", unit_vec(0))
-        .with("updated content", unit_vec(1));
-    let (store, _container) = start_store(embedder, None).await;
-
-    let saved = store.add_entry(input("original content")).await.unwrap();
-    let updated = store
-        .update_entry(saved.memory_entry.id, input("updated content"))
-        .await
-        .unwrap();
-
-    assert_eq!(updated.memory_entry.id, saved.memory_entry.id);
-    assert_eq!(updated.memory_entry.content, "updated content");
-
-    // Verify the change is persisted in the store.
-    let fetched = store.get_entry(saved.memory_entry.id).await.unwrap();
-    assert_eq!(fetched.memory_entry.content, "updated content");
-}
-
-#[tokio::test]
-async fn test_update_entry_returns_not_found_for_unknown_id() {
-    let embedder = MockTextEmbedder::new(DIM).with("anything", unit_vec(0));
-    let (store, _container) = start_store(embedder, None).await;
-
-    let unknown_id = Uuid::new_v4();
-    let result = store.update_entry(unknown_id, input("anything")).await;
-
-    assert!(matches!(result, Err(MemoryStoreError::NotFound(id)) if id == unknown_id));
+    let fetched = store.get_entry(saved.id()).await.unwrap().unwrap();
+    assert!(matches!(fetched.trust(), MemoryTrust::Fact));
+    assert_eq!(fetched.expires_at(), None);
 }

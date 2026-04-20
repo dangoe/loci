@@ -35,7 +35,7 @@ impl SentenceAwareChunker {
         }
     }
 
-    pub fn chunk_size(&self) -> usize {
+    fn chunk_size(&self) -> usize {
         self.chunk_size.get()
     }
 
@@ -172,11 +172,7 @@ impl Chunker for SentenceAwareChunker {
             chunks.push(current);
         }
 
-        if chunks.is_empty() {
-            vec![input.to_string()]
-        } else {
-            chunks
-        }
+        chunks
     }
 }
 
@@ -332,9 +328,9 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_input_returns_single_chunk() {
+    fn test_empty_input_returns_empty_vec() {
         let chunks = split_into_chunks("", 100, 10);
-        assert_eq!(chunks.len(), 1);
+        assert!(chunks.is_empty());
     }
 
     #[test]

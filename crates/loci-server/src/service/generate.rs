@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // This file is part of loci-server.
 
+use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -16,10 +17,9 @@ use loci_core::contextualization::{
     ContextualizerSystemMode,
 };
 use loci_core::memory::Score;
-use loci_core::model_provider::text_generation::{
-    TextGenerationModelProvider, TokenUsage as CoreTokenUsage,
-};
-use loci_core::store::MemoryStore;
+use loci_core::memory::store::MemoryStore;
+use loci_core::model_provider::common::TokenUsage as CoreTokenUsage;
+use loci_core::model_provider::text_generation::TextGenerationModelProvider;
 
 use crate::loci::generate::v1::{
     GenerateServiceGenerateRequestView, GenerateServiceGenerateResponse, MemoryMode, SystemMode,
@@ -75,11 +75,12 @@ where
 
         let mapped = stream.map(|item| {
             item.map(|chunk| GenerateServiceGenerateResponse {
-                text: chunk.text,
-                model: chunk.model,
-                done: chunk.done,
+                text: chunk.text().to_owned(),
+                model: chunk.model().to_owned(),
+                done: chunk.is_done(),
                 usage: chunk
-                    .usage
+                    .usage()
+                    .cloned()
                     .map(token_usage_to_proto)
                     .map(MessageField::some)
                     .unwrap_or_default(),
@@ -112,38 +113,45 @@ where
         )
     })?;
 
-    let min_score = Score::new(request.min_score)
+    let min_score = Score::try_new(request.min_score)
         .map_err(|_| ConnectError::invalid_argument("min_score must be in [0.0, 1.0]"))?;
 
-    Ok(ContextualizerConfig {
-        text_generation_model: model.model.clone(),
-        system: request.system.map(|sys| ContextualizerSystemConfig {
-            mode: match request.system_mode.as_known() {
-                Some(SystemMode::SYSTEM_MODE_REPLACE) => ContextualizerSystemMode::Replace,
-                _ => ContextualizerSystemMode::Append,
-            },
-            system: sys.to_owned(),
-        }),
-        memory_mode: match request.memory_mode.as_known() {
-            Some(MemoryMode::MEMORY_MODE_OFF) => ContextualizationMemoryMode::Off,
-            _ => ContextualizationMemoryMode::Auto,
-        },
-        max_memory_entries: request.max_memory_entries as usize,
+    let memory_mode = match request.memory_mode.as_known() {
+        Some(MemoryMode::MEMORY_MODE_OFF) => ContextualizationMemoryMode::Off,
+        _ => ContextualizationMemoryMode::Auto,
+    };
+
+    let system = request.system.map(|sys| {
+        let mode = match request.system_mode.as_known() {
+            Some(SystemMode::SYSTEM_MODE_REPLACE) => ContextualizerSystemMode::Replace,
+            _ => ContextualizerSystemMode::Append,
+        };
+        ContextualizerSystemConfig::new(mode, sys.to_owned())
+    });
+
+    let max_memory_entries = NonZeroUsize::new(request.max_memory_entries as usize)
+        .unwrap_or(NonZeroUsize::new(5).unwrap());
+
+    Ok(ContextualizerConfig::new(
+        model.model.clone(),
+        system,
+        memory_mode,
+        max_memory_entries,
         min_score,
-        filters: request
+        request
             .filters
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect(),
-        tuning: None,
-    })
+        None,
+    ))
 }
 
 fn token_usage_to_proto(usage: CoreTokenUsage) -> TokenUsage {
     TokenUsage {
-        prompt_tokens: usage.prompt_tokens,
-        completion_tokens: usage.completion_tokens,
-        total_tokens: usage.total_tokens,
+        prompt_tokens: usage.prompt_tokens(),
+        completion_tokens: usage.completion_tokens(),
+        total_tokens: usage.total_tokens(),
         ..Default::default()
     }
 }

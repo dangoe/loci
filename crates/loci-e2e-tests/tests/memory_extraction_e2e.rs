@@ -5,15 +5,16 @@
 mod support;
 
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
-use loci_core::memory::{MemoryQuery, MemoryQueryMode, MemoryTrust, Score};
+use loci_core::memory::MemoryTrust;
+use loci_core::memory::store::{MemoryQuery, MemoryQueryMode, MemoryStore};
 use loci_core::memory_extraction::llm::ChunkingStrategy;
 use loci_core::memory_extraction::{
     LlmMemoryExtractionStrategy, LlmMemoryExtractionStrategyParams, MemoryExtractionStrategy,
     MemoryExtractor, MemoryExtractorConfig,
 };
-use loci_core::store::MemoryStore;
 use loci_model_provider_ollama::classification::LlmClassificationModelProvider;
 use loci_model_provider_ollama::testing::{
     classification_model, ensure_ollama_available, ollama_provider, text_model,
@@ -78,7 +79,7 @@ async fn test_extract_yields_entries_from_fact_rich_text() {
     );
     for entry in &entries {
         assert!(
-            !entry.content.is_empty(),
+            !entry.content().is_empty(),
             "every extracted entry must have non-empty content"
         );
     }
@@ -87,14 +88,14 @@ async fn test_extract_yields_entries_from_fact_rich_text() {
     // preserves verbatim.  At least one extracted entry must surface one of them.
     let key_terms = ["alice", "rust", "neovim", "berlin", "zulip"];
     let mentions_key_term = entries.iter().any(|e| {
-        let lower = e.content.to_lowercase();
+        let lower = e.content().to_lowercase();
         key_terms.iter().any(|kw| lower.contains(kw))
     });
     assert!(
         mentions_key_term,
         "at least one extracted entry should reference a key term from the input \
          (checked: {key_terms:?}); got: {:?}",
-        entries.iter().map(|e| &e.content).collect::<Vec<_>>()
+        entries.iter().map(|e| e.content()).collect::<Vec<_>>()
     );
 }
 
@@ -118,7 +119,7 @@ async fn test_extracted_entries_carry_extracted_memory_kind() {
     );
     for entry in &entries {
         assert!(
-            matches!(&entry.trust, Some(MemoryTrust::Extracted { .. })),
+            matches!(entry.trust(), MemoryTrust::Extracted { .. }),
             "every extracted entry must carry the hardcoded ExtractedMemory kind"
         );
     }
@@ -149,12 +150,12 @@ async fn test_extracted_entries_carry_configured_metadata() {
     );
     for entry in &entries {
         assert_eq!(
-            entry.metadata.get("source").map(String::as_str),
+            entry.metadata().get("source").map(String::as_str),
             Some("conversation"),
             "every entry should carry the configured 'source' metadata key"
         );
         assert_eq!(
-            entry.metadata.get("session_id").map(String::as_str),
+            entry.metadata().get("session_id").map(String::as_str),
             Some("abc-123"),
             "every entry should carry the configured 'session_id' metadata key"
         );
@@ -230,10 +231,10 @@ async fn test_extract_and_store_persists_entries() {
         .expect("extract_and_store should succeed");
 
     let stored: Vec<_> = result
-        .inserted
+        .inserted()
         .iter()
-        .chain(result.merged.iter())
-        .chain(result.promoted.iter())
+        .chain(result.merged().iter())
+        .chain(result.promoted().iter())
         .collect();
 
     assert!(
@@ -246,7 +247,7 @@ async fn test_extract_and_store_persists_entries() {
     let key_terms = ["alice", "rust", "neovim", "berlin", "zulip"];
     let all_content = stored
         .iter()
-        .map(|r| r.memory_entry.content.to_lowercase())
+        .map(|r| r.content().to_lowercase())
         .collect::<Vec<_>>()
         .join(" ");
     let mentions_key_term = key_terms.iter().any(|kw| all_content.contains(kw));
@@ -254,10 +255,7 @@ async fn test_extract_and_store_persists_entries() {
         mentions_key_term,
         "stored entries should reference key terms from the input \
          (checked: {key_terms:?}); stored: {:?}",
-        stored
-            .iter()
-            .map(|r| &r.memory_entry.content)
-            .collect::<Vec<_>>()
+        stored.iter().map(|r| r.content()).collect::<Vec<_>>()
     );
 }
 
@@ -291,13 +289,13 @@ async fn test_extracted_entries_are_semantically_retrievable() {
     // A semantically related but differently phrased query should surface at
     // least one of the stored facts.
     let results = store
-        .query(MemoryQuery {
-            topic: "what text editor does the developer use".to_string(),
-            max_results: 5,
-            min_score: Score::ZERO,
-            filters: HashMap::new(),
-            mode: MemoryQueryMode::Lookup,
-        })
+        .query(
+            MemoryQuery::new(
+                "what text editor does the developer use".to_string(),
+                MemoryQueryMode::Lookup,
+            )
+            .with_max_results(NonZeroUsize::new(5).unwrap()),
+        )
         .await
         .expect("semantic query should succeed");
 
@@ -309,17 +307,14 @@ async fn test_extracted_entries_are_semantically_retrievable() {
     // The editor-specific query should surface the Neovim entry.  We also
     // accept "vim" and "editor" in case the model slightly paraphrased.
     let mentions_editor = results.iter().any(|r| {
-        let lower = r.memory_entry.content.to_lowercase();
+        let lower = r.content().to_lowercase();
         lower.contains("neovim") || lower.contains("vim") || lower.contains("editor")
     });
     assert!(
         mentions_editor,
         "at least one result for the 'text editor' query should mention the editor \
          from the input (checked: neovim / vim / editor); got: {:?}",
-        results
-            .iter()
-            .map(|r| &r.memory_entry.content)
-            .collect::<Vec<_>>()
+        results.iter().map(|r| r.content()).collect::<Vec<_>>()
     );
 }
 
@@ -356,10 +351,10 @@ async fn test_stored_entries_have_configured_metadata() {
         .expect("extract_and_store should succeed");
 
     let stored: Vec<_> = result
-        .inserted
+        .inserted()
         .iter()
-        .chain(result.merged.iter())
-        .chain(result.promoted.iter())
+        .chain(result.merged().iter())
+        .chain(result.promoted().iter())
         .collect();
 
     assert!(
@@ -368,14 +363,10 @@ async fn test_stored_entries_have_configured_metadata() {
     );
     for entry in &stored {
         assert_eq!(
-            entry
-                .memory_entry
-                .metadata
-                .get("source")
-                .map(String::as_str),
+            entry.metadata().get("source").map(String::as_str),
             Some("e2e-test"),
             "stored entry should carry the configured metadata, entry id: {}",
-            entry.memory_entry.id
+            entry.id()
         );
     }
 }
@@ -408,16 +399,16 @@ async fn test_stored_entries_have_extracted_memory_kind() {
         .expect("extract_and_store should succeed");
 
     assert!(
-        !result.inserted.is_empty(),
+        !result.inserted().is_empty(),
         "extraction should yield inserted entries to validate kind persistence"
     );
     // In a fresh store there are no prior entries so all candidates are inserted,
     // not promoted. Each inserted entry must carry the Extracted trust kind.
-    for entry in &result.inserted {
+    for entry in result.inserted() {
         assert!(
-            matches!(entry.memory_entry.trust, MemoryTrust::Extracted { .. }),
+            matches!(entry.trust(), MemoryTrust::Extracted { .. }),
             "inserted entry must carry the Extracted trust kind, entry id: {}",
-            entry.memory_entry.id
+            entry.id()
         );
     }
 }

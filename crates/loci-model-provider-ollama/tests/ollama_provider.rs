@@ -40,8 +40,8 @@ async fn test_embed_returns_vectors_with_correct_count() {
 
     let resp = provider.embed(req).await.expect("embed should succeed");
 
-    assert_eq!(resp.embeddings.len(), 3, "expected one vector per input");
-    for (i, vec) in resp.embeddings.iter().enumerate() {
+    assert_eq!(resp.embeddings().len(), 3, "expected one vector per input");
+    for (i, vec) in resp.embeddings().iter().enumerate() {
         assert!(!vec.is_empty(), "vector {i} should not be empty");
     }
 }
@@ -61,7 +61,7 @@ async fn test_embed_similar_texts_have_high_cosine_similarity() {
     );
 
     let resp = provider.embed(req).await.expect("embed should succeed");
-    let sim = cosine_similarity(&resp.embeddings[0], &resp.embeddings[1]);
+    let sim = cosine_similarity(&resp.embeddings()[0], &resp.embeddings()[1]);
 
     assert!(
         sim > 0.7,
@@ -84,7 +84,7 @@ async fn test_embed_dissimilar_texts_have_low_cosine_similarity() {
     );
 
     let resp = provider.embed(req).await.expect("embed should succeed");
-    let sim = cosine_similarity(&resp.embeddings[0], &resp.embeddings[1]);
+    let sim = cosine_similarity(&resp.embeddings()[0], &resp.embeddings()[1]);
 
     assert!(
         sim < 0.5,
@@ -109,19 +109,18 @@ async fn test_generate_returns_nonempty_response() {
     ensure_ollama_available().await;
 
     let provider = ollama_provider();
-    let mut req =
-        TextGenerationRequest::new(text_model(), "What is 2+2? Answer with just the number.");
-    req.temperature = Some(0.0);
-    req.max_tokens = Some(50);
+    let req = TextGenerationRequest::new(text_model(), "What is 2+2? Answer with just the number.")
+        .with_temperature(0.0)
+        .with_max_tokens(50);
 
     let resp = provider
         .generate(req)
         .await
         .expect("generate should succeed");
 
-    assert!(!resp.text.is_empty(), "response text should not be empty");
-    assert!(resp.done, "response should be marked as done");
-    assert!(resp.usage.is_some(), "usage stats should be present");
+    assert!(!resp.text().is_empty(), "response text should not be empty");
+    assert!(resp.is_done(), "response should be marked as done");
+    assert!(resp.usage().is_some(), "usage stats should be present");
 }
 
 #[tokio::test]
@@ -129,9 +128,9 @@ async fn test_generate_stream_yields_chunks_ending_with_done() {
     ensure_ollama_available().await;
 
     let provider = ollama_provider();
-    let mut req = TextGenerationRequest::new(text_model(), "Count from 1 to 5.");
-    req.temperature = Some(0.0);
-    req.max_tokens = Some(100);
+    let req = TextGenerationRequest::new(text_model(), "Count from 1 to 5.")
+        .with_temperature(0.0)
+        .with_max_tokens(100);
 
     let stream = provider.generate_stream(req);
     let chunks: Vec<_> = stream
@@ -148,9 +147,9 @@ async fn test_generate_stream_yields_chunks_ending_with_done() {
     );
 
     let last = chunks.last().expect("should have at least one chunk");
-    assert!(last.done, "last chunk should have done=true");
+    assert!(last.is_done(), "last chunk should have done=true");
 
-    let full_text: String = chunks.iter().map(|c| c.text.as_str()).collect();
+    let full_text: String = chunks.iter().map(|c| c.text()).collect();
     assert!(
         !full_text.is_empty(),
         "concatenated text should not be empty"
@@ -162,16 +161,16 @@ async fn test_generate_with_system_prompt() {
     ensure_ollama_available().await;
 
     let provider = ollama_provider();
-    let mut req = TextGenerationRequest::new(text_model(), "What color is the sky?");
-    req.system = Some("You must reply in exactly one word. No punctuation.".to_string());
-    req.temperature = Some(0.0);
-    req.max_tokens = Some(20);
+    let req = TextGenerationRequest::new(text_model(), "What color is the sky?")
+        .with_system("You must reply in exactly one word. No punctuation.")
+        .with_temperature(0.0)
+        .with_max_tokens(20);
 
     let resp = provider
         .generate(req)
         .await
         .expect("generate should succeed");
-    let trimmed = resp.text.trim();
+    let trimmed = resp.text().trim();
 
     assert!(
         trimmed.len() < 30,
@@ -186,10 +185,9 @@ async fn test_generate_respects_temperature_zero() {
     let provider = ollama_provider();
 
     let make_req = || {
-        let mut req = TextGenerationRequest::new(text_model(), "What is the capital of France?");
-        req.temperature = Some(0.0);
-        req.max_tokens = Some(50);
-        req
+        TextGenerationRequest::new(text_model(), "What is the capital of France?")
+            .with_temperature(0.0)
+            .with_max_tokens(50)
     };
 
     let resp1 = provider
@@ -202,7 +200,8 @@ async fn test_generate_respects_temperature_zero() {
         .expect("second generate should succeed");
 
     assert_eq!(
-        resp1.text, resp2.text,
+        resp1.text(),
+        resp2.text(),
         "temperature=0.0 should produce deterministic output"
     );
 }

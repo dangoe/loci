@@ -2,8 +2,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // This file is part of loci-core.
 
-use std::collections::HashMap;
+pub mod extraction;
+pub mod store;
+
 use std::fmt;
+use std::{collections::HashMap, error::Error as StdError};
 
 use chrono::{DateTime, Duration, Utc};
 use uuid::Uuid;
@@ -24,18 +27,19 @@ pub enum MemoryTrust {
 }
 
 impl MemoryTrust {
-    /// Effective confidence used for retrieval score blending.
+    /// Effective score used for retrieval and ranking, combining extractor assigned confidence
     ///
     /// `Fact` → 1.0.
     /// `Extracted` → Bayesian mean when counters are populated; falls back to
     /// the initial `confidence` value.
-    pub fn effective_confidence(&self) -> f64 {
+    pub fn effective_score(&self) -> Score {
         match self {
-            Self::Fact => 1.0,
+            Self::Fact => Score::MAX,
             Self::Extracted {
                 confidence,
                 evidence,
-            } => evidence.bayesian_confidence().unwrap_or(*confidence),
+            } => Score::try_new(evidence.bayesian_confidence().unwrap_or(*confidence))
+                .unwrap_or(Score::ZERO),
         }
     }
 
@@ -52,14 +56,6 @@ impl MemoryTrust {
         match self {
             Self::Fact => None,
             Self::Extracted { .. } => Some(Duration::days(365)),
-        }
-    }
-
-    /// Storage string discriminant (`"fact"` or `"extracted_memory"`).
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Fact => "fact",
-            Self::Extracted { .. } => "extracted_memory",
         }
     }
 
@@ -99,15 +95,6 @@ impl TrustEvidence {
     }
 }
 
-/// Query behavior mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MemoryQueryMode {
-    /// Retrieval-only lookup. Does not affect lifecycle counters.
-    Lookup,
-    /// Retrieval used for prompt-context memory. Updates usage counters.
-    Use,
-}
-
 /// A similarity score in the range [0.0, 1.0].
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub struct Score(f64);
@@ -119,12 +106,12 @@ impl Score {
     /// The maximum possible score (1.0).
     pub const MAX: Score = Score(1.0);
 
-    /// Creates a new `Score`. Returns [`InvalidScore`] if `value` is outside [0.0, 1.0].
-    pub fn new(value: f64) -> Result<Self, InvalidScore> {
-        if !(0.0..=1.0).contains(&value) {
-            return Err(InvalidScore(value));
+    pub fn try_new(value: f64) -> Result<Self, InvalidScore> {
+        if (0.0..=1.0).contains(&value) {
+            Ok(Self(value))
+        } else {
+            Err(InvalidScore(value))
         }
-        Ok(Self(value))
     }
 
     /// Returns the raw score value.
@@ -143,53 +130,30 @@ impl fmt::Display for InvalidScore {
     }
 }
 
-impl std::error::Error for InvalidScore {}
-
-/// Input passed to [`crate::MemoryStore::add_entry`] and related methods.
-#[derive(Debug, Clone)]
-pub struct MemoryInput {
-    pub content: String,
-    pub metadata: HashMap<String, String>,
-    /// Trust level for this entry. `None` at store time defaults to
-    /// `Extracted { confidence: 0.5, evidence: Default::default() }`.
-    pub trust: Option<MemoryTrust>,
-}
-
-impl MemoryInput {
-    pub fn new(content: String, metadata: HashMap<String, String>) -> Self {
-        Self {
-            content,
-            metadata,
-            trust: None,
-        }
-    }
-
-    pub fn new_with_trust(
-        content: String,
-        metadata: HashMap<String, String>,
-        trust: MemoryTrust,
-    ) -> Self {
-        Self {
-            content,
-            metadata,
-            trust: Some(trust),
-        }
-    }
-}
+impl StdError for InvalidScore {}
 
 /// A stored memory. Intentionally embedding-free — model providers that require
 /// vector similarity compute embeddings internally.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MemoryEntry {
-    pub id: Uuid,
-    pub content: String,
-    pub metadata: HashMap<String, String>,
-    pub trust: MemoryTrust,
-    pub seen_count: u32,
-    pub first_seen: DateTime<Utc>,
-    pub last_seen: DateTime<Utc>,
-    pub expires_at: Option<DateTime<Utc>>,
-    pub created_at: DateTime<Utc>,
+    /// Unique identifier for the memory entry.
+    id: Uuid,
+    /// The factual content of the memory entry.
+    content: String,
+    /// Trust level and evidence for this memory entry, used for retrieval ranking and lifecycle management.
+    trust: MemoryTrust,
+    /// Arbitrary key/value pairs describing the memory (e.g. source, type, etc.).
+    metadata: HashMap<String, String>,
+    /// Number of times this memory has been retrieved with `MemoryQueryMode::Use`.
+    seen_count: u32,
+    /// Timestamp of the first time this memory was retrieved with `MemoryQueryMode::Use`.
+    first_seen: Option<DateTime<Utc>>,
+    /// Timestamp of the most recent time this memory was retrieved with `MemoryQueryMode::Use`.
+    last_seen: Option<DateTime<Utc>>,
+    /// Optional timestamp when this memory expires and becomes ineligible for retrieval. Managed by the pipeline based on trust level and lifecycle policies.
+    expires_at: Option<DateTime<Utc>>,
+    /// Timestamp when this memory entry was created. Useful for debugging and lifecycle policies.
+    created_at: DateTime<Utc>,
 }
 
 impl MemoryEntry {
@@ -220,34 +184,123 @@ impl MemoryEntry {
             content,
             metadata,
             trust,
-            seen_count: 1,
-            first_seen: now,
-            last_seen: now,
+            seen_count: 0,
+            first_seen: None,
+            last_seen: None,
             expires_at,
             created_at: now,
         }
     }
-}
 
-/// A query result pairing a [`MemoryEntry`] with its similarity [`Score`].
-#[derive(Debug, Clone, PartialEq)]
-pub struct MemoryQueryResult {
-    pub memory_entry: MemoryEntry,
-    pub score: Score,
-}
+    /// Returns the unique identifier of this memory entry.
+    pub fn id(&self) -> &Uuid {
+        &self.id
+    }
 
-/// Input to [`crate::MemoryStore::query`]. Model providers decide how to
-/// interpret the topic (vector similarity, keyword search, etc.).
-#[derive(Debug, Clone)]
-pub struct MemoryQuery {
-    pub topic: String,
-    pub max_results: usize,
-    /// Minimum final score a result must reach to be included. In [0.0, 1.0].
-    pub min_score: Score,
-    /// Only return entries whose metadata contains all of these key/value pairs.
-    pub filters: HashMap<String, String>,
-    /// Query behavior mode.
-    pub mode: MemoryQueryMode,
+    /// Returns the content of this memory entry.
+    pub fn content(&self) -> &str {
+        &self.content
+    }
+
+    /// Returns the trust level of this memory entry.
+    pub fn trust(&self) -> &MemoryTrust {
+        &self.trust
+    }
+
+    /// Returns a reference to the metadata of this memory entry.
+    pub fn metadata(&self) -> &HashMap<String, String> {
+        &self.metadata
+    }
+
+    /// Returns the number of times this memory has been retrieved with `MemoryQueryMode::Use`.
+    pub fn seen_count(&self) -> u32 {
+        self.seen_count
+    }
+
+    /// Returns the timestamp of the first time this memory was retrieved with `MemoryQueryMode::Use`.
+    pub fn first_seen(&self) -> Option<DateTime<Utc>> {
+        self.first_seen
+    }
+
+    /// Returns the timestamp of the most recent time this memory was retrieved with `MemoryQueryMode::Use`.
+    pub fn last_seen(&self) -> Option<DateTime<Utc>> {
+        self.last_seen
+    }
+
+    /// Returns the optional timestamp when this memory expires and becomes ineligible for retrieval.
+    pub fn expires_at(&self) -> Option<DateTime<Utc>> {
+        self.expires_at
+    }
+
+    /// Returns the timestamp when this memory entry was created.
+    pub fn created_at(&self) -> DateTime<Utc> {
+        self.created_at
+    }
+
+    /// Reconstructs a `MemoryEntry` from its complete set of stored field values.
+    ///
+    /// Intended for storage backends that need to deserialise persisted entries (e.g. the
+    /// Qdrant store). All fields are supplied explicitly; no defaults are applied.
+    #[allow(clippy::too_many_arguments)]
+    pub fn reconstruct(
+        id: Uuid,
+        content: String,
+        metadata: HashMap<String, String>,
+        trust: MemoryTrust,
+        seen_count: u32,
+        first_seen: Option<DateTime<Utc>>,
+        last_seen: Option<DateTime<Utc>>,
+        expires_at: Option<DateTime<Utc>>,
+        created_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            id,
+            content,
+            metadata,
+            trust,
+            seen_count,
+            first_seen,
+            last_seen,
+            expires_at,
+            created_at,
+        }
+    }
+
+    /// Records a retrieval use of this entry: increments `seen_count`, updates
+    /// `last_seen` to now, and sets `first_seen` if not yet recorded.
+    pub fn record_use(&mut self) {
+        let now = Utc::now();
+        self.seen_count = self.seen_count.saturating_add(1);
+        if self.first_seen.is_none() {
+            self.first_seen = Some(now);
+        }
+        self.last_seen = Some(now);
+    }
+
+    /// Creates a `MemoryEntry` with explicit field values for use in tests.
+    ///
+    /// Only available under `#[cfg(any(feature = "testing", test))]`.
+    #[cfg(any(feature = "testing", test))]
+    pub fn new_for_testing(
+        id: uuid::Uuid,
+        content: String,
+        metadata: std::collections::HashMap<String, String>,
+        trust: MemoryTrust,
+    ) -> Self {
+        let now = chrono::Utc::now();
+        let expires_at = trust.default_ttl().map(|ttl| now + ttl);
+        Self {
+            id,
+            content,
+            metadata,
+            trust,
+            seen_count: 0,
+            first_seen: None,
+            last_seen: None,
+            expires_at,
+            created_at: now,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -258,20 +311,20 @@ mod tests {
 
     #[test]
     fn test_score_new_with_valid_boundary_values_returns_ok() {
-        assert!(Score::new(0.0).is_ok());
-        assert!(Score::new(0.5).is_ok());
-        assert!(Score::new(1.0).is_ok());
+        assert!(Score::try_new(0.0).is_ok());
+        assert!(Score::try_new(0.5).is_ok());
+        assert!(Score::try_new(1.0).is_ok());
     }
 
     #[test]
     fn test_score_new_with_out_of_range_value_returns_err() {
-        assert!(Score::new(-0.1).is_err());
-        assert!(Score::new(1.1).is_err());
+        assert!(Score::try_new(-0.1).is_err());
+        assert!(Score::try_new(1.1).is_err());
     }
 
     #[test]
     fn test_score_value_returns_stored_value() {
-        let s = Score::new(0.75).unwrap();
+        let s = Score::try_new(0.75).unwrap();
         assert_eq!(s.value(), 0.75);
     }
 
@@ -282,28 +335,12 @@ mod tests {
 
     #[test]
     fn test_invalid_score_display_includes_value() {
-        let err = Score::new(1.5).unwrap_err();
+        let err = Score::try_new(1.5).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("1.5"),
             "expected message to contain the bad value, got: {msg}"
         );
-    }
-
-    #[test]
-    fn test_memory_input_new_stores_fields() {
-        let metadata = HashMap::from([("key".to_string(), "val".to_string())]);
-        let input = MemoryInput::new("content".to_string(), metadata.clone());
-        assert_eq!(input.content, "content");
-        assert_eq!(input.metadata, metadata);
-        assert!(input.trust.is_none());
-    }
-
-    #[test]
-    fn test_memory_input_new_with_trust_stores_trust() {
-        let input =
-            MemoryInput::new_with_trust("content".to_string(), HashMap::new(), MemoryTrust::Fact);
-        assert_eq!(input.trust, Some(MemoryTrust::Fact));
     }
 
     #[test]
@@ -405,8 +442,9 @@ mod tests {
         assert_eq!(m.content, "my content");
         assert_eq!(m.metadata, metadata);
         assert!(matches!(m.trust, MemoryTrust::Extracted { .. }));
-        assert_eq!(m.seen_count, 1);
-        assert_eq!(m.first_seen, m.last_seen);
+        assert_eq!(m.seen_count, 0);
+        assert!(m.first_seen.is_none());
+        assert!(m.last_seen.is_none());
         assert!(m.expires_at.is_some());
     }
 
@@ -425,18 +463,8 @@ mod tests {
     }
 
     #[test]
-    fn test_memory_trust_as_str() {
-        assert_eq!(MemoryTrust::Fact.as_str(), "fact");
-        let extracted = MemoryTrust::Extracted {
-            confidence: 0.8,
-            evidence: TrustEvidence::default(),
-        };
-        assert_eq!(extracted.as_str(), "extracted_memory");
-    }
-
-    #[test]
     fn test_effective_confidence_fact_is_one() {
-        assert!((MemoryTrust::Fact.effective_confidence() - 1.0).abs() < f64::EPSILON);
+        assert!((MemoryTrust::Fact.effective_score().value() - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -448,7 +476,7 @@ mod tests {
                 beta: Some(2.0),
             },
         };
-        assert!((trust.effective_confidence() - 0.8).abs() < f64::EPSILON);
+        assert!((trust.effective_score().value() - 0.8).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -457,7 +485,7 @@ mod tests {
             confidence: 0.7,
             evidence: TrustEvidence::default(),
         };
-        assert!((trust.effective_confidence() - 0.7).abs() < f64::EPSILON);
+        assert!((trust.effective_score().value() - 0.7).abs() < f64::EPSILON);
     }
 
     #[test]

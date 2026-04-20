@@ -18,8 +18,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use futures::StreamExt as _;
 use loci_core::contextualization::ContextualizerTuningConfig;
+use loci_core::memory::store::MemoryStore;
 use loci_core::model_provider::text_generation::TextGenerationModelProvider;
-use loci_core::store::MemoryStore;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
@@ -157,15 +157,15 @@ where
     for chunk in chunks {
         match chunk {
             Ok(resp) => {
-                full_text.push_str(&resp.text);
-                if !resp.model.is_empty() {
-                    model_name = resp.model;
+                full_text.push_str(resp.text());
+                if !resp.model().is_empty() {
+                    model_name = resp.model().to_owned();
                 }
-                if let Some(u) = resp.usage {
+                if let Some(u) = resp.usage() {
                     usage = Some(UsageInfo {
-                        prompt_tokens: u.prompt_tokens.unwrap_or(0),
-                        completion_tokens: u.completion_tokens.unwrap_or(0),
-                        total_tokens: u.total_tokens.unwrap_or(0),
+                        prompt_tokens: u.prompt_tokens().unwrap_or(0),
+                        completion_tokens: u.completion_tokens().unwrap_or(0),
+                        total_tokens: u.total_tokens().unwrap_or(0),
                     });
                 }
             }
@@ -234,25 +234,25 @@ where
             let id = id.clone();
             match item {
                 Ok(resp) => {
-                    let is_done = resp.done;
-                    let usage = resp.usage.map(|u| UsageInfo {
-                        prompt_tokens: u.prompt_tokens.unwrap_or(0),
-                        completion_tokens: u.completion_tokens.unwrap_or(0),
-                        total_tokens: u.total_tokens.unwrap_or(0),
+                    let is_done = resp.is_done();
+                    let usage = resp.usage().map(|u| UsageInfo {
+                        prompt_tokens: u.prompt_tokens().unwrap_or(0),
+                        completion_tokens: u.completion_tokens().unwrap_or(0),
+                        total_tokens: u.total_tokens().unwrap_or(0),
                     });
                     let chunk = ChatCompletionChunk {
                         id,
                         object: "chat.completion.chunk",
                         created,
-                        model: resp.model,
+                        model: resp.model().to_owned(),
                         choices: vec![StreamChoice {
                             index: 0,
                             delta: DeltaContent {
                                 role: None,
-                                content: if resp.text.is_empty() && is_done {
+                                content: if resp.text().is_empty() && is_done {
                                     None
                                 } else {
-                                    Some(resp.text)
+                                    Some(resp.text().to_owned())
                                 },
                             },
                             finish_reason: if is_done { Some("stop") } else { None },
@@ -306,12 +306,17 @@ fn extract_input(request: &ChatCompletionRequest) -> ChatCompletionInput {
     let tuning =
         if request.temperature.is_some() || request.max_tokens.is_some() || request.top_p.is_some()
         {
-            Some(ContextualizerTuningConfig {
-                temperature: request.temperature,
-                max_tokens: request.max_tokens,
-                top_p: request.top_p,
-                ..Default::default()
-            })
+            Some(ContextualizerTuningConfig::new(
+                request.temperature,
+                request.max_tokens,
+                request.top_p,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Default::default(),
+            ))
         } else {
             None
         };

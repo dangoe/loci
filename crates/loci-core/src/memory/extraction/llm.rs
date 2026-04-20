@@ -4,26 +4,26 @@
 
 use std::{collections::HashMap, num::NonZeroUsize, sync::Arc};
 
-use futures::StreamExt;
+use futures::{StreamExt, future::BoxFuture};
 
 use serde::Deserialize;
 
 use crate::{
-    BoxFuture,
     error::MemoryExtractionError,
-    memory::{MemoryInput, MemoryTrust, TrustEvidence},
-    memory_extraction::{Chunker, SentenceAwareChunker},
+    memory::{MemoryTrust, TrustEvidence, store::MemoryInput},
     model_provider::text_generation::{
         TextGenerationModelProvider, TextGenerationRequest, ThinkingMode,
     },
 };
 
 use super::MemoryExtractionStrategy;
+use super::chunker::{Chunker, SentenceAwareChunker};
 
 /// The strategy for chunking input text before extracting entries.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub enum ChunkingStrategy {
     /// The entire input is sent as a single prompt without chunking.
+    #[default]
     WholeInput,
     /// Sentence-aware chunking is performed; the input is split into chunks
     /// based on sentence boundaries to avoid splitting entries.
@@ -31,12 +31,6 @@ pub enum ChunkingStrategy {
         chunk_size: NonZeroUsize,
         overlap_size: usize,
     },
-}
-
-impl Default for ChunkingStrategy {
-    fn default() -> Self {
-        Self::WholeInput
-    }
 }
 
 /// Parameters shared by all LLM-based memory extraction strategies.
@@ -296,13 +290,15 @@ fn parse_extraction_response(
 
     Ok(entries
         .into_iter()
-        .map(|(content, confidence)| MemoryInput {
-            content,
-            metadata: params.metadata.clone(),
-            trust: Some(MemoryTrust::Extracted {
-                confidence,
-                evidence: TrustEvidence::default(),
-            }),
+        .map(|(content, confidence)| {
+            MemoryInput::new(
+                content,
+                MemoryTrust::Extracted {
+                    confidence,
+                    evidence: TrustEvidence::default(),
+                },
+                params.metadata.clone(),
+            )
         })
         .collect())
 }
@@ -353,7 +349,7 @@ async fn call_model<P: TextGenerationModelProvider>(
     let mut full_text = String::new();
     while let Some(chunk) = stream.next().await {
         let resp = chunk.map_err(MemoryExtractionError::ModelProvider)?;
-        full_text.push_str(&resp.text);
+        full_text.push_str(resp.text());
     }
     Ok(full_text)
 }
@@ -366,8 +362,8 @@ mod tests {
 
     use pretty_assertions::assert_eq;
 
+    use super::MemoryExtractionStrategy;
     use crate::memory::MemoryTrust;
-    use crate::memory_extraction::MemoryExtractionStrategy;
     use crate::model_provider::text_generation::TextGenerationResponse;
     use crate::testing::{MockTextGenerationModelProvider, ProviderBehavior};
 
@@ -388,7 +384,7 @@ mod tests {
     }
 
     fn done_chunk(text: &str) -> TextGenerationResponse {
-        TextGenerationResponse::done(text.to_string(), "mock".to_string(), None)
+        TextGenerationResponse::new_done(text.to_string(), "mock".to_string(), None)
     }
 
     #[test]
@@ -396,8 +392,8 @@ mod tests {
         let response = r#"[{"content": "fact one", "confidence": 0.9}, {"content": "fact two", "confidence": 0.8}, {"content": "fact three", "confidence": 0.7}]"#;
         let result = parse_extraction_response(response, &default_params()).unwrap();
         assert_eq!(result.len(), 3);
-        assert_eq!(result[0].content, "fact one");
-        assert_eq!(result[2].content, "fact three");
+        assert_eq!(result[0].content(), "fact one");
+        assert_eq!(result[2].content(), "fact three");
     }
 
     #[test]
@@ -405,7 +401,7 @@ mod tests {
         let response = r#"Here are the extracted memories: [{"content": "fact one", "confidence": 0.9}, {"content": "fact two", "confidence": 0.8}] Hope that helps!"#;
         let result = parse_extraction_response(response, &default_params()).unwrap();
         assert_eq!(result.len(), 2);
-        assert_eq!(result[0].content, "fact one");
+        assert_eq!(result[0].content(), "fact one");
     }
 
     #[test]
@@ -419,10 +415,7 @@ mod tests {
     fn test_parse_uses_extracted_memory_kind() {
         let response = r#"[{"content": "a fact", "confidence": 0.9}]"#;
         let result = parse_extraction_response(response, &default_params()).unwrap();
-        assert!(matches!(
-            result[0].trust,
-            Some(MemoryTrust::Extracted { .. })
-        ));
+        assert!(matches!(result[0].trust(), MemoryTrust::Extracted { .. }));
     }
 
     #[test]
@@ -430,8 +423,8 @@ mod tests {
         let response = r#"[{"content": "a fact", "confidence": 0.85}]"#;
         let result = parse_extraction_response(response, &default_params()).unwrap();
         assert!(matches!(
-            result[0].trust,
-            Some(MemoryTrust::Extracted { confidence, .. }) if (confidence - 0.85).abs() < f64::EPSILON
+            *result[0].trust(),
+            MemoryTrust::Extracted { confidence, .. } if (confidence - 0.85).abs() < f64::EPSILON
         ));
     }
 
@@ -440,8 +433,8 @@ mod tests {
         let response = r#"[{"content": "a fact"}]"#;
         let result = parse_extraction_response(response, &default_params()).unwrap();
         assert!(matches!(
-            result[0].trust,
-            Some(MemoryTrust::Extracted { confidence, .. }) if (confidence - 0.5).abs() < f64::EPSILON
+            *result[0].trust(),
+            MemoryTrust::Extracted { confidence, .. } if (confidence - 0.5).abs() < f64::EPSILON
         ));
     }
 
@@ -449,12 +442,12 @@ mod tests {
     fn test_parse_clamps_confidence_at_boundary() {
         let response = r#"[{"content": "fact at one", "confidence": 1.0}, {"content": "fact at zero", "confidence": 0.0}]"#;
         let result = parse_extraction_response(response, &default_params()).unwrap();
-        let conf0 = match result[0].trust {
-            Some(MemoryTrust::Extracted { confidence, .. }) => confidence,
+        let conf0 = match *result[0].trust() {
+            MemoryTrust::Extracted { confidence, .. } => confidence,
             _ => panic!("expected Extracted"),
         };
-        let conf1 = match result[1].trust {
-            Some(MemoryTrust::Extracted { confidence, .. }) => confidence,
+        let conf1 = match *result[1].trust() {
+            MemoryTrust::Extracted { confidence, .. } => confidence,
             _ => panic!("expected Extracted"),
         };
         assert!(conf0 < 1.0);
@@ -472,11 +465,11 @@ mod tests {
         let response = r#"[{"content": "fact one", "confidence": 0.9}, {"content": "fact two", "confidence": 0.8}]"#;
         let result = parse_extraction_response(response, &params).unwrap();
         assert_eq!(
-            result[0].metadata.get("source").map(|s| s.as_str()),
+            result[0].metadata().get("source").map(|s| s.as_str()),
             Some("test")
         );
         assert_eq!(
-            result[1].metadata.get("source").map(|s| s.as_str()),
+            result[1].metadata().get("source").map(|s| s.as_str()),
             Some("test")
         );
     }
@@ -501,8 +494,8 @@ mod tests {
         let response = r#"[{"content": "high", "confidence": 0.9}, {"content": "low", "confidence": 0.5}, {"content": "borderline", "confidence": 0.75}]"#;
         let result = parse_extraction_response(response, &params).unwrap();
         assert_eq!(result.len(), 2);
-        assert_eq!(result[0].content, "high");
-        assert_eq!(result[1].content, "borderline");
+        assert_eq!(result[0].content(), "high");
+        assert_eq!(result[1].content(), "borderline");
     }
 
     #[test]
@@ -515,7 +508,7 @@ mod tests {
         let response = r#"[{"content": "good", "confidence": 0.9}, {"content": "also good", "confidence": 0.8}, {"content": "bad", "confidence": 0.3}]"#;
         let result = parse_extraction_response(response, &params).unwrap();
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].content, "good");
+        assert_eq!(result[0].content(), "good");
     }
 
     #[test]
@@ -529,7 +522,7 @@ mod tests {
         let response = r#"[{"confidence": 0.9}, {"content": "valid", "confidence": 0.8}]"#;
         let result = parse_extraction_response(response, &default_params()).unwrap();
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].content, "valid");
+        assert_eq!(result[0].content(), "valid");
     }
 
     #[test]
@@ -540,7 +533,7 @@ mod tests {
 Note: [confidence values] are rough estimates."#;
         let result = parse_extraction_response(response, &default_params()).unwrap();
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].content, "fact");
+        assert_eq!(result[0].content(), "fact");
     }
 
     #[tokio::test]
@@ -559,7 +552,7 @@ Note: [confidence values] are rough estimates."#;
         let result = strategy.extract("input", &default_params()).await.unwrap();
 
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].content, "recovered fact");
+        assert_eq!(result[0].content(), "recovered fact");
         assert_eq!(provider.snapshot().request_count, 2);
     }
 
@@ -629,7 +622,7 @@ Note: [confidence values] are rough estimates."#;
             "expected at least 2 model calls, got {}",
             provider.snapshot().request_count
         );
-        let contents: Vec<&str> = result.iter().map(|e| e.content.as_str()).collect();
+        let contents: Vec<&str> = result.iter().map(|e| e.content()).collect();
         assert!(contents.contains(&"from chunk one"));
         assert!(contents.contains(&"from chunk two"));
     }
@@ -656,7 +649,7 @@ Note: [confidence values] are rough estimates."#;
         let response = r#"{"entries": [{"content": "fact", "confidence": 0.9}]}"#;
         let result = parse_extraction_response(response, &default_params()).unwrap();
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].content, "fact");
+        assert_eq!(result[0].content(), "fact");
     }
 
     #[test]
@@ -665,7 +658,7 @@ Note: [confidence values] are rough estimates."#;
         let response = r#"{"whatever_key": [{"content": "x", "confidence": 0.8}]}"#;
         let result = parse_extraction_response(response, &default_params()).unwrap();
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].content, "x");
+        assert_eq!(result[0].content(), "x");
     }
 
     #[test]
@@ -731,7 +724,7 @@ Note: [confidence values] are rough estimates."#;
         assert_eq!(snapshot.request_count, 2);
         let last = snapshot.last_request.expect("last request captured");
         assert!(
-            last.response_format.is_none(),
+            last.response_format().is_none(),
             "retry call must drop response_format to let the model produce text"
         );
     }
@@ -749,7 +742,7 @@ Note: [confidence values] are rough estimates."#;
 
         let req = provider.snapshot().last_request.expect("request captured");
         assert!(
-            req.response_format.is_none(),
+            req.response_format().is_none(),
             "extraction must not set response_format — JSON mode breaks small models"
         );
     }

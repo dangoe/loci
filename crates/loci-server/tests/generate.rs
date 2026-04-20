@@ -15,8 +15,10 @@ use loci_core::testing::AddEntriesBehavior;
 use pretty_assertions::assert_eq;
 use uuid::Uuid;
 
-use loci_core::memory::{MemoryQueryMode, MemoryTrust, TrustEvidence};
-use loci_core::model_provider::text_generation::{TextGenerationResponse, TokenUsage};
+use loci_core::memory::store::MemoryQueryMode;
+use loci_core::memory::{MemoryTrust, TrustEvidence};
+use loci_core::model_provider::common::TokenUsage;
+use loci_core::model_provider::text_generation::TextGenerationResponse;
 use loci_server::loci::generate::v1::{GenerateServiceGenerateRequest, MemoryMode, SystemMode};
 
 use common::{
@@ -38,25 +40,21 @@ async fn test_generate_streams_chunks_and_uses_configured_defaults() {
     let store = Arc::new(
         MockStore::new()
             .with_add_entries_behavior(AddEntriesBehavior::Ok(vec![memory.clone()]))
-            .with_get_behavior(EntryBehavior::Ok(memory.clone()))
+            .with_get_behavior(EntryBehavior::Ok(Some(memory.clone())))
             .with_query_behavior(QueryBehavior::Ok(vec![memory])),
     );
     let provider = Arc::new(MockTextGenerationModelProvider::new(
         ProviderBehavior::Stream(vec![
-            TextGenerationResponse {
-                text: "Hello".to_string(),
-                model: "resolved-model".to_string(),
-                usage: None,
-                done: false,
-            },
-            TextGenerationResponse::done(
+            TextGenerationResponse::new(
+                "Hello".to_string(),
+                "resolved-model".to_string(),
+                None,
+                false,
+            ),
+            TextGenerationResponse::new_done(
                 " world".to_string(),
                 "resolved-model".to_string(),
-                Some(TokenUsage {
-                    prompt_tokens: Some(3),
-                    completion_tokens: Some(2),
-                    total_tokens: Some(5),
-                }),
+                Some(TokenUsage::new(Some(3), Some(2), Some(5))),
             ),
         ]),
     ));
@@ -106,20 +104,20 @@ async fn test_generate_streams_chunks_and_uses_configured_defaults() {
         .snapshot()
         .query
         .expect("generate should query memory");
-    assert_eq!(query.topic, "How should I answer");
-    assert_eq!(query.max_results, 4);
-    assert_eq!(query.min_score.value(), 0.33);
-    assert_eq!(query.filters.get("topic"), Some(&"style".to_string()));
-    assert_eq!(query.mode, MemoryQueryMode::Use);
+    assert_eq!(query.topic(), "How should I answer");
+    assert_eq!(query.max_results().get(), 4);
+    assert_eq!(query.min_score().value(), 0.33);
+    assert_eq!(query.filters().get("topic"), Some(&"style".to_string()));
+    assert_eq!(query.mode(), MemoryQueryMode::Use);
 
     let request = provider
         .snapshot()
         .last_request
         .expect("provider should capture request");
-    assert_eq!(request.model, "test-text-model");
-    assert_eq!(request.prompt, "How should I answer");
+    assert_eq!(request.model(), "test-text-model");
+    assert_eq!(request.prompt(), "How should I answer");
     let system = request
-        .system
+        .system()
         .expect("contextualizer should attach a system prompt");
     assert!(system.contains("Relevant memory entries"));
     assert!(system.contains("Use concise explanations"));
@@ -131,11 +129,11 @@ async fn test_generate_respects_memory_and_system_modes() {
     let store = Arc::new(
         MockStore::new()
             .with_add_entries_behavior(AddEntriesBehavior::Ok(vec![memory.clone()]))
-            .with_get_behavior(EntryBehavior::Ok(memory.clone()))
+            .with_get_behavior(EntryBehavior::Ok(Some(memory.clone())))
             .with_query_behavior(QueryBehavior::Ok(vec![memory])),
     );
     let provider = Arc::new(MockTextGenerationModelProvider::new(
-        ProviderBehavior::Stream(vec![TextGenerationResponse::done(
+        ProviderBehavior::Stream(vec![TextGenerationResponse::new_done(
             "ok".to_string(),
             "resolved-model".to_string(),
             None,
@@ -170,7 +168,7 @@ async fn test_generate_respects_memory_and_system_modes() {
         .last_request
         .expect("provider should capture request");
     let system = request
-        .system
+        .system()
         .expect("request should include system prompt");
     assert!(system.contains("Answer with context:"));
     assert!(system.contains("None. Answer from general knowledge."));
@@ -190,11 +188,11 @@ async fn test_generate_rejects_invalid_min_score_before_calling_dependencies() {
     let store = Arc::new(
         MockStore::new()
             .with_add_entries_behavior(AddEntriesBehavior::Ok(vec![result.clone()]))
-            .with_get_behavior(EntryBehavior::Ok(result.clone()))
+            .with_get_behavior(EntryBehavior::Ok(Some(result.clone())))
             .with_query_behavior(QueryBehavior::Ok(vec![result])),
     );
     let provider = Arc::new(MockTextGenerationModelProvider::new(
-        ProviderBehavior::Stream(vec![TextGenerationResponse::done(
+        ProviderBehavior::Stream(vec![TextGenerationResponse::new_done(
             "unused".to_string(),
             "resolved-model".to_string(),
             None,
@@ -240,11 +238,11 @@ async fn test_generate_returns_internal_error_when_default_model_is_missing() {
     let store = Arc::new(
         MockStore::new()
             .with_add_entries_behavior(AddEntriesBehavior::Ok(vec![result.clone()]))
-            .with_get_behavior(EntryBehavior::Ok(result.clone()))
+            .with_get_behavior(EntryBehavior::Ok(Some(result.clone())))
             .with_query_behavior(QueryBehavior::Ok(vec![result])),
     );
     let provider = Arc::new(MockTextGenerationModelProvider::new(
-        ProviderBehavior::Stream(vec![TextGenerationResponse::done(
+        ProviderBehavior::Stream(vec![TextGenerationResponse::new_done(
             "unused".to_string(),
             "resolved-model".to_string(),
             None,

@@ -2,16 +2,17 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // This file is part of loci-model-provider-openai.
 
-use std::time::Duration;
+use std::{num::NonZeroUsize, time::Duration};
 
 use futures::StreamExt as _;
 use loci_core::model_provider::{
+    TokenUsage,
     common::ModelProviderResult,
     embedding::{EmbeddingModelProvider, EmbeddingRequest, EmbeddingResponse},
     error::ModelProviderError,
     text_generation::{
         ResponseFormat, TextGenerationModelProvider, TextGenerationRequest, TextGenerationResponse,
-        ThinkingEffortLevel, ThinkingMode, TokenUsage,
+        ThinkingEffortLevel, ThinkingMode,
     },
 };
 use log::debug;
@@ -22,24 +23,52 @@ use serde_json::Value;
 /// Configuration for the OpenAI-compatible model provider.
 #[derive(Debug, Clone)]
 pub struct OpenAIConfig {
-    /// Base URL of the OpenAI-compatible API (without trailing slash).
-    /// Defaults to `https://api.openai.com/v1`.
-    pub base_url: String,
+    base_url: String,
+    api_key: Option<String>,
+    timeout: Option<Duration>,
+}
 
-    /// Optional API key sent as `Authorization: Bearer <key>`.
-    pub api_key: Option<String>,
+impl OpenAIConfig {
+    /// Creates a new `OpenAIConfig` with the given base URL.
+    pub fn new(base_url: impl Into<String>) -> Self {
+        Self {
+            base_url: base_url.into(),
+            api_key: None,
+            timeout: None,
+        }
+    }
 
-    /// Optional request timeout.
-    pub timeout: Option<Duration>,
+    /// Sets the API key sent as `Authorization: Bearer <key>`.
+    pub fn with_api_key(mut self, key: impl Into<String>) -> Self {
+        self.api_key = Some(key.into());
+        self
+    }
+
+    /// Sets the request timeout.
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
+        self
+    }
+
+    /// Returns the base URL of the OpenAI-compatible API (without trailing slash).
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    /// Returns the API key, if configured.
+    pub fn api_key(&self) -> Option<&str> {
+        self.api_key.as_deref()
+    }
+
+    /// Returns the request timeout, if configured.
+    pub fn timeout(&self) -> Option<Duration> {
+        self.timeout
+    }
 }
 
 impl Default for OpenAIConfig {
     fn default() -> Self {
-        Self {
-            base_url: "https://api.openai.com/v1".to_string(),
-            api_key: None,
-            timeout: None,
-        }
+        Self::new("https://api.openai.com/v1")
     }
 }
 
@@ -58,7 +87,7 @@ struct ChatCompletionRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     frequency_penalty: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    stop: Option<&'a Vec<String>>,
+    stop: Option<&'a [String]>,
     /// Maps `ThinkingMode::Effort` and `ThinkingMode::Disabled` for o-series models.
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_effort: Option<&'static str>,
@@ -137,9 +166,9 @@ struct CompletionUsage {
 #[derive(Debug, Serialize)]
 struct OpenAIEmbeddingRequest<'a> {
     model: &'a str,
-    input: &'a Vec<String>,
+    input: &'a [String],
     #[serde(skip_serializing_if = "Option::is_none")]
-    dimensions: Option<usize>,
+    dimensions: Option<NonZeroUsize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -167,12 +196,12 @@ impl OpenAIModelProvider {
     /// Creates a new `OpenAIModelProvider` instance.
     pub fn new(config: OpenAIConfig) -> Result<Self, ModelProviderError> {
         let mut builder = Client::builder();
-        if let Some(timeout) = config.timeout {
+        if let Some(timeout) = config.timeout() {
             builder = builder.timeout(timeout);
         }
-        let client = builder.build().map_err(|e| ModelProviderError::Other {
-            message: format!("Failed to build HTTP client: {e}"),
-        })?;
+        let client = builder
+            .build()
+            .map_err(|e| ModelProviderError::Other(format!("Failed to build HTTP client: {e}")))?;
         Ok(Self { config, client })
     }
 
@@ -181,7 +210,7 @@ impl OpenAIModelProvider {
         stream: bool,
     ) -> ChatCompletionRequest<'a> {
         let mut messages = Vec::new();
-        if let Some(system) = req.system.as_deref() {
+        if let Some(system) = req.system() {
             messages.push(ChatMessage {
                 role: "system",
                 content: system,
@@ -189,22 +218,23 @@ impl OpenAIModelProvider {
         }
         messages.push(ChatMessage {
             role: "user",
-            content: &req.prompt,
+            content: req.prompt(),
         });
 
         // Extra params pass-through (typed fields override them below)
         let mut extra: serde_json::Map<String, Value> = req
-            .extra_params
+            .extra_params()
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
 
         // ThinkingMode mapping
-        let reasoning_effort: Option<&'static str> = match &req.thinking {
+        let reasoning_effort: Option<&'static str> = match req.thinking() {
             Some(ThinkingMode::Effort { level }) => Some(match level {
                 ThinkingEffortLevel::Low => "low",
                 ThinkingEffortLevel::Medium => "medium",
                 ThinkingEffortLevel::High => "high",
+                _ => "medium",
             }),
             Some(ThinkingMode::Disabled) => Some("none"),
             // Budgeted: honour budget via max_completion_tokens extra param
@@ -218,22 +248,24 @@ impl OpenAIModelProvider {
             _ => None,
         };
 
-        let response_format =
-            req.response_format
-                .as_ref()
-                .map(|ResponseFormat::Json| OpenAiResponseFormat {
-                    kind: "json_object",
-                });
+        let response_format = req.response_format().map(|fmt| match fmt {
+            ResponseFormat::Json => OpenAiResponseFormat {
+                kind: "json_object",
+            },
+            _ => OpenAiResponseFormat {
+                kind: "json_object",
+            },
+        });
 
         ChatCompletionRequest {
-            model: &req.model,
+            model: req.model(),
             messages,
             stream,
-            temperature: req.temperature,
-            max_tokens: req.max_tokens,
-            top_p: req.top_p,
-            frequency_penalty: req.repeat_penalty,
-            stop: req.stop.as_ref(),
+            temperature: req.temperature(),
+            max_tokens: req.max_tokens(),
+            top_p: req.top_p(),
+            frequency_penalty: req.repeat_penalty(),
+            stop: req.stop(),
             reasoning_effort,
             stream_options: if stream {
                 Some(StreamOptions {
@@ -248,7 +280,7 @@ impl OpenAIModelProvider {
     }
 
     fn add_auth(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        match &self.config.api_key {
+        match self.config.api_key() {
             Some(key) => builder.bearer_auth(key),
             None => builder,
         }
@@ -264,20 +296,18 @@ impl TextGenerationModelProvider for OpenAIModelProvider {
 
         debug!(
             "Sending non-streaming request to OpenAI: model={}",
-            req.model
+            req.model()
         );
 
         let http_response = self
             .add_auth(
                 self.client
-                    .post(format!("{}/chat/completions", self.config.base_url))
+                    .post(format!("{}/chat/completions", self.config.base_url()))
                     .json(&body),
             )
             .send()
             .await
-            .map_err(|e| ModelProviderError::Transport {
-                message: e.to_string(),
-            })?;
+            .map_err(|e| ModelProviderError::Transport(e.to_string()))?;
 
         if !http_response.status().is_success() {
             let status = http_response.status().as_u16();
@@ -288,13 +318,10 @@ impl TextGenerationModelProvider for OpenAIModelProvider {
             });
         }
 
-        let parsed: ChatCompletionResponse =
-            http_response
-                .json()
-                .await
-                .map_err(|e| ModelProviderError::Parse {
-                    message: e.to_string(),
-                })?;
+        let parsed: ChatCompletionResponse = http_response
+            .json()
+            .await
+            .map_err(|e| ModelProviderError::Parse(e.to_string()))?;
 
         let text = parsed
             .choices
@@ -303,18 +330,15 @@ impl TextGenerationModelProvider for OpenAIModelProvider {
             .and_then(|c| c.message.content)
             .unwrap_or_default();
 
-        let usage = parsed.usage.map(|u| TokenUsage {
-            prompt_tokens: Some(u.prompt_tokens),
-            completion_tokens: Some(u.completion_tokens),
-            total_tokens: Some(u.total_tokens),
+        let usage = parsed.usage.map(|u| {
+            TokenUsage::new(
+                Some(u.prompt_tokens),
+                Some(u.completion_tokens),
+                Some(u.total_tokens),
+            )
         });
 
-        Ok(TextGenerationResponse {
-            text,
-            model: parsed.model,
-            usage,
-            done: true,
-        })
+        Ok(TextGenerationResponse::new_done(text, parsed.model, usage))
     }
 
     fn generate_stream(
@@ -324,17 +348,17 @@ impl TextGenerationModelProvider for OpenAIModelProvider {
         async_stream::try_stream! {
             let body = Self::build_chat_request(&req, true);
 
-            debug!("Sending streaming request to OpenAI: model={}", req.model);
+            debug!("Sending streaming request to OpenAI: model={}", req.model());
 
             let http_response = self
                 .add_auth(
                     self.client
-                        .post(format!("{}/chat/completions", self.config.base_url))
+                        .post(format!("{}/chat/completions", self.config.base_url()))
                         .json(&body),
                 )
                 .send()
                 .await
-                .map_err(|e| ModelProviderError::Transport { message: e.to_string() })?;
+                .map_err(|e| ModelProviderError::Transport(e.to_string()))?;
 
             if !http_response.status().is_success() {
                 let status = http_response.status().as_u16();
@@ -346,12 +370,12 @@ impl TextGenerationModelProvider for OpenAIModelProvider {
             let mut byte_stream = http_response.bytes_stream();
             let mut buffer = String::new();
             // Use the request model as a fallback until the first chunk arrives.
-            let mut model_name = req.model.clone();
+            let mut model_name = req.model().to_owned();
 
             while let Some(chunk) = byte_stream.next().await {
-                let bytes = chunk.map_err(|e| ModelProviderError::Transport { message: e.to_string() })?;
+                let bytes = chunk.map_err(|e| ModelProviderError::Transport(e.to_string()))?;
                 let text = String::from_utf8(bytes.to_vec())
-                    .map_err(|e| ModelProviderError::Parse { message: e.to_string() })?;
+                    .map_err(|e| ModelProviderError::Parse(e.to_string()))?;
                 buffer.push_str(&text);
 
                 // SSE events are separated by blank lines (\n\n).
@@ -370,7 +394,7 @@ impl TextGenerationModelProvider for OpenAIModelProvider {
                         }
 
                         let chunk: ChatCompletionChunk = serde_json::from_str(data)
-                            .map_err(|e| ModelProviderError::Parse { message: e.to_string() })?;
+                            .map_err(|e| ModelProviderError::Parse(e.to_string()))?;
 
                         if !chunk.model.is_empty() {
                             model_name = chunk.model.clone();
@@ -385,21 +409,18 @@ impl TextGenerationModelProvider for OpenAIModelProvider {
                         let content = choice.delta.content.unwrap_or_default();
 
                         let usage = if is_done {
-                            chunk.usage.map(|u| TokenUsage {
-                                prompt_tokens: Some(u.prompt_tokens),
-                                completion_tokens: Some(u.completion_tokens),
-                                total_tokens: Some(u.total_tokens),
+                            chunk.usage.map(|u| {
+                                TokenUsage::new(
+                                    Some(u.prompt_tokens),
+                                    Some(u.completion_tokens),
+                                    Some(u.total_tokens),
+                                )
                             })
                         } else {
                             None
                         };
 
-                        yield TextGenerationResponse {
-                            text: content,
-                            model: model_name.clone(),
-                            usage,
-                            done: is_done,
-                        };
+                        yield TextGenerationResponse::new(content, model_name.clone(), usage, is_done);
                     }
                 }
             }
@@ -410,22 +431,20 @@ impl TextGenerationModelProvider for OpenAIModelProvider {
 impl EmbeddingModelProvider for OpenAIModelProvider {
     async fn embed(&self, req: EmbeddingRequest) -> ModelProviderResult<EmbeddingResponse> {
         let body = OpenAIEmbeddingRequest {
-            model: &req.model,
-            input: &req.input,
-            dimensions: req.embedding_dimension,
+            model: req.model(),
+            input: req.input(),
+            dimensions: req.embedding_dimension(),
         };
 
         let http_response = self
             .add_auth(
                 self.client
-                    .post(format!("{}/embeddings", self.config.base_url))
+                    .post(format!("{}/embeddings", self.config.base_url()))
                     .json(&body),
             )
             .send()
             .await
-            .map_err(|e| ModelProviderError::Transport {
-                message: format!("Failed to send request: {e}"),
-            })?;
+            .map_err(|e| ModelProviderError::Transport(format!("Failed to send request: {e}")))?;
 
         if !http_response.status().is_success() {
             let status = http_response.status().as_u16();
@@ -436,22 +455,15 @@ impl EmbeddingModelProvider for OpenAIModelProvider {
             });
         }
 
-        let mut parsed: OpenAIEmbeddingResponse =
-            http_response
-                .json()
-                .await
-                .map_err(|e| ModelProviderError::Parse {
-                    message: format!("Failed to parse response: {e}"),
-                })?;
+        let mut parsed: OpenAIEmbeddingResponse = http_response
+            .json()
+            .await
+            .map_err(|e| ModelProviderError::Parse(format!("Failed to parse response: {e}")))?;
 
         // Ensure vectors are in the same order as the inputs.
         parsed.data.sort_by_key(|d| d.index);
         let embeddings = parsed.data.into_iter().map(|d| d.embedding).collect();
 
-        Ok(EmbeddingResponse {
-            embeddings,
-            model: parsed.model,
-            usage: None,
-        })
+        Ok(EmbeddingResponse::new(embeddings, parsed.model, None))
     }
 }

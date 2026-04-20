@@ -12,8 +12,8 @@ use loci_core::contextualization::{
 };
 use loci_core::error::ContextualizerError;
 use loci_core::memory::Score;
+use loci_core::memory::store::MemoryStore;
 use loci_core::model_provider::text_generation::TextGenerationModelProvider;
-use loci_core::store::MemoryStore;
 
 use crate::state::AppState;
 
@@ -104,18 +104,17 @@ where
             .get(model_key)
             .ok_or_else(|| OpenAIServiceError::MissingModel(model_key.clone()))?;
 
-        Ok(ContextualizerConfig {
-            text_generation_model: model.model.clone(),
-            system: input.system.as_deref().map(|s| ContextualizerSystemConfig {
-                mode: ContextualizerSystemMode::Append,
-                system: s.to_owned(),
+        Ok(ContextualizerConfig::new(
+            model.model.clone(),
+            input.system.as_deref().map(|s| {
+                ContextualizerSystemConfig::new(ContextualizerSystemMode::Append, s.to_owned())
             }),
-            memory_mode: ContextualizationMemoryMode::Auto,
-            max_memory_entries: 5,
-            min_score: Score::ZERO,
-            filters: HashMap::new(),
-            tuning: input.tuning.clone(),
-        })
+            ContextualizationMemoryMode::Auto,
+            std::num::NonZeroUsize::new(5).unwrap(),
+            Score::ZERO,
+            HashMap::new(),
+            input.tuning.clone(),
+        ))
     }
 }
 
@@ -142,7 +141,11 @@ mod tests {
             &self,
             req: TextGenerationRequest,
         ) -> ModelProviderResult<TextGenerationResponse> {
-            Ok(TextGenerationResponse::done("ok".into(), req.model, None))
+            Ok(TextGenerationResponse::new_done(
+                "ok".into(),
+                req.model().to_owned(),
+                None,
+            ))
         }
     }
 
@@ -171,7 +174,7 @@ mod tests {
             tuning: None,
         };
         let config = svc.build_contextualizer_config(&input).unwrap();
-        assert_eq!(config.text_generation_model, "test-text-model");
+        assert_eq!(config.text_generation_model(), "test-text-model");
     }
 
     #[test]
@@ -183,9 +186,9 @@ mod tests {
             tuning: None,
         };
         let config = svc.build_contextualizer_config(&input).unwrap();
-        let system = config.system.unwrap();
-        assert_eq!(system.system, "Be concise.");
-        assert!(matches!(system.mode, ContextualizerSystemMode::Append));
+        let system = config.system().unwrap();
+        assert_eq!(system.system(), "Be concise.");
+        assert!(matches!(system.mode(), ContextualizerSystemMode::Append));
     }
 
     #[test]
@@ -225,7 +228,7 @@ mod tests {
         };
         let config = svc.build_contextualizer_config(&input).unwrap();
         assert!(matches!(
-            config.memory_mode,
+            config.memory_mode(),
             ContextualizationMemoryMode::Auto
         ));
     }
@@ -236,15 +239,21 @@ mod tests {
         let input = ChatCompletionInput {
             prompt: "test".into(),
             system: None,
-            tuning: Some(ContextualizerTuningConfig {
-                temperature: Some(0.5),
-                max_tokens: Some(128),
-                ..Default::default()
-            }),
+            tuning: Some(ContextualizerTuningConfig::new(
+                Some(0.5),
+                Some(128),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Default::default(),
+            )),
         };
         let config = svc.build_contextualizer_config(&input).unwrap();
-        let t = config.tuning.unwrap();
-        assert_eq!(t.temperature, Some(0.5));
-        assert_eq!(t.max_tokens, Some(128));
+        let t = config.tuning().cloned().unwrap();
+        assert_eq!(t.temperature(), Some(0.5));
+        assert_eq!(t.max_tokens(), Some(128));
     }
 }

@@ -5,26 +5,19 @@
 use std::{error::Error, fmt};
 
 /// Errors returned by a model provider (embedding or text generation).
+#[non_exhaustive]
 #[derive(Debug)]
 pub enum ModelProviderError {
     Http {
         message: String,
         status: Option<u16>,
     },
-    Transport {
-        message: String,
-    },
-    Parse {
-        message: String,
-    },
+    Transport(String),
+    Parse(String),
     Timeout,
     RateLimited,
-    InvalidRequest {
-        message: String,
-    },
-    Other {
-        message: String,
-    },
+    InvalidRequest(String),
+    Other(String),
 }
 
 impl fmt::Display for ModelProviderError {
@@ -37,12 +30,12 @@ impl fmt::Display for ModelProviderError {
                     write!(f, "HTTP error: {message}")
                 }
             }
-            Self::Transport { message } => write!(f, "transport error: {message}"),
-            Self::Parse { message } => write!(f, "parse error: {message}"),
+            Self::Transport(msg) => write!(f, "transport error: {msg}"),
+            Self::Parse(msg) => write!(f, "parse error: {msg}"),
             Self::Timeout => write!(f, "request timed out"),
             Self::RateLimited => write!(f, "rate limited by model provider"),
-            Self::InvalidRequest { message } => write!(f, "invalid request: {message}"),
-            Self::Other { message } => write!(f, "{message}"),
+            Self::InvalidRequest(msg) => write!(f, "invalid request: {msg}"),
+            Self::Other(msg) => write!(f, "{msg}"),
         }
     }
 }
@@ -68,19 +61,19 @@ mod tests {
         "HTTP error: unknown"
     )]
     #[case(
-        ModelProviderError::Transport { message: "conn refused".to_string() },
+        ModelProviderError::Transport("conn refused".to_string()),
         "transport error: conn refused"
     )]
     #[case(
-        ModelProviderError::Parse { message: "invalid json".to_string() },
+        ModelProviderError::Parse("invalid json".to_string()),
         "parse error: invalid json"
     )]
     #[case(
-        ModelProviderError::InvalidRequest { message: "bad model".to_string() },
+        ModelProviderError::InvalidRequest("bad model".to_string()),
         "invalid request: bad model"
     )]
     #[case(
-        ModelProviderError::Other { message: "something unexpected".to_string() },
+        ModelProviderError::Other("something unexpected".to_string()),
         "something unexpected"
     )]
     fn test_display_formats_error_message_for_each_variant(

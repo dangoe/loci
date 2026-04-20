@@ -14,16 +14,17 @@ use std::{
 use loci_config::MemoryExtractionConfig;
 use loci_core::{
     memory::{
-        MemoryInput as CoreMemoryInput, MemoryQuery as CoreMemoryQuery,
-        MemoryQueryMode as CoreMemoryQueryMode, MemoryTrust, Score as CoreScore,
+        MemoryTrust, Score as CoreScore,
+        store::{
+            MemoryInput as CoreMemoryInput, MemoryQuery as CoreMemoryQuery,
+            MemoryQueryMode as CoreMemoryQueryMode, MemoryStore as CoreMemoryStore,
+        },
     },
     memory_extraction::{
         LlmMemoryExtractionStrategy, LlmMemoryExtractionStrategyParams, MemoryExtractionStrategy,
-        MemoryExtractor, MemoryExtractorConfig, MemoryExtractorSearchResultsConfig,
-        llm::ChunkingStrategy,
+        MemoryExtractor, MemoryExtractorConfig, MemoryQueryOptions, llm::ChunkingStrategy,
     },
     model_provider::text_generation::TextGenerationModelProvider,
-    store::MemoryStore as CoreMemoryStore,
 };
 use loci_model_provider_ollama::classification::LlmClassificationModelProvider;
 use log::debug;
@@ -94,14 +95,19 @@ where
                     metadata, kind
                 );
                 let input = match kind {
-                    Some(kind) => CoreMemoryInput::new_with_trust(
+                    Some(kind) => {
+                        CoreMemoryInput::new(content, kind.into(), pairs_to_map(metadata))
+                    }
+                    None => CoreMemoryInput::new(
                         content,
+                        MemoryTrust::Extracted {
+                            confidence: 0.5,
+                            evidence: Default::default(),
+                        },
                         pairs_to_map(metadata),
-                        kind.into(),
                     ),
-                    None => CoreMemoryInput::new(content, pairs_to_map(metadata)),
                 };
-                let entry = self.store.add_entry(input).await?;
+                let entry = self.store.add_entry(&input).await?;
                 writeln!(
                     out,
                     "{}",
@@ -118,21 +124,26 @@ where
                     "query memory: topic={topic}, max_results={max_results}, min_score={min_score}, filters={:?}",
                     filters
                 );
-                let query = CoreMemoryQuery {
-                    topic,
-                    max_results,
-                    min_score: CoreScore::new(min_score)
-                        .map_err(|e| format!("invalid min_score: {e}"))?,
-                    filters: pairs_to_map(filters),
-                    mode: CoreMemoryQueryMode::Lookup,
-                };
+                let query = CoreMemoryQuery::new(topic, CoreMemoryQueryMode::Lookup)
+                    .with_max_results(
+                        NonZeroUsize::new(max_results).ok_or("max_results must be > 0")?,
+                    )
+                    .with_min_score(
+                        CoreScore::try_new(min_score)
+                            .map_err(|e| format!("invalid min_score: {e}"))?,
+                    )
+                    .with_filters(pairs_to_map(filters));
                 let entries = self.store.query(query).await?;
                 let json: Vec<_> = entries.iter().map(entry_to_json).collect();
                 writeln!(out, "{}", serde_json::to_string_pretty(&json)?)?;
             }
             MemoryCommand::Get { id } => {
                 debug!("get memory entry: id={id}");
-                let entry = self.store.get_entry(id).await?;
+                let entry = self
+                    .store
+                    .get_entry(&id)
+                    .await?
+                    .ok_or_else(|| format!("memory entry not found: {id}"))?;
                 writeln!(
                     out,
                     "{}",
@@ -141,7 +152,11 @@ where
             }
             MemoryCommand::Promote { id } => {
                 debug!("promote memory entry to Fact: id={id}");
-                let entry = self.store.set_entry_trust(id, MemoryTrust::Fact).await?;
+                let entry = self
+                    .store
+                    .promote(&id)
+                    .await?
+                    .ok_or_else(|| format!("memory entry not found: {id}"))?;
                 writeln!(
                     out,
                     "{}",
@@ -150,7 +165,7 @@ where
             }
             MemoryCommand::Delete { id } => {
                 debug!("delete memory entry: id={id}");
-                self.store.delete_entry(id).await?;
+                self.store.delete_entry(&id).await?;
                 writeln!(
                     out,
                     "{}",
@@ -224,11 +239,21 @@ where
                     let json: Vec<_> = entries
                         .iter()
                         .map(|e| {
+                            let (kind, confidence) = match e.trust() {
+                                MemoryTrust::Fact => ("fact", 1.0_f64),
+                                MemoryTrust::Extracted {
+                                    confidence,
+                                    evidence,
+                                } => (
+                                    "extracted_memory",
+                                    evidence.bayesian_confidence().unwrap_or(*confidence),
+                                ),
+                            };
                             serde_json::json!({
-                                "content": e.content,
-                                "confidence": e.trust.as_ref().map(|t| t.effective_confidence()).unwrap_or(0.5),
-                                "kind": e.trust.as_ref().map(|t| t.as_str()).unwrap_or("extracted_memory"),
-                                "metadata": e.metadata,
+                                "content": e.content(),
+                                "confidence": confidence,
+                                "kind": kind,
+                                "metadata": e.metadata(),
                             })
                         })
                         .collect();
@@ -253,10 +278,10 @@ where
                         out,
                         "{}",
                         serde_json::to_string_pretty(&serde_json::json!({
-                            "inserted": result.inserted.len(),
-                            "merged": result.merged.len(),
-                            "promoted": result.promoted.len(),
-                            "discarded": result.discarded.len(),
+                            "inserted": result.inserted().len(),
+                            "merged": result.merged().len(),
+                            "promoted": result.promoted().len(),
+                            "discarded": result.discarded().len(),
                         }))?
                     )?;
                 }
@@ -269,22 +294,21 @@ where
 fn config_extractor_config_to_core(
     cfg: &loci_config::MemoryExtractorConfig,
 ) -> MemoryExtractorConfig {
-    MemoryExtractorConfig {
-        direct_search: MemoryExtractorSearchResultsConfig {
-            max_results: cfg.direct_search.max_results,
-            min_score: cfg.direct_search.min_score,
-        },
-        inverted_search: MemoryExtractorSearchResultsConfig {
-            max_results: cfg.inverted_search.max_results,
-            min_score: cfg.inverted_search.min_score,
-        },
-        bayesian_seed_weight: cfg.bayesian_seed_weight,
-        max_counter_increment: cfg.max_counter_increment,
-        max_counter: cfg.max_counter,
-        auto_discard_threshold: cfg.auto_discard_threshold,
-        auto_promotion_threshold: cfg.auto_promotion_threshold,
-        min_alpha_for_promotion: cfg.min_alpha_for_promotion,
-    }
+    MemoryExtractorConfig::new(
+        MemoryQueryOptions::try_new(cfg.direct_search.max_results, cfg.direct_search.min_score)
+            .expect("invalid extractor config: direct_search"),
+        MemoryQueryOptions::try_new(
+            cfg.inverted_search.max_results,
+            cfg.inverted_search.min_score,
+        )
+        .expect("invalid extractor config: inverted_search"),
+        cfg.bayesian_seed_weight,
+        cfg.max_counter_increment,
+        cfg.max_counter,
+        cfg.auto_discard_threshold,
+        cfg.auto_promotion_threshold,
+        cfg.min_alpha_for_promotion,
+    )
 }
 
 /// Converts a list of `(key, value)` pairs into a [`HashMap`].
@@ -302,13 +326,11 @@ mod tests {
         MemoryExtractionConfig, MemoryExtractorConfig, MemoryExtractorSearchResultsConfig,
     };
     use loci_core::{
-        memory::{
-            MemoryEntry as CoreMemoryEntry, MemoryQueryResult as CoreMemoryQueryResult,
-            MemoryTrust, Score as CoreScore, TrustEvidence,
-        },
+        memory::{MemoryEntry as CoreMemoryEntry, MemoryTrust, TrustEvidence},
         model_provider::text_generation::TextGenerationResponse,
         testing::{
-            AddEntriesBehavior, MockStore, MockTextGenerationModelProvider, ProviderBehavior,
+            AddEntriesBehavior, EntryBehavior, MockStore, MockTextGenerationModelProvider,
+            ProviderBehavior,
         },
     };
     use serde_json::Value;
@@ -395,25 +417,15 @@ mod tests {
         )
     }
 
-    fn make_result(content: &str, trust: MemoryTrust) -> CoreMemoryQueryResult {
-        CoreMemoryQueryResult {
-            memory_entry: CoreMemoryEntry::new_with_trust(
-                content.to_string(),
-                HashMap::new(),
-                trust,
-            ),
-            score: CoreScore::ZERO,
-        }
+    fn make_result(content: &str, trust: MemoryTrust) -> CoreMemoryEntry {
+        CoreMemoryEntry::new_with_trust(content.to_string(), HashMap::new(), trust)
     }
 
     fn make_result_with_metadata(
         content: &str,
         metadata: HashMap<String, String>,
-    ) -> CoreMemoryQueryResult {
-        CoreMemoryQueryResult {
-            memory_entry: CoreMemoryEntry::new(content.to_string(), metadata),
-            score: CoreScore::new(0.9).unwrap(),
-        }
+    ) -> CoreMemoryEntry {
+        CoreMemoryEntry::new(content.to_string(), metadata)
     }
 
     fn parse_json_output(buf: &[u8]) -> Value {
@@ -429,7 +441,7 @@ mod tests {
                 evidence: TrustEvidence::default(),
             },
         );
-        let id = entry.memory_entry.id;
+        let id = *entry.id();
         let handler = make_handler(MockStore::new().with_add(entry));
         let mut out = Vec::new();
 
@@ -562,8 +574,8 @@ mod tests {
                 evidence: TrustEvidence::default(),
             },
         );
-        let id = entry.memory_entry.id;
-        let handler = make_handler(MockStore::new().with_get(entry));
+        let id = *entry.id();
+        let handler = make_handler(MockStore::new().with_get(Some(entry)));
         let mut out = Vec::new();
 
         handler
@@ -592,8 +604,9 @@ mod tests {
     #[tokio::test]
     async fn test_memory_promote_outputs_json() {
         let entry = make_result("important fact", MemoryTrust::Fact);
-        let id = entry.memory_entry.id;
-        let handler = make_handler(MockStore::new().with_set_kind(entry));
+        let id = *entry.id();
+        let handler =
+            make_handler(MockStore::new().with_promote_behavior(EntryBehavior::Ok(Some(entry))));
         let mut out = Vec::new();
 
         handler
@@ -638,11 +651,11 @@ mod tests {
 
     fn extraction_provider(response_json: &str) -> MockTextGenerationModelProvider {
         MockTextGenerationModelProvider::new(ProviderBehavior::Stream(vec![
-            TextGenerationResponse::done(response_json.to_string(), "mock".to_string(), None),
+            TextGenerationResponse::new_done(response_json.to_string(), "mock".to_string(), None),
         ]))
     }
 
-    fn make_extract_entries(contents: &[&str]) -> Vec<CoreMemoryQueryResult> {
+    fn make_extract_entries(contents: &[&str]) -> Vec<CoreMemoryEntry> {
         contents
             .iter()
             .map(|c| {
@@ -1081,8 +1094,8 @@ mod tests {
             .unwrap();
 
         let captured = store.snapshot().query.unwrap();
-        assert_eq!(captured.filters.get("lang").unwrap(), "rust");
-        assert_eq!(captured.filters.get("env").unwrap(), "prod");
+        assert_eq!(captured.filters().get("lang").unwrap(), "rust");
+        assert_eq!(captured.filters().get("env").unwrap(), "prod");
     }
 
     #[tokio::test]
