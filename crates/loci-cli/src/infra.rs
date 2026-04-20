@@ -23,16 +23,15 @@ pub async fn build_store(
     config: &AppConfig,
 ) -> Result<QdrantMemoryStore<DefaultTextEmbedder<OllamaModelProvider>>, Box<dyn std::error::Error>>
 {
-    let backend_name = &config.memory.config.backend;
-    let store_cfg =
-        config
-            .memory
-            .backends
-            .get(backend_name)
-            .ok_or_else(|| ConfigError::MissingKey {
-                section: "memory.backends".into(),
-                key: backend_name.clone(),
-            })?;
+    let backend_name = config.memory().config().backend();
+    let store_cfg = config
+        .memory()
+        .backends()
+        .get(backend_name)
+        .ok_or_else(|| ConfigError::MissingKey {
+            section: "memory.backends".into(),
+            key: backend_name.to_owned(),
+        })?;
 
     match store_cfg {
         StoreConfig::Qdrant {
@@ -40,25 +39,24 @@ pub async fn build_store(
         } => {
             let embed_provider = resolve_embedding_provider(config)?;
             let embed_provider_instance = build_ollama_provider(embed_provider)?;
-            let embed_profile_name = &config.routing.embedding.default;
-            let embed_profile =
-                config
-                    .models
-                    .embedding
-                    .get(embed_profile_name)
-                    .ok_or_else(|| ConfigError::MissingKey {
-                        section: "models.embedding".into(),
-                        key: embed_profile_name.clone(),
-                    })?;
+            let embed_profile_name = config.routing().embedding().default();
+            let embed_profile = config
+                .models()
+                .embedding()
+                .get(embed_profile_name)
+                .ok_or_else(|| ConfigError::MissingKey {
+                    section: "models.embedding".into(),
+                    key: embed_profile_name.to_owned(),
+                })?;
 
             let embedder = DefaultTextEmbedder::new(
                 Arc::new(embed_provider_instance),
-                &embed_profile.model,
-                embed_profile.dimension,
+                embed_profile.model(),
+                embed_profile.dimension(),
             );
 
             let mut qdrant_config = QdrantConfig::new(collection.clone());
-            if let Some(threshold) = config.memory.config.similarity_threshold {
+            if let Some(threshold) = config.memory().config().similarity_threshold() {
                 qdrant_config = qdrant_config.with_similarity_threshold(threshold);
             }
 
@@ -87,20 +85,19 @@ pub fn build_llm_provider(
 pub fn resolve_embedding_provider(
     config: &AppConfig,
 ) -> Result<&ModelProviderConfig, Box<dyn std::error::Error>> {
-    let profile_name = &config.routing.embedding.default;
-    let profile =
-        config
-            .models
-            .embedding
-            .get(profile_name)
-            .ok_or_else(|| ConfigError::MissingKey {
-                section: "models.embedding".into(),
-                key: profile_name.clone(),
-            })?;
-    config.providers.get(&profile.provider).ok_or_else(|| {
+    let profile_name = config.routing().embedding().default();
+    let profile = config
+        .models()
+        .embedding()
+        .get(profile_name)
+        .ok_or_else(|| ConfigError::MissingKey {
+            section: "models.embedding".into(),
+            key: profile_name.to_owned(),
+        })?;
+    config.providers().get(profile.provider()).ok_or_else(|| {
         Box::new(ConfigError::MissingKey {
             section: "providers".into(),
-            key: profile.provider.clone(),
+            key: profile.provider().to_owned(),
         }) as Box<dyn std::error::Error>
     })
 }
@@ -109,19 +106,19 @@ pub fn resolve_embedding_provider(
 pub fn resolve_llm_provider(
     config: &AppConfig,
 ) -> Result<&ModelProviderConfig, Box<dyn std::error::Error>> {
-    let model_name = &config.routing.text.default;
+    let model_name = config.routing().text().default();
     let model = config
-        .models
-        .text
+        .models()
+        .text()
         .get(model_name)
         .ok_or_else(|| ConfigError::MissingKey {
             section: "models.text".into(),
-            key: model_name.clone(),
+            key: model_name.to_owned(),
         })?;
-    config.providers.get(&model.provider).ok_or_else(|| {
+    config.providers().get(model.provider()).ok_or_else(|| {
         Box::new(ConfigError::MissingKey {
             section: "providers".into(),
-            key: model.provider.clone(),
+            key: model.provider().to_owned(),
         }) as Box<dyn std::error::Error>
     })
 }
@@ -131,13 +128,10 @@ pub fn resolve_llm_provider(
 pub fn build_ollama_provider(
     provider: &ModelProviderConfig,
 ) -> Result<OllamaModelProvider, Box<dyn std::error::Error>> {
-    match provider.kind {
+    match provider.kind() {
         ModelProviderKind::Ollama => {
-            let cfg = OllamaConfig {
-                base_url: provider.endpoint.clone(),
-                timeout: None,
-            };
-            info!("Using Ollama model provider at {}", provider.endpoint);
+            let cfg = OllamaConfig::new(provider.endpoint());
+            info!("Using Ollama model provider at {}", provider.endpoint());
             Ok(OllamaModelProvider::new(cfg)?)
         }
         ModelProviderKind::OpenAI => Err(Box::new(ConfigError::UnsupportedKind {
@@ -162,14 +156,17 @@ mod tests {
     fn test_resolve_embedding_provider_returns_provider_config() {
         let config = minimal_ollama_config();
         let provider = resolve_embedding_provider(&config).unwrap();
-        assert_eq!(provider.endpoint, "http://localhost:11434");
-        assert_eq!(provider.kind, ModelProviderKind::Ollama);
+        assert_eq!(provider.endpoint(), "http://localhost:11434");
+        assert_eq!(*provider.kind(), ModelProviderKind::Ollama);
     }
 
     #[test]
     fn test_resolve_embedding_provider_missing_embedding_key_returns_err() {
         let mut config = minimal_ollama_config();
-        config.routing.embedding.default = "nonexistent".to_string();
+        config
+            .routing_mut()
+            .embedding_mut()
+            .set_default("nonexistent");
 
         let err = resolve_embedding_provider(&config).unwrap_err();
         assert!(
@@ -181,7 +178,12 @@ mod tests {
     #[test]
     fn test_resolve_embedding_provider_missing_provider_key_returns_err() {
         let mut config = minimal_ollama_config();
-        config.models.embedding.get_mut("default").unwrap().provider = "ghost".to_string();
+        config
+            .models_mut()
+            .embedding_entries_mut()
+            .get_mut("default")
+            .unwrap()
+            .set_provider("ghost");
 
         let err = resolve_embedding_provider(&config).unwrap_err();
         assert!(
@@ -194,13 +196,13 @@ mod tests {
     fn test_resolve_llm_provider_returns_provider_config() {
         let config = minimal_ollama_config();
         let provider = resolve_llm_provider(&config).unwrap();
-        assert_eq!(provider.endpoint, "http://localhost:11434");
+        assert_eq!(provider.endpoint(), "http://localhost:11434");
     }
 
     #[test]
     fn test_resolve_llm_provider_missing_model_returns_err() {
         let mut config = minimal_ollama_config();
-        config.routing.text.default = "nonexistent".to_string();
+        config.routing_mut().text_mut().set_default("nonexistent");
 
         let err = resolve_llm_provider(&config).unwrap_err();
         assert!(
@@ -212,7 +214,12 @@ mod tests {
     #[test]
     fn test_resolve_llm_provider_missing_provider_returns_err() {
         let mut config = minimal_ollama_config();
-        config.models.text.get_mut("default").unwrap().provider = "ghost".to_string();
+        config
+            .models_mut()
+            .text_entries_mut()
+            .get_mut("default")
+            .unwrap()
+            .set_provider("ghost");
 
         let err = resolve_llm_provider(&config).unwrap_err();
         assert!(
@@ -223,21 +230,15 @@ mod tests {
 
     #[test]
     fn test_build_ollama_provider_succeeds_for_ollama_kind() {
-        let cfg = ModelProviderConfig {
-            kind: ModelProviderKind::Ollama,
-            endpoint: "http://localhost:11434".to_string(),
-            api_key: None,
-        };
+        let cfg =
+            ModelProviderConfig::new(ModelProviderKind::Ollama, "http://localhost:11434", None);
         assert!(build_ollama_provider(&cfg).is_ok());
     }
 
     #[test]
     fn test_build_ollama_provider_fails_for_openai_kind() {
-        let cfg = ModelProviderConfig {
-            kind: ModelProviderKind::OpenAI,
-            endpoint: "https://api.openai.com/v1".to_string(),
-            api_key: None,
-        };
+        let cfg =
+            ModelProviderConfig::new(ModelProviderKind::OpenAI, "https://api.openai.com/v1", None);
         let err = build_ollama_provider(&cfg).unwrap_err();
         assert!(
             err.to_string().contains("openai"),
@@ -247,11 +248,11 @@ mod tests {
 
     #[test]
     fn test_build_ollama_provider_fails_for_anthropic_kind() {
-        let cfg = ModelProviderConfig {
-            kind: ModelProviderKind::Anthropic,
-            endpoint: "https://api.anthropic.com".to_string(),
-            api_key: None,
-        };
+        let cfg = ModelProviderConfig::new(
+            ModelProviderKind::Anthropic,
+            "https://api.anthropic.com",
+            None,
+        );
         let err = build_ollama_provider(&cfg).unwrap_err();
         assert!(
             err.to_string().contains("anthropic"),

@@ -2,17 +2,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // This file is part of loci-cli.
 
-use std::collections::HashMap;
 use std::error::Error as StdError;
 use std::path::Path;
 use std::sync::Arc;
 
-use loci_config::{
-    AppConfig, EmbeddingModelConfig, EmbeddingRoutingConfig, MemoryConfig, MemoryExtractionConfig,
-    MemoryExtractorConfig, MemoryRoutingConfig, MemorySection, ModelProviderConfig,
-    ModelProviderKind, ModelsConfig, RoutingConfig, StoreConfig, TextModelConfig,
-    TextRoutingConfig,
-};
+use loci_config::AppConfig;
 use loci_core::memory::store::MemoryStore;
 use loci_core::model_provider::text_generation::TextGenerationModelProvider;
 
@@ -56,16 +50,16 @@ impl<S: MemoryStore + 'static, T: TextGenerationModelProvider + 'static> TestCli
         let mut out = Vec::new();
         let text_model = self
             .config
-            .models
-            .text
-            .get(&self.config.routing.text.default)
-            .map(|m| m.model.clone())
+            .models()
+            .text()
+            .get(self.config.routing().text().default())
+            .map(|m| m.model().to_owned())
             .unwrap_or_default();
         let handler = MemoryCommandHandler::new(
             Arc::clone(&self.store),
             Arc::clone(&self.provider),
             text_model,
-            self.config.memory.extraction.clone(),
+            self.config.memory().extraction().clone(),
         );
         handler.handle(cmd, &mut out).await?;
         Ok(String::from_utf8(out)?)
@@ -110,169 +104,89 @@ impl<S: MemoryStore + 'static, T: TextGenerationModelProvider + 'static> TestCli
 
 /// Builds a minimal [`AppConfig`] wired to a single Ollama provider.
 pub fn minimal_ollama_config() -> AppConfig {
-    AppConfig {
-        providers: HashMap::from([(
-            "ollama".to_string(),
-            ModelProviderConfig {
-                kind: ModelProviderKind::Ollama,
-                endpoint: "http://localhost:11434".to_string(),
-                api_key: None,
-            },
-        )]),
-        models: ModelsConfig {
-            text: HashMap::from([(
-                "default".to_string(),
-                TextModelConfig {
-                    provider: "ollama".to_string(),
-                    model: "qwen3:0.6b".to_string(),
-                    tuning: None,
-                },
-            )]),
-            embedding: HashMap::from([(
-                "default".to_string(),
-                EmbeddingModelConfig {
-                    provider: "ollama".to_string(),
-                    model: "qwen3-embedding:0.6b".to_string(),
-                    dimension: 768,
-                },
-            )]),
-        },
-        memory: MemorySection {
-            backends: HashMap::from([(
-                "qdrant".to_string(),
-                StoreConfig::Qdrant {
-                    url: "http://localhost:6333".to_string(),
-                    collection: "memory_entries".to_string(),
-                    api_key: None,
-                },
-            )]),
-            config: MemoryConfig {
-                backend: "qdrant".to_string(),
-                similarity_threshold: None,
-            },
-            extraction: MemoryExtractionConfig {
-                model: "default".to_string(),
-                max_entries: None,
-                min_confidence: None,
-                guidelines: None,
-                thinking: None,
-                chunking: None,
-                extractor: MemoryExtractorConfig {
-                    classification_model: "test-classification-model".to_string(),
-                    direct_search: loci_config::MemoryExtractorSearchResultsConfig {
-                        max_results: 5,
-                        min_score: 0.70,
-                    },
-                    inverted_search: loci_config::MemoryExtractorSearchResultsConfig {
-                        max_results: 3,
-                        min_score: 0.60,
-                    },
-                    bayesian_seed_weight: 10.0,
-                    max_counter_increment: 5.0,
-                    max_counter: 100.0,
-                    auto_discard_threshold: 0.1,
-                    auto_promotion_threshold: 0.9,
-                    min_alpha_for_promotion: 12.0,
-                    decay_rate: 0.99,
-                },
-            },
-        },
-        routing: RoutingConfig {
-            text: TextRoutingConfig {
-                default: "default".to_string(),
-                fallback: vec![],
-            },
-            embedding: EmbeddingRoutingConfig {
-                default: "default".to_string(),
-            },
-            memory: MemoryRoutingConfig {
-                default: "qdrant".to_string(),
-            },
-        },
-    }
+    loci_config::load_config_from_str(
+        r#"
+[providers.ollama]
+kind = "ollama"
+endpoint = "http://localhost:11434"
+
+[models.text.default]
+provider = "ollama"
+model = "qwen3:0.6b"
+
+[models.embedding.default]
+provider = "ollama"
+model = "qwen3-embedding:0.6b"
+dimension = 768
+
+[memory.backends.qdrant]
+kind = "qdrant"
+url = "http://localhost:6333"
+collection = "memory_entries"
+
+[memory.config]
+backend = "qdrant"
+
+[memory.extraction]
+model = "default"
+
+[memory.extraction.extractor]
+classification_model = "test-classification-model"
+
+[routing.text]
+default = "default"
+
+[routing.embedding]
+default = "default"
+
+[routing.memory]
+default = "qdrant"
+"#,
+    )
+    .expect("failed to parse minimal_ollama_config")
 }
 
 /// Builds a minimal [`AppConfig`] with dummy URLs for tests that use mock
 /// stores and providers (no real infrastructure needed).
 pub fn mock_config() -> AppConfig {
-    AppConfig {
-        providers: HashMap::from([(
-            "ollama".to_string(),
-            ModelProviderConfig {
-                kind: ModelProviderKind::Ollama,
-                endpoint: "http://unused-ollama".to_string(),
-                api_key: None,
-            },
-        )]),
-        models: ModelsConfig {
-            text: HashMap::from([(
-                "default".to_string(),
-                TextModelConfig {
-                    provider: "ollama".to_string(),
-                    model: "test-text-model".to_string(),
-                    tuning: None,
-                },
-            )]),
-            embedding: HashMap::from([(
-                "default".to_string(),
-                EmbeddingModelConfig {
-                    provider: "ollama".to_string(),
-                    model: "test-embedding-model".to_string(),
-                    dimension: 384,
-                },
-            )]),
-        },
-        memory: MemorySection {
-            backends: HashMap::from([(
-                "qdrant".to_string(),
-                StoreConfig::Qdrant {
-                    url: "http://unused-qdrant".to_string(),
-                    collection: "memory_entries".to_string(),
-                    api_key: None,
-                },
-            )]),
-            config: MemoryConfig {
-                backend: "qdrant".to_string(),
-                similarity_threshold: None,
-            },
-            extraction: MemoryExtractionConfig {
-                model: "default".to_string(),
-                max_entries: None,
-                min_confidence: None,
-                guidelines: None,
-                thinking: None,
-                chunking: None,
-                extractor: MemoryExtractorConfig {
-                    classification_model: "test-classification-model".to_string(),
-                    direct_search: loci_config::MemoryExtractorSearchResultsConfig {
-                        max_results: 5,
-                        min_score: 0.70,
-                    },
-                    inverted_search: loci_config::MemoryExtractorSearchResultsConfig {
-                        max_results: 3,
-                        min_score: 0.60,
-                    },
-                    bayesian_seed_weight: 10.0,
-                    max_counter_increment: 5.0,
-                    max_counter: 100.0,
-                    auto_discard_threshold: 0.1,
-                    auto_promotion_threshold: 0.9,
-                    min_alpha_for_promotion: 12.0,
-                    decay_rate: 0.99,
-                },
-            },
-        },
-        routing: RoutingConfig {
-            text: TextRoutingConfig {
-                default: "default".to_string(),
-                fallback: vec![],
-            },
-            embedding: EmbeddingRoutingConfig {
-                default: "default".to_string(),
-            },
-            memory: MemoryRoutingConfig {
-                default: "qdrant".to_string(),
-            },
-        },
-    }
+    loci_config::load_config_from_str(
+        r#"
+[providers.ollama]
+kind = "ollama"
+endpoint = "http://unused-ollama"
+
+[models.text.default]
+provider = "ollama"
+model = "test-text-model"
+
+[models.embedding.default]
+provider = "ollama"
+model = "test-embedding-model"
+dimension = 384
+
+[memory.backends.qdrant]
+kind = "qdrant"
+url = "http://unused-qdrant"
+collection = "memory_entries"
+
+[memory.config]
+backend = "qdrant"
+
+[memory.extraction]
+model = "default"
+
+[memory.extraction.extractor]
+classification_model = "test-classification-model"
+
+[routing.text]
+default = "default"
+
+[routing.embedding]
+default = "default"
+
+[routing.memory]
+default = "qdrant"
+"#,
+    )
+    .expect("failed to parse mock_config")
 }

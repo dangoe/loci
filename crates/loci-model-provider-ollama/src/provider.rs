@@ -23,10 +23,36 @@ use std::time::Duration;
 #[derive(Debug, Clone)]
 pub struct OllamaConfig {
     /// Base URL of the Ollama instance.  Defaults to `http://localhost:11434`.
-    pub base_url: String,
+    base_url: String,
 
     /// Optional request timeout.
-    pub timeout: Option<Duration>,
+    timeout: Option<Duration>,
+}
+
+impl OllamaConfig {
+    /// Creates a new `OllamaConfig` with the given base URL and no timeout.
+    pub fn new(base_url: impl Into<String>) -> Self {
+        Self {
+            base_url: base_url.into(),
+            timeout: None,
+        }
+    }
+
+    /// Sets the request timeout, consuming and returning `self` for chaining.
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
+        self
+    }
+
+    /// Returns the base URL of the Ollama instance.
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    /// Returns the optional request timeout.
+    pub fn timeout(&self) -> Option<Duration> {
+        self.timeout
+    }
 }
 
 impl Default for OllamaConfig {
@@ -113,7 +139,7 @@ impl OllamaModelProvider {
     /// Creates a new `OllamaModelProvider` instance.
     pub fn new(config: OllamaConfig) -> Result<Self, ModelProviderError> {
         let mut builder = Client::builder();
-        if let Some(timeout) = config.timeout {
+        if let Some(timeout) = config.timeout() {
             builder = builder.timeout(timeout);
         }
         let client = builder
@@ -218,7 +244,7 @@ impl TextGenerationModelProvider for OllamaModelProvider {
 
         let http_response = self
             .client
-            .post(format!("{}/api/generate", self.config.base_url))
+            .post(format!("{}/api/generate", self.config.base_url()))
             .json(&body)
             .send()
             .await
@@ -274,7 +300,7 @@ impl TextGenerationModelProvider for OllamaModelProvider {
 
             let http_response = self
                 .client
-                .post(format!("{}/api/generate", self.config.base_url))
+                .post(format!("{}/api/generate", self.config.base_url()))
                 .json(&body)
                 .send()
                 .await
@@ -353,7 +379,7 @@ impl EmbeddingModelProvider for OllamaModelProvider {
 
         let http_response = self
             .client
-            .post(format!("{}/api/embed", self.config.base_url))
+            .post(format!("{}/api/embed", self.config.base_url()))
             .json(&body)
             .send()
             .await

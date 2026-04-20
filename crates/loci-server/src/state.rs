@@ -14,7 +14,37 @@ where
     M: MemoryStore,
     E: TextGenerationModelProvider + 'static,
 {
-    pub store: Arc<M>,
-    pub llm_provider: Arc<E>,
-    pub config: Arc<AppConfig>,
+    store: Arc<M>,
+    llm_provider: Arc<E>,
+    config: Arc<AppConfig>,
+}
+
+impl<M, E> AppState<M, E>
+where
+    M: MemoryStore,
+    E: TextGenerationModelProvider + 'static,
+{
+    /// Constructs a new `AppState`.
+    pub(crate) fn new(store: Arc<M>, llm_provider: Arc<E>, config: Arc<AppConfig>) -> Self {
+        Self {
+            store,
+            llm_provider,
+            config,
+        }
+    }
+
+    /// Returns a reference to the memory store.
+    pub(crate) fn store(&self) -> &Arc<M> {
+        &self.store
+    }
+
+    /// Returns a reference to the LLM provider.
+    pub(crate) fn llm_provider(&self) -> &Arc<E> {
+        &self.llm_provider
+    }
+
+    /// Returns a reference to the application configuration.
+    pub(crate) fn config(&self) -> &AppConfig {
+        &self.config
+    }
 }

@@ -69,12 +69,17 @@ impl MemoryTrust {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TrustEvidence {
     /// Bayesian positive counter.
-    pub alpha: Option<f64>,
+    alpha: Option<f64>,
     /// Bayesian negative counter.
-    pub beta: Option<f64>,
+    beta: Option<f64>,
 }
 
 impl TrustEvidence {
+    /// Constructs a `TrustEvidence` with explicit counter values.
+    pub fn with_counters(alpha: Option<f64>, beta: Option<f64>) -> Self {
+        Self { alpha, beta }
+    }
+
     /// Initialises counters from an extractor assigned `confidence` value using the
     /// rule `α = confidence × W`, `β = (1 − confidence) × W`, where `W` is
     /// the configurable `seed_weight`.
@@ -92,6 +97,28 @@ impl TrustEvidence {
             (Some(a), Some(b)) if a + b > 0.0 => Some(a / (a + b)),
             _ => None,
         }
+    }
+
+    /// Returns the current alpha counter value.
+    pub fn alpha(&self) -> Option<f64> {
+        self.alpha
+    }
+
+    /// Returns the current beta counter value.
+    pub fn beta(&self) -> Option<f64> {
+        self.beta
+    }
+
+    /// Increments the alpha counter by `increment`, capping at `max`.
+    pub fn increment_alpha(&mut self, increment: f64, max: f64) {
+        let a = self.alpha.unwrap_or(0.0);
+        self.alpha = Some((a + increment).min(max));
+    }
+
+    /// Increments the beta counter by `increment`, capping at `max`.
+    pub fn increment_beta(&mut self, increment: f64, max: f64) {
+        let b = self.beta.unwrap_or(0.0);
+        self.beta = Some((b + increment).min(max));
     }
 }
 
@@ -346,30 +373,27 @@ mod tests {
     #[test]
     fn test_trust_evidence_default_is_all_none() {
         let b = TrustEvidence::default();
-        assert!(b.alpha.is_none());
-        assert!(b.beta.is_none());
+        assert!(b.alpha().is_none());
+        assert!(b.beta().is_none());
     }
 
     #[test]
     fn test_trust_evidence_from_confidence_sets_counters() {
         let b = TrustEvidence::from_confidence(0.8, 10.0);
-        assert!((b.alpha.unwrap() - 8.0).abs() < 1e-10);
-        assert!((b.beta.unwrap() - 2.0).abs() < 1e-10);
+        assert!((b.alpha().unwrap() - 8.0).abs() < 1e-10);
+        assert!((b.beta().unwrap() - 2.0).abs() < 1e-10);
     }
 
     #[test]
     fn test_trust_evidence_from_confidence_respects_seed_weight() {
         let b = TrustEvidence::from_confidence(0.8, 5.0);
-        assert!((b.alpha.unwrap() - 4.0).abs() < 1e-10);
-        assert!((b.beta.unwrap() - 1.0).abs() < 1e-10);
+        assert!((b.alpha().unwrap() - 4.0).abs() < 1e-10);
+        assert!((b.beta().unwrap() - 1.0).abs() < 1e-10);
     }
 
     #[test]
     fn test_bayesian_confidence_returns_mean() {
-        let b = TrustEvidence {
-            alpha: Some(8.0),
-            beta: Some(2.0),
-        };
+        let b = TrustEvidence::with_counters(Some(8.0), Some(2.0));
         let c = b.bayesian_confidence().unwrap();
         assert!((c - 0.8).abs() < f64::EPSILON);
     }
@@ -381,10 +405,7 @@ mod tests {
 
     #[test]
     fn test_bayesian_confidence_none_when_sum_is_zero() {
-        let b = TrustEvidence {
-            alpha: Some(0.0),
-            beta: Some(0.0),
-        };
+        let b = TrustEvidence::with_counters(Some(0.0), Some(0.0));
         assert!(b.bayesian_confidence().is_none());
     }
 
@@ -471,10 +492,7 @@ mod tests {
     fn test_effective_confidence_extracted_uses_bayesian_when_populated() {
         let trust = MemoryTrust::Extracted {
             confidence: 0.3,
-            evidence: TrustEvidence {
-                alpha: Some(8.0),
-                beta: Some(2.0),
-            },
+            evidence: TrustEvidence::with_counters(Some(8.0), Some(2.0)),
         };
         assert!((trust.effective_score().value() - 0.8).abs() < f64::EPSILON);
     }

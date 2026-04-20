@@ -72,14 +72,14 @@ impl<'a, S: CoreMemoryStore, T: CoreTextGenerationModelProvider + 'static, W: Wr
     async fn handle(&self, command: GenerateCommand, out: &mut W) -> Result<(), Box<dyn StdError>> {
         let GenerateCommand::Execute(command) = command;
         let model = {
-            let model_key = &self.config.routing.text.default;
+            let model_key = self.config.routing().text().default();
             self.config
-                .models
-                .text
+                .models()
+                .text()
                 .get(model_key)
                 .ok_or_else(|| ConfigError::MissingKey {
                     section: "models.text".into(),
-                    key: model_key.clone(),
+                    key: model_key.to_owned(),
                 })?
                 .clone()
         };
@@ -87,7 +87,7 @@ impl<'a, S: CoreMemoryStore, T: CoreTextGenerationModelProvider + 'static, W: Wr
             CoreScore::try_new(command.min_score).map_err(|e| format!("invalid min_score: {e}"))?;
 
         let ctx_config = CoreContextualizerConfig::new(
-            model.model,
+            model.model().to_owned(),
             command.system.map(|system| {
                 CoreContextualizerSystemConfig::new(
                     match command.system_mode {
@@ -101,7 +101,7 @@ impl<'a, S: CoreMemoryStore, T: CoreTextGenerationModelProvider + 'static, W: Wr
             NonZeroUsize::new(command.max_memory_entries).unwrap_or(NonZeroUsize::new(5).unwrap()),
             min_score,
             command.filters.into_iter().collect(),
-            model.tuning.as_ref().map(model_tuning_to_contextualizer),
+            model.tuning().map(model_tuning_to_contextualizer),
         );
 
         let contextualizer = CoreContextualizer::new(
@@ -136,15 +136,15 @@ impl<'a, S: CoreMemoryStore, T: CoreTextGenerationModelProvider + 'static, W: Wr
 
 fn model_tuning_to_contextualizer(tuning: &ModelTuningConfig) -> CoreContextualizerTuningConfig {
     CoreContextualizerTuningConfig::new(
-        tuning.temperature,
-        tuning.max_tokens,
-        tuning.top_p,
-        tuning.repeat_penalty,
-        tuning.repeat_last_n,
-        tuning.thinking.as_ref().map(model_thinking_to_core),
-        tuning.stop.clone(),
-        tuning.keep_alive_secs.map(std::time::Duration::from_secs),
-        tuning.extra.clone(),
+        tuning.temperature(),
+        tuning.max_tokens(),
+        tuning.top_p(),
+        tuning.repeat_penalty(),
+        tuning.repeat_last_n(),
+        tuning.thinking().map(model_thinking_to_core),
+        tuning.stop().map(|s| s.to_vec()),
+        tuning.keep_alive_secs().map(std::time::Duration::from_secs),
+        tuning.extra().clone(),
     )
 }
 
@@ -225,17 +225,17 @@ mod tests {
         use loci_core::model_provider::text_generation::ThinkingMode;
         use std::time::Duration;
 
-        let tuning = ModelTuningConfig {
-            temperature: Some(0.7),
-            max_tokens: Some(512),
-            top_p: Some(0.9),
-            repeat_penalty: Some(1.1),
-            repeat_last_n: Some(64),
-            stop: Some(vec!["<END>".to_string()]),
-            keep_alive_secs: Some(300),
-            thinking: Some(ModelThinkingConfig::Enabled),
-            extra: HashMap::new(),
-        };
+        let tuning = ModelTuningConfig::new(
+            Some(0.7),
+            Some(512),
+            Some(0.9),
+            Some(1.1),
+            Some(64),
+            Some(vec!["<END>".to_string()]),
+            Some(300),
+            Some(ModelThinkingConfig::Enabled),
+            HashMap::new(),
+        );
 
         let ctx = model_tuning_to_contextualizer(&tuning);
 
@@ -458,10 +458,7 @@ mod tests {
         extra.insert("top_k".to_string(), json!(40));
         extra.insert("seed".to_string(), json!(42));
 
-        let tuning = ModelTuningConfig {
-            extra,
-            ..ModelTuningConfig::default()
-        };
+        let tuning = ModelTuningConfig::new(None, None, None, None, None, None, None, None, extra);
 
         let ctx = model_tuning_to_contextualizer(&tuning);
 
@@ -495,7 +492,7 @@ mod tests {
         let store = MockStore::new();
         let provider = MockTextGenerationModelProvider::ok();
         let mut config = testing::minimal_ollama_config();
-        config.routing.text.default = "nonexistent".to_string();
+        config.routing_mut().text_mut().set_default("nonexistent");
         let mut out = Vec::new();
 
         let handler = GenerateCommandHandler::new(Arc::new(store), Arc::new(provider), &config);

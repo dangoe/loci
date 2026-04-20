@@ -17,9 +17,39 @@ use self::text::TextModelConfig;
 pub struct ModelsConfig {
     /// Named text-generation model configs, each under `[models.text.<name>]`.
     #[serde(default)]
-    pub text: HashMap<String, TextModelConfig>,
+    text: HashMap<String, TextModelConfig>,
 
     /// Named embedding model configs, each under `[models.embedding.<name>]`.
     #[serde(default)]
-    pub embedding: HashMap<String, EmbeddingModelConfig>,
+    embedding: HashMap<String, EmbeddingModelConfig>,
+}
+
+impl ModelsConfig {
+    /// Constructs a new `ModelsConfig`.
+    pub fn new(
+        text: HashMap<String, TextModelConfig>,
+        embedding: HashMap<String, EmbeddingModelConfig>,
+    ) -> Self {
+        Self { text, embedding }
+    }
+
+    /// Returns the text model registry.
+    pub fn text(&self) -> &HashMap<String, TextModelConfig> {
+        &self.text
+    }
+
+    /// Returns the embedding model registry.
+    pub fn embedding(&self) -> &HashMap<String, EmbeddingModelConfig> {
+        &self.embedding
+    }
+
+    /// Returns a mutable reference to the text model registry.
+    pub fn text_entries_mut(&mut self) -> &mut HashMap<String, TextModelConfig> {
+        &mut self.text
+    }
+
+    /// Returns a mutable reference to the embedding model registry.
+    pub fn embedding_entries_mut(&mut self) -> &mut HashMap<String, EmbeddingModelConfig> {
+        &mut self.embedding
+    }
 }

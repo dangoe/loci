@@ -4,6 +4,9 @@
 
 use serde::Deserialize;
 
+use crate::ConfigError;
+use crate::resolve;
+
 /// Which inference service hosts this model provider.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -27,13 +30,51 @@ impl std::fmt::Display for ModelProviderKind {
 #[derive(Debug, Clone, Deserialize)]
 pub struct ModelProviderConfig {
     /// The model provider kind (e.g. `"ollama"`, `"openai"`, `"anthropic"`).
-    pub kind: ModelProviderKind,
+    kind: ModelProviderKind,
 
     /// The base URL for the model provider's API.
-    pub endpoint: String,
+    endpoint: String,
 
     /// Optional API key. May be a literal value or `env:VAR_NAME`.
-    pub api_key: Option<String>,
+    api_key: Option<String>,
+}
+
+impl ModelProviderConfig {
+    /// Constructs a new `ModelProviderConfig`.
+    pub fn new(
+        kind: ModelProviderKind,
+        endpoint: impl Into<String>,
+        api_key: Option<String>,
+    ) -> Self {
+        Self {
+            kind,
+            endpoint: endpoint.into(),
+            api_key,
+        }
+    }
+
+    /// Returns the provider kind.
+    pub fn kind(&self) -> &ModelProviderKind {
+        &self.kind
+    }
+
+    /// Returns the endpoint URL.
+    pub fn endpoint(&self) -> &str {
+        &self.endpoint
+    }
+
+    /// Returns the optional API key.
+    pub fn api_key(&self) -> Option<&str> {
+        self.api_key.as_deref()
+    }
+
+    /// Resolves `env:VAR` references in the `api_key` field, if present.
+    pub(crate) fn resolve_api_key(&mut self) -> Result<(), ConfigError> {
+        if let Some(key) = self.api_key.as_mut() {
+            *key = resolve::resolve_secret(key)?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

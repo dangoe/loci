@@ -62,7 +62,7 @@ where
 
         let result = self
             .state
-            .store
+            .store()
             .add_entry(&input)
             .await
             .map_err(store_err)?;
@@ -83,7 +83,7 @@ where
         let id = parse_uuid(request.id)?;
         let result = self
             .state
-            .store
+            .store()
             .get_entry(&id)
             .await
             .map_err(store_err)?
@@ -112,7 +112,7 @@ where
             .with_max_results(max_results)
             .with_min_score(min_score)
             .with_filters(map_view_to_hashmap(&request.filters));
-        let results = self.state.store.query(query).await.map_err(store_err)?;
+        let results = self.state.store().query(query).await.map_err(store_err)?;
         Ok((
             MemoryServiceQueryResponse {
                 entries: results.iter().map(entry_to_proto).collect(),
@@ -141,7 +141,7 @@ where
         let id = parse_uuid(request.id)?;
         let result = self
             .state
-            .store
+            .store()
             .promote(&id)
             .await
             .map_err(store_err)?
@@ -162,7 +162,7 @@ where
     ) -> Result<(MemoryServiceDeleteEntryResponse, Context), ConnectError> {
         let id = parse_uuid(request.id)?;
         self.state
-            .store
+            .store()
             .delete_entry(&id)
             .await
             .map_err(store_err)?;
@@ -180,7 +180,11 @@ where
         ctx: Context,
         _request: OwnedView<MemoryServicePruneExpiredRequestView<'static>>,
     ) -> Result<(MemoryServicePruneExpiredResponse, Context), ConnectError> {
-        self.state.store.prune_expired().await.map_err(store_err)?;
+        self.state
+            .store()
+            .prune_expired()
+            .await
+            .map_err(store_err)?;
         Ok((
             MemoryServicePruneExpiredResponse {
                 pruned: true,

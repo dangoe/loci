@@ -39,17 +39,64 @@ mod routing;
 pub struct AppConfig {
     /// Named model provider definitions.
     #[serde(default)]
-    pub providers: HashMap<String, ModelProviderConfig>,
+    providers: HashMap<String, ModelProviderConfig>,
 
     /// Text-generation and embedding model registries.
     #[serde(default)]
-    pub models: ModelsConfig,
+    models: ModelsConfig,
 
     /// Memory backend definitions and active backend config.
-    pub memory: MemorySection,
+    memory: MemorySection,
 
     /// Routing and default selection settings.
-    pub routing: RoutingConfig,
+    routing: RoutingConfig,
+}
+
+impl AppConfig {
+    /// Constructs a new `AppConfig`.
+    pub fn new(
+        providers: HashMap<String, ModelProviderConfig>,
+        models: ModelsConfig,
+        memory: MemorySection,
+        routing: RoutingConfig,
+    ) -> Self {
+        Self {
+            providers,
+            models,
+            memory,
+            routing,
+        }
+    }
+
+    /// Returns the named provider definitions.
+    pub fn providers(&self) -> &HashMap<String, ModelProviderConfig> {
+        &self.providers
+    }
+
+    /// Returns the model registries.
+    pub fn models(&self) -> &ModelsConfig {
+        &self.models
+    }
+
+    /// Returns the memory section.
+    pub fn memory(&self) -> &MemorySection {
+        &self.memory
+    }
+
+    /// Returns the routing configuration.
+    pub fn routing(&self) -> &RoutingConfig {
+        &self.routing
+    }
+
+    /// Returns a mutable reference to the routing configuration.
+    pub fn routing_mut(&mut self) -> &mut RoutingConfig {
+        &mut self.routing
+    }
+
+    /// Returns a mutable reference to the model registries.
+    pub fn models_mut(&mut self) -> &mut ModelsConfig {
+        &mut self.models
+    }
 }
 
 /// Loads and parses an [`AppConfig`] from the given TOML file path, resolving
@@ -60,30 +107,33 @@ pub fn load_config(path: &Path) -> Result<AppConfig, ConfigError> {
         source: e,
     })?;
 
-    let mut config: AppConfig = toml::from_str(&raw).map_err(|e| ConfigError::Parse {
-        path: path.display().to_string(),
+    load_config_from_str(&raw).map_err(|e| match e {
+        ConfigError::Parse { source, .. } => ConfigError::Parse {
+            path: path.display().to_string(),
+            source,
+        },
+        other => other,
+    })
+}
+
+/// Parses and resolves an [`AppConfig`] from a raw TOML string.
+///
+/// Useful for constructing configs in tests without writing to the filesystem.
+pub fn load_config_from_str(raw: &str) -> Result<AppConfig, ConfigError> {
+    let mut config: AppConfig = toml::from_str(raw).map_err(|e| ConfigError::Parse {
+        path: "<string>".to_string(),
         source: e,
     })?;
-
     resolve_secrets(&mut config)?;
-
     Ok(config)
 }
 
 /// Walks the config and resolves all `env:` prefixed secret values in-place.
 fn resolve_secrets(config: &mut AppConfig) -> Result<(), ConfigError> {
     for provider in config.providers.values_mut() {
-        if let Some(key) = provider.api_key.as_mut() {
-            *key = resolve::resolve_secret(key)?;
-        }
+        provider.resolve_api_key()?;
     }
-    for backend in config.memory.backends.values_mut() {
-        if let StoreConfig::Qdrant { api_key, .. } = backend
-            && let Some(key) = api_key.as_mut()
-        {
-            *key = resolve::resolve_secret(key)?;
-        }
-    }
+    config.memory.resolve_secrets()?;
     Ok(())
 }
 
@@ -144,16 +194,16 @@ default = "qdrant"
         let f = write_temp_config(MINIMAL_CONFIG);
         let config = load_config(f.path()).unwrap();
 
-        assert_eq!(config.providers.len(), 1);
-        assert!(config.providers.contains_key("ollama"));
-        assert_eq!(config.models.text["default"].provider, "ollama");
-        assert_eq!(config.models.text["default"].model, "qwen3:0.6b");
-        assert!(config.models.text["default"].tuning.is_none());
-        assert_eq!(config.models.embedding["default"].dimension, 768);
-        assert_eq!(config.memory.config.backend, "qdrant");
-        assert_eq!(config.routing.text.default, "default");
-        assert_eq!(config.routing.embedding.default, "default");
-        assert_eq!(config.routing.memory.default, "qdrant");
+        assert_eq!(config.providers().len(), 1);
+        assert!(config.providers().contains_key("ollama"));
+        assert_eq!(config.models().text()["default"].provider(), "ollama");
+        assert_eq!(config.models().text()["default"].model(), "qwen3:0.6b");
+        assert!(config.models().text()["default"].tuning().is_none());
+        assert_eq!(config.models().embedding()["default"].dimension(), 768);
+        assert_eq!(config.memory().config().backend(), "qdrant");
+        assert_eq!(config.routing().text().default(), "default");
+        assert_eq!(config.routing().embedding().default(), "default");
+        assert_eq!(config.routing().memory().default(), "qdrant");
     }
 
     #[test]
@@ -191,7 +241,7 @@ default = "qdrant"
         let f = write_temp_config(cfg);
         let config = load_config(f.path()).unwrap();
         assert_eq!(
-            config.providers["openai"].api_key.as_deref(),
+            config.providers()["openai"].api_key(),
             Some("sk-literal-key")
         );
     }
@@ -233,7 +283,7 @@ default = "qdrant"
         let f = write_temp_config(cfg);
         let config = load_config(f.path()).unwrap();
         assert_eq!(
-            config.providers["openai"].api_key.as_deref(),
+            config.providers()["openai"].api_key(),
             Some("resolved-value")
         );
         // SAFETY: single-threaded test process; no other threads read this var.
@@ -296,7 +346,7 @@ default = "qdrant"
     fn test_similarity_threshold_is_optional() {
         let f = write_temp_config(MINIMAL_CONFIG);
         let config = load_config(f.path()).unwrap();
-        assert!(config.memory.config.similarity_threshold.is_none());
+        assert!(config.memory().config().similarity_threshold().is_none());
     }
 
     #[test]
@@ -334,7 +384,7 @@ default = "qdrant"
 "#;
         let f = write_temp_config(cfg);
         let config = load_config(f.path()).unwrap();
-        assert_eq!(config.memory.config.similarity_threshold, Some(0.92));
+        assert_eq!(config.memory().config().similarity_threshold(), Some(0.92));
     }
 
     #[test]
@@ -369,7 +419,7 @@ default = "qdrant"
 "#;
         let f = write_temp_config(cfg);
         let config = load_config(f.path()).unwrap();
-        if let StoreConfig::Qdrant { api_key, .. } = &config.memory.backends["qdrant"] {
+        if let StoreConfig::Qdrant { api_key, .. } = &config.memory().backends()["qdrant"] {
             assert_eq!(api_key.as_deref(), Some("qdrant-secret"));
         } else {
             panic!("expected Qdrant backend");
@@ -382,7 +432,7 @@ default = "qdrant"
     fn test_fallback_defaults_to_empty_vec() {
         let f = write_temp_config(MINIMAL_CONFIG);
         let config = load_config(f.path()).unwrap();
-        assert!(config.routing.text.fallback.is_empty());
+        assert!(config.routing().text().fallback().is_empty());
     }
 
     #[test]
@@ -419,7 +469,10 @@ default = "qdrant"
 "#;
         let f = write_temp_config(cfg);
         let config = load_config(f.path()).unwrap();
-        assert_eq!(config.routing.text.fallback, vec!["secondary", "tertiary"]);
+        assert_eq!(
+            config.routing().text().fallback(),
+            &["secondary", "tertiary"]
+        );
     }
 
     /// `[providers]` is `#[serde(default)]`, so an absent section is valid and
@@ -454,7 +507,7 @@ default = "qdrant"
         let f = write_temp_config(cfg);
         let config = load_config(f.path()).unwrap();
         assert!(
-            config.providers.is_empty(),
+            config.providers().is_empty(),
             "providers should be empty when the section is absent"
         );
     }
@@ -651,7 +704,7 @@ default = "local"
 "#;
         let f = write_temp_config(cfg);
         let config = load_config(f.path()).unwrap();
-        if let StoreConfig::Markdown { path } = &config.memory.backends["local"] {
+        if let StoreConfig::Markdown { path } = &config.memory().backends()["local"] {
             assert_eq!(path, "./memory");
         } else {
             panic!("expected Markdown backend");
@@ -712,20 +765,20 @@ default = "qdrant"
 "#;
         let f = write_temp_config(cfg);
         let config = load_config(f.path()).unwrap();
-        let tuning = config.models.text["default"].tuning.as_ref().unwrap();
-        assert_eq!(tuning.temperature, Some(0.2));
-        assert_eq!(tuning.max_tokens, Some(512));
-        assert_eq!(tuning.top_p, Some(0.95));
-        assert_eq!(tuning.repeat_penalty, Some(1.2));
-        assert_eq!(tuning.repeat_last_n, Some(64));
-        assert_eq!(tuning.keep_alive_secs, Some(300));
-        assert_eq!(tuning.stop.as_ref().unwrap(), &vec!["<END>".to_string()]);
+        let tuning = config.models().text()["default"].tuning().unwrap();
+        assert_eq!(tuning.temperature(), Some(0.2));
+        assert_eq!(tuning.max_tokens(), Some(512));
+        assert_eq!(tuning.top_p(), Some(0.95));
+        assert_eq!(tuning.repeat_penalty(), Some(1.2));
+        assert_eq!(tuning.repeat_last_n(), Some(64));
+        assert_eq!(tuning.keep_alive_secs(), Some(300));
+        assert_eq!(tuning.stop().unwrap(), &["<END>".to_string()]);
         assert!(matches!(
-            tuning.thinking,
+            tuning.thinking(),
             Some(ModelThinkingConfig::Effort {
                 level: ModelThinkingEffortLevel::Low
             })
         ));
-        assert_eq!(tuning.extra.get("seed"), Some(&json!(42)));
+        assert_eq!(tuning.extra().get("seed"), Some(&json!(42)));
     }
 }

@@ -54,11 +54,7 @@ pub(crate) async fn run_server(args: ServerArgs) -> Result<(), Box<dyn std::erro
 
     let store = Arc::new(build_store(&config).await?);
     let llm_provider = Arc::new(build_llm_provider(&config)?);
-    let state = Arc::new(AppState {
-        store,
-        llm_provider,
-        config: Arc::new(config),
-    });
+    let state = Arc::new(AppState::new(store, llm_provider, Arc::new(config)));
 
     let router = build_router(state);
     let addr: std::net::SocketAddr = format!("{}:{}", args.host, args.port).parse()?;

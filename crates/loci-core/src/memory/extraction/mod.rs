@@ -308,7 +308,7 @@ where
                 continue;
             }
 
-            let alpha = trust_evidence.alpha.unwrap_or(0.0);
+            let alpha = trust_evidence.alpha().unwrap_or(0.0);
             let eligible_for_promotion = score >= self.config.auto_promotion_threshold
                 && alpha >= self.config.min_alpha_for_promotion;
 
@@ -419,12 +419,10 @@ where
         for (_, class) in classified_hits {
             match class {
                 HitClass::Duplicate | HitClass::Complementary => {
-                    let alpha = trust_evidence.alpha.unwrap_or(0.0);
-                    trust_evidence.alpha = Some((alpha + increment).min(self.config.max_counter));
+                    trust_evidence.increment_alpha(increment, self.config.max_counter);
                 }
                 HitClass::Contradiction => {
-                    let beta = trust_evidence.beta.unwrap_or(0.0);
-                    trust_evidence.beta = Some((beta + increment).min(self.config.max_counter));
+                    trust_evidence.increment_beta(increment, self.config.max_counter);
                 }
                 HitClass::Unrelated => {}
             }
@@ -793,7 +791,9 @@ mod tests {
             .add_inputs
             .expect("add_entries should have been called");
         let alpha = match inputs[0].trust() {
-            MemoryTrust::Extracted { evidence, .. } => evidence.alpha.expect("alpha should be set"),
+            MemoryTrust::Extracted { evidence, .. } => {
+                evidence.alpha().expect("alpha should be set")
+            }
             _ => panic!("expected Extracted trust"),
         };
         // alpha must not exceed max_counter = 9.5

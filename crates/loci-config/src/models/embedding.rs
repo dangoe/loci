@@ -8,11 +8,42 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Deserialize)]
 pub struct EmbeddingModelConfig {
     /// The provider name that serves the embedding model.
-    pub provider: String,
+    provider: String,
 
     /// The embedding model identifier as understood by the provider.
-    pub model: String,
+    model: String,
 
     /// The output embedding dimension.
-    pub dimension: usize,
+    dimension: usize,
+}
+
+impl EmbeddingModelConfig {
+    /// Constructs a new `EmbeddingModelConfig`.
+    pub fn new(provider: impl Into<String>, model: impl Into<String>, dimension: usize) -> Self {
+        Self {
+            provider: provider.into(),
+            model: model.into(),
+            dimension,
+        }
+    }
+
+    /// Returns the provider name.
+    pub fn provider(&self) -> &str {
+        &self.provider
+    }
+
+    /// Returns the model identifier.
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    /// Returns the embedding dimension.
+    pub fn dimension(&self) -> usize {
+        self.dimension
+    }
+
+    /// Sets the provider name.
+    pub fn set_provider(&mut self, val: impl Into<String>) {
+        self.provider = val.into();
+    }
 }

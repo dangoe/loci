@@ -202,26 +202,24 @@ where
                 let input = read_extraction_input(text, &files, std::io::stdin())?;
 
                 let params = LlmMemoryExtractionStrategyParams::new(
-                    match (guidelines, &self.extraction_config.guidelines) {
+                    match (guidelines, self.extraction_config.guidelines()) {
                         (Some(cli), Some(cfg)) => Some(format!("{cfg}\n\n{cli}")),
                         (Some(cli), None) => Some(cli),
-                        (None, Some(cfg)) => Some(cfg.clone()),
+                        (None, Some(cfg)) => Some(cfg.to_owned()),
                         (None, None) => None,
                     },
                     pairs_to_map(metadata),
-                    max_entries.or(self.extraction_config.max_entries),
-                    min_confidence.or(self.extraction_config.min_confidence),
+                    max_entries.or(self.extraction_config.max_entries()),
+                    min_confidence.or(self.extraction_config.min_confidence()),
                     self.extraction_config
-                        .thinking
-                        .as_ref()
+                        .thinking()
                         .map(model_thinking_to_core),
                     self.extraction_config
-                        .chunking
-                        .as_ref()
+                        .chunking()
                         .map(|c| ChunkingStrategy::SentenceAware {
-                            chunk_size: NonZeroUsize::new(c.chunk_size)
+                            chunk_size: NonZeroUsize::new(c.chunk_size())
                                 .expect("chunk_size must be > 0"),
-                            overlap_size: c.overlap_size,
+                            overlap_size: c.overlap_size(),
                         })
                         .unwrap_or(ChunkingStrategy::WholeInput),
                 );
@@ -259,10 +257,10 @@ where
                         .collect();
                     writeln!(out, "{}", serde_json::to_string_pretty(&json)?)?;
                 } else {
-                    let extractor_cfg = &self.extraction_config.extractor;
+                    let extractor_cfg = self.extraction_config.extractor();
                     let classification_provider = Arc::new(LlmClassificationModelProvider::new(
                         Arc::clone(&self.provider),
-                        extractor_cfg.classification_model.clone(),
+                        extractor_cfg.classification_model().to_owned(),
                     ));
                     let extractor = MemoryExtractor::new(
                         Arc::clone(&self.store),
@@ -295,19 +293,22 @@ fn config_extractor_config_to_core(
     cfg: &loci_config::MemoryExtractorConfig,
 ) -> MemoryExtractorConfig {
     MemoryExtractorConfig::new(
-        MemoryQueryOptions::try_new(cfg.direct_search.max_results, cfg.direct_search.min_score)
-            .expect("invalid extractor config: direct_search"),
         MemoryQueryOptions::try_new(
-            cfg.inverted_search.max_results,
-            cfg.inverted_search.min_score,
+            cfg.direct_search().max_results(),
+            cfg.direct_search().min_score(),
+        )
+        .expect("invalid extractor config: direct_search"),
+        MemoryQueryOptions::try_new(
+            cfg.inverted_search().max_results(),
+            cfg.inverted_search().min_score(),
         )
         .expect("invalid extractor config: inverted_search"),
-        cfg.bayesian_seed_weight,
-        cfg.max_counter_increment,
-        cfg.max_counter,
-        cfg.auto_discard_threshold,
-        cfg.auto_promotion_threshold,
-        cfg.min_alpha_for_promotion,
+        cfg.bayesian_seed_weight(),
+        cfg.max_counter_increment(),
+        cfg.max_counter(),
+        cfg.auto_discard_threshold(),
+        cfg.auto_promotion_threshold(),
+        cfg.min_alpha_for_promotion(),
     )
 }
 
@@ -322,9 +323,7 @@ mod tests {
     use rstest::rstest;
     use std::{collections::HashMap, sync::Arc};
 
-    use loci_config::{
-        MemoryExtractionConfig, MemoryExtractorConfig, MemoryExtractorSearchResultsConfig,
-    };
+    use loci_config::MemoryExtractionConfig;
     use loci_core::{
         memory::{MemoryEntry as CoreMemoryEntry, MemoryTrust, TrustEvidence},
         model_provider::text_generation::TextGenerationResponse,
@@ -344,6 +343,34 @@ mod tests {
         handlers::memory::{MemoryCommandHandler, pairs_to_map},
     };
 
+    fn test_extraction_config() -> MemoryExtractionConfig {
+        loci_config::load_config_from_str(
+            r#"
+[memory.config]
+backend = "x"
+
+[memory.extraction]
+model = "test-model"
+
+[memory.extraction.extractor]
+classification_model = "test-classification-model"
+
+[routing.text]
+default = "x"
+
+[routing.embedding]
+default = "x"
+
+[routing.memory]
+default = "x"
+"#,
+        )
+        .expect("failed to parse test config")
+        .memory()
+        .extraction()
+        .clone()
+    }
+
     fn make_handler(
         store: MockStore,
     ) -> MemoryCommandHandler<'static, MockStore, MockTextGenerationModelProvider> {
@@ -351,32 +378,7 @@ mod tests {
             Arc::new(store),
             Arc::new(MockTextGenerationModelProvider::ok()),
             "test-model",
-            MemoryExtractionConfig {
-                model: "test-model".to_string(),
-                max_entries: None,
-                min_confidence: None,
-                guidelines: None,
-                thinking: None,
-                chunking: None,
-                extractor: MemoryExtractorConfig {
-                    classification_model: "test-classification-model".to_string(),
-                    direct_search: MemoryExtractorSearchResultsConfig {
-                        max_results: 5,
-                        min_score: 0.70,
-                    },
-                    inverted_search: MemoryExtractorSearchResultsConfig {
-                        max_results: 3,
-                        min_score: 0.60,
-                    },
-                    bayesian_seed_weight: 10.0,
-                    max_counter_increment: 5.0,
-                    max_counter: 100.0,
-                    auto_discard_threshold: 0.1,
-                    auto_promotion_threshold: 0.9,
-                    min_alpha_for_promotion: 12.0,
-                    decay_rate: 0.99,
-                },
-            },
+            test_extraction_config(),
         )
     }
 
@@ -388,32 +390,7 @@ mod tests {
             Arc::new(store),
             Arc::new(provider),
             "test-model",
-            MemoryExtractionConfig {
-                model: "test-model".to_string(),
-                max_entries: None,
-                min_confidence: None,
-                guidelines: None,
-                thinking: None,
-                chunking: None,
-                extractor: MemoryExtractorConfig {
-                    classification_model: "test-classification-model".to_string(),
-                    direct_search: MemoryExtractorSearchResultsConfig {
-                        max_results: 5,
-                        min_score: 0.70,
-                    },
-                    inverted_search: MemoryExtractorSearchResultsConfig {
-                        max_results: 3,
-                        min_score: 0.60,
-                    },
-                    bayesian_seed_weight: 10.0,
-                    max_counter_increment: 5.0,
-                    max_counter: 100.0,
-                    auto_discard_threshold: 0.1,
-                    auto_promotion_threshold: 0.9,
-                    min_alpha_for_promotion: 12.0,
-                    decay_rate: 0.99,
-                },
-            },
+            test_extraction_config(),
         )
     }
 
@@ -678,32 +655,7 @@ mod tests {
             Arc::clone(&store),
             Arc::new(provider),
             "m",
-            MemoryExtractionConfig {
-                model: "m".to_string(),
-                max_entries: None,
-                min_confidence: None,
-                guidelines: None,
-                thinking: None,
-                chunking: None,
-                extractor: MemoryExtractorConfig {
-                    classification_model: "test-classification-model".to_string(),
-                    direct_search: MemoryExtractorSearchResultsConfig {
-                        max_results: 5,
-                        min_score: 0.70,
-                    },
-                    inverted_search: MemoryExtractorSearchResultsConfig {
-                        max_results: 3,
-                        min_score: 0.60,
-                    },
-                    bayesian_seed_weight: 10.0,
-                    max_counter_increment: 5.0,
-                    max_counter: 100.0,
-                    auto_discard_threshold: 0.1,
-                    auto_promotion_threshold: 0.9,
-                    min_alpha_for_promotion: 12.0,
-                    decay_rate: 0.99,
-                },
-            },
+            test_extraction_config(),
         );
         let mut out = Vec::new();
 
@@ -749,32 +701,7 @@ mod tests {
             Arc::clone(&store),
             Arc::new(provider),
             "m",
-            MemoryExtractionConfig {
-                model: "m".to_string(),
-                max_entries: None,
-                min_confidence: None,
-                guidelines: None,
-                thinking: None,
-                chunking: None,
-                extractor: MemoryExtractorConfig {
-                    classification_model: "test-classification-model".to_string(),
-                    direct_search: MemoryExtractorSearchResultsConfig {
-                        max_results: 5,
-                        min_score: 0.70,
-                    },
-                    inverted_search: MemoryExtractorSearchResultsConfig {
-                        max_results: 3,
-                        min_score: 0.60,
-                    },
-                    bayesian_seed_weight: 10.0,
-                    max_counter_increment: 5.0,
-                    max_counter: 100.0,
-                    auto_discard_threshold: 0.1,
-                    auto_promotion_threshold: 0.9,
-                    min_alpha_for_promotion: 12.0,
-                    decay_rate: 0.99,
-                },
-            },
+            test_extraction_config(),
         );
         let mut out = Vec::new();
 
@@ -1048,32 +975,7 @@ mod tests {
             Arc::clone(&store),
             Arc::new(MockTextGenerationModelProvider::ok()),
             "test-model",
-            MemoryExtractionConfig {
-                model: "test-model".to_string(),
-                max_entries: None,
-                min_confidence: None,
-                guidelines: None,
-                thinking: None,
-                chunking: None,
-                extractor: MemoryExtractorConfig {
-                    classification_model: "test-classification-model".to_string(),
-                    direct_search: MemoryExtractorSearchResultsConfig {
-                        max_results: 5,
-                        min_score: 0.70,
-                    },
-                    inverted_search: MemoryExtractorSearchResultsConfig {
-                        max_results: 3,
-                        min_score: 0.60,
-                    },
-                    bayesian_seed_weight: 10.0,
-                    max_counter_increment: 5.0,
-                    max_counter: 100.0,
-                    auto_discard_threshold: 0.1,
-                    auto_promotion_threshold: 0.9,
-                    min_alpha_for_promotion: 12.0,
-                    decay_rate: 0.99,
-                },
-            },
+            test_extraction_config(),
         );
         let mut out = Vec::new();
 

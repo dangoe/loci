@@ -62,8 +62,8 @@ where
         let ctx_config = build_contextualizer_config(&self.state, &request)?;
 
         let contextualizer = Contextualizer::new(
-            Arc::clone(&self.state.store),
-            Arc::clone(&self.state.llm_provider),
+            Arc::clone(self.state.store()),
+            Arc::clone(self.state.llm_provider()),
             ctx_config,
         );
 
@@ -102,16 +102,21 @@ where
     M: MemoryStore,
     E: TextGenerationModelProvider + 'static,
 {
-    let model_key = &state.config.routing.text.default;
-    let model = state.config.models.text.get(model_key).ok_or_else(|| {
-        ConnectError::internal(
-            ConfigError::MissingKey {
-                section: "models.text".into(),
-                key: model_key.clone(),
-            }
-            .to_string(),
-        )
-    })?;
+    let model_key = state.config().routing().text().default();
+    let model = state
+        .config()
+        .models()
+        .text()
+        .get(model_key)
+        .ok_or_else(|| {
+            ConnectError::internal(
+                ConfigError::MissingKey {
+                    section: "models.text".into(),
+                    key: model_key.to_owned(),
+                }
+                .to_string(),
+            )
+        })?;
 
     let min_score = Score::try_new(request.min_score)
         .map_err(|_| ConnectError::invalid_argument("min_score must be in [0.0, 1.0]"))?;
@@ -133,7 +138,7 @@ where
         .unwrap_or(NonZeroUsize::new(5).unwrap());
 
     Ok(ContextualizerConfig::new(
-        model.model.clone(),
+        model.model().to_owned(),
         system,
         memory_mode,
         max_memory_entries,

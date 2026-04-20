@@ -42,11 +42,8 @@ pub fn embedding_model() -> String {
 
 /// Creates an [`OllamaModelProvider`] configured from environment variables.
 pub fn ollama_provider() -> OllamaModelProvider {
-    OllamaModelProvider::new(OllamaConfig {
-        base_url: base_url(),
-        timeout: None,
-    })
-    .expect("Failed to create OllamaModelProvider")
+    OllamaModelProvider::new(OllamaConfig::new(base_url()))
+        .expect("Failed to create OllamaModelProvider")
 }
 
 /// Panics with a helpful message if Ollama is not reachable.

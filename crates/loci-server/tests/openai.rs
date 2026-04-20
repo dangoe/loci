@@ -32,7 +32,7 @@ fn http_client() -> reqwest::Client {
 }
 
 fn url(server: &TestServer) -> String {
-    format!("http://{}{ENDPOINT}", server.addr)
+    format!("http://{}{ENDPOINT}", server.addr())
 }
 
 /// Parse a streaming SSE body into a `Vec` of parsed JSON objects, excluding
@@ -240,7 +240,7 @@ async fn test_non_streaming_missing_model_returns_500() {
         ProviderBehavior::Stream(vec![]),
     ));
     let mut config = mock_config();
-    config.routing.text.default = "missing".into();
+    config.routing_mut().text_mut().set_default("missing");
     let server =
         TestServer::start_with_components(config, Arc::clone(&store), Arc::clone(&provider)).await;
 

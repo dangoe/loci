@@ -17,11 +17,23 @@ pub struct ChunkingConfig {
     /// current word before cutting, so the actual chunk may be slightly
     /// longer.
     #[serde(default = "default_chunk_size")]
-    pub chunk_size: usize,
+    chunk_size: usize,
 
     /// Characters of overlap between consecutive chunks.
     #[serde(default = "default_overlap_size")]
-    pub overlap_size: usize,
+    overlap_size: usize,
+}
+
+impl ChunkingConfig {
+    /// Returns the chunk size.
+    pub fn chunk_size(&self) -> usize {
+        self.chunk_size
+    }
+
+    /// Returns the overlap size.
+    pub fn overlap_size(&self) -> usize {
+        self.overlap_size
+    }
 }
 
 fn default_chunk_size() -> usize {
@@ -37,33 +49,92 @@ fn default_overlap_size() -> usize {
 #[derive(Debug, Clone, Deserialize)]
 pub struct MemoryExtractionConfig {
     /// Name of the text model in `[models.text]` used to perform extraction.
-    pub model: String,
+    model: String,
 
     /// Optional hard cap on the number of entries extracted per run.
     /// Applied both as a prompt hint and as a post-processing limit.
-    pub max_entries: Option<usize>,
+    max_entries: Option<usize>,
 
     /// Minimum LLM-assigned confidence score required to keep an extracted
     /// entry. Entries below this threshold are discarded before storing.
     /// In [0.0, 1.0]. When absent, all entries are kept.
-    pub min_confidence: Option<f64>,
+    min_confidence: Option<f64>,
 
     /// Optional additional guidelines appended to the extraction prompt to
     /// guide or constrain what the model should extract.
-    pub guidelines: Option<String>,
+    guidelines: Option<String>,
 
     /// Optional thinking mode override for the extraction model. When absent
     /// the model's default thinking behaviour is used. Extraction produces
     /// structured JSON, so `disabled` is usually the right choice.
-    pub thinking: Option<ModelThinkingConfig>,
+    thinking: Option<ModelThinkingConfig>,
 
     /// Optional text chunking settings. When absent, the full input is sent
     /// to the model as a single call.
-    pub chunking: Option<ChunkingConfig>,
+    chunking: Option<ChunkingConfig>,
 
     /// Optional pipeline-stage settings. When absent, the legacy single-stage
     /// extraction path is used.
-    pub extractor: MemoryExtractorConfig,
+    extractor: MemoryExtractorConfig,
+}
+
+impl MemoryExtractionConfig {
+    /// Constructs a new config with all fields specified.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        model: impl Into<String>,
+        max_entries: Option<usize>,
+        min_confidence: Option<f64>,
+        guidelines: Option<String>,
+        thinking: Option<ModelThinkingConfig>,
+        chunking: Option<ChunkingConfig>,
+        extractor: MemoryExtractorConfig,
+    ) -> Self {
+        Self {
+            model: model.into(),
+            max_entries,
+            min_confidence,
+            guidelines,
+            thinking,
+            chunking,
+            extractor,
+        }
+    }
+
+    /// Returns the extraction model name.
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    /// Returns the maximum number of entries to extract.
+    pub fn max_entries(&self) -> Option<usize> {
+        self.max_entries
+    }
+
+    /// Returns the minimum confidence threshold.
+    pub fn min_confidence(&self) -> Option<f64> {
+        self.min_confidence
+    }
+
+    /// Returns the optional extraction guidelines.
+    pub fn guidelines(&self) -> Option<&str> {
+        self.guidelines.as_deref()
+    }
+
+    /// Returns the optional thinking mode configuration.
+    pub fn thinking(&self) -> Option<&ModelThinkingConfig> {
+        self.thinking.as_ref()
+    }
+
+    /// Returns the optional chunking configuration.
+    pub fn chunking(&self) -> Option<&ChunkingConfig> {
+        self.chunking.as_ref()
+    }
+
+    /// Returns the extractor configuration.
+    pub fn extractor(&self) -> &MemoryExtractorConfig {
+        &self.extractor
+    }
 }
 
 #[cfg(test)]
@@ -117,12 +188,12 @@ classification_model = "x"
 model = "default"
 "#,
         );
-        assert_eq!(cfg.memory.extraction.model, "default");
-        assert!(cfg.memory.extraction.max_entries.is_none());
-        assert!(cfg.memory.extraction.min_confidence.is_none());
-        assert!(cfg.memory.extraction.guidelines.is_none());
-        assert!(cfg.memory.extraction.thinking.is_none());
-        assert!(cfg.memory.extraction.chunking.is_none());
+        assert_eq!(cfg.memory().extraction().model(), "default");
+        assert!(cfg.memory().extraction().max_entries().is_none());
+        assert!(cfg.memory().extraction().min_confidence().is_none());
+        assert!(cfg.memory().extraction().guidelines().is_none());
+        assert!(cfg.memory().extraction().thinking().is_none());
+        assert!(cfg.memory().extraction().chunking().is_none());
     }
 
     #[test]
@@ -134,7 +205,7 @@ model = "default"
 min_confidence = 0.7
 "#,
         );
-        assert_eq!(cfg.memory.extraction.min_confidence, Some(0.7));
+        assert_eq!(cfg.memory().extraction().min_confidence(), Some(0.7));
     }
 
     #[test]
@@ -146,7 +217,7 @@ model = "default"
 max_entries = 20
 "#,
         );
-        assert_eq!(cfg.memory.extraction.max_entries, Some(20));
+        assert_eq!(cfg.memory().extraction().max_entries(), Some(20));
     }
 
     #[test]
@@ -159,7 +230,7 @@ guidelines = "Focus on technical facts only."
 "#,
         );
         assert_eq!(
-            cfg.memory.extraction.guidelines.as_deref(),
+            cfg.memory().extraction().guidelines(),
             Some("Focus on technical facts only.")
         );
     }
@@ -177,7 +248,7 @@ mode = "disabled"
 "#,
         );
         assert!(matches!(
-            cfg.memory.extraction.thinking,
+            cfg.memory().extraction().thinking(),
             Some(ModelThinkingConfig::Disabled)
         ));
     }
@@ -196,7 +267,7 @@ level = "low"
 "#,
         );
         assert!(matches!(
-            cfg.memory.extraction.thinking,
+            cfg.memory().extraction().thinking(),
             Some(ModelThinkingConfig::Effort {
                 level: ModelThinkingEffortLevel::Low
             })
@@ -213,9 +284,9 @@ model = "default"
 [memory.extraction.chunking]
 "#,
         );
-        let chunking = cfg.memory.extraction.chunking.as_ref().unwrap();
-        assert_eq!(chunking.chunk_size, 2500);
-        assert_eq!(chunking.overlap_size, 200);
+        let chunking = cfg.memory().extraction().chunking().unwrap();
+        assert_eq!(chunking.chunk_size(), 2500);
+        assert_eq!(chunking.overlap_size(), 200);
     }
 
     #[test]
@@ -230,9 +301,9 @@ chunk_size   = 3000
 overlap_size = 300
 "#,
         );
-        let chunking = cfg.memory.extraction.chunking.as_ref().unwrap();
-        assert_eq!(chunking.chunk_size, 3000);
-        assert_eq!(chunking.overlap_size, 300);
+        let chunking = cfg.memory().extraction().chunking().unwrap();
+        assert_eq!(chunking.chunk_size(), 3000);
+        assert_eq!(chunking.overlap_size(), 300);
     }
 
     #[test]

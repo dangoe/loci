@@ -9,9 +9,29 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Deserialize)]
 pub struct MemoryExtractorSearchResultsConfig {
     /// Maximum results for the semantic search.
-    pub max_results: usize,
+    max_results: usize,
     /// Minimum score for semantic search results.
-    pub min_score: f64,
+    min_score: f64,
+}
+
+impl MemoryExtractorSearchResultsConfig {
+    /// Constructs a new config with explicit values.
+    pub fn new(max_results: usize, min_score: f64) -> Self {
+        Self {
+            max_results,
+            min_score,
+        }
+    }
+
+    /// Returns the maximum number of results.
+    pub fn max_results(&self) -> usize {
+        self.max_results
+    }
+
+    /// Returns the minimum score threshold.
+    pub fn min_score(&self) -> f64 {
+        self.min_score
+    }
 }
 
 /// Memory extractor configuration, deserialized from `[memory.extraction.extractor]`.
@@ -19,47 +39,127 @@ pub struct MemoryExtractorSearchResultsConfig {
 pub struct MemoryExtractorConfig {
     /// Model name (key in `[models.text]`) for the hit-classification step.
     /// Intended to be a small, fast model (e.g. `"qwen2.5:0.5b"`).
-    pub classification_model: String,
+    classification_model: String,
 
     /// Configuration for the direct (supporting evidence) semantic search stage.
     #[serde(default = "default_direct_search_config")]
-    pub direct_search: MemoryExtractorSearchResultsConfig,
+    direct_search: MemoryExtractorSearchResultsConfig,
 
     /// Configuration for the inverted (contradiction evidence) semantic search stage.
     #[serde(default = "default_inverted_search_config")]
-    pub inverted_search: MemoryExtractorSearchResultsConfig,
+    inverted_search: MemoryExtractorSearchResultsConfig,
 
     /// Seed weight `W` used to initialise Bayesian counters from LLM confidence.
     /// `α = confidence × W`, `β = (1 − confidence) × W`. Default: 10.0
     #[serde(default = "default_bayesian_seed_weight")]
-    pub bayesian_seed_weight: f64,
+    bayesian_seed_weight: f64,
 
     /// Maximum increment applied to a counter per evidence event. Default: 5.0
     #[serde(default = "default_max_counter_increment")]
-    pub max_counter_increment: f64,
+    max_counter_increment: f64,
 
     /// Upper bound for each Bayesian counter (α and β). Default: 100.0
     #[serde(default = "default_max_counter")]
-    pub max_counter: f64,
+    max_counter: f64,
 
     /// Score at or below which an entry is automatically discarded. Default: 0.1
     #[serde(default = "default_auto_discard_threshold")]
-    pub auto_discard_threshold: f64,
+    auto_discard_threshold: f64,
 
     /// Score at or above which an entry is automatically promoted to Fact. Default: 0.9
     #[serde(default = "default_auto_promotion_threshold")]
-    pub auto_promotion_threshold: f64,
+    auto_promotion_threshold: f64,
 
     /// Minimum accumulated `α` (evidence weight) required for auto-promotion
     /// to Fact — even when the Bayesian score clears `auto_promotion_threshold`.
     /// Prevents a single high-confidence observation from being promoted in
     /// isolation. Default: 12.0 (seed weight + one strong corroborating observation).
     #[serde(default = "default_min_alpha_for_promotion")]
-    pub min_alpha_for_promotion: f64,
+    min_alpha_for_promotion: f64,
 
     /// Per-day exponential decay rate for alpha. Default: 0.99
     #[serde(default = "default_decay_rate")]
-    pub decay_rate: f64,
+    decay_rate: f64,
+}
+
+impl MemoryExtractorConfig {
+    /// Constructs a new config with all values specified explicitly.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        classification_model: impl Into<String>,
+        direct_search: MemoryExtractorSearchResultsConfig,
+        inverted_search: MemoryExtractorSearchResultsConfig,
+        bayesian_seed_weight: f64,
+        max_counter_increment: f64,
+        max_counter: f64,
+        auto_discard_threshold: f64,
+        auto_promotion_threshold: f64,
+        min_alpha_for_promotion: f64,
+        decay_rate: f64,
+    ) -> Self {
+        Self {
+            classification_model: classification_model.into(),
+            direct_search,
+            inverted_search,
+            bayesian_seed_weight,
+            max_counter_increment,
+            max_counter,
+            auto_discard_threshold,
+            auto_promotion_threshold,
+            min_alpha_for_promotion,
+            decay_rate,
+        }
+    }
+
+    /// Returns the classification model name.
+    pub fn classification_model(&self) -> &str {
+        &self.classification_model
+    }
+
+    /// Returns the direct search configuration.
+    pub fn direct_search(&self) -> &MemoryExtractorSearchResultsConfig {
+        &self.direct_search
+    }
+
+    /// Returns the inverted search configuration.
+    pub fn inverted_search(&self) -> &MemoryExtractorSearchResultsConfig {
+        &self.inverted_search
+    }
+
+    /// Returns the Bayesian seed weight.
+    pub fn bayesian_seed_weight(&self) -> f64 {
+        self.bayesian_seed_weight
+    }
+
+    /// Returns the maximum counter increment.
+    pub fn max_counter_increment(&self) -> f64 {
+        self.max_counter_increment
+    }
+
+    /// Returns the maximum counter value.
+    pub fn max_counter(&self) -> f64 {
+        self.max_counter
+    }
+
+    /// Returns the auto-discard threshold.
+    pub fn auto_discard_threshold(&self) -> f64 {
+        self.auto_discard_threshold
+    }
+
+    /// Returns the auto-promotion threshold.
+    pub fn auto_promotion_threshold(&self) -> f64 {
+        self.auto_promotion_threshold
+    }
+
+    /// Returns the minimum alpha required for promotion.
+    pub fn min_alpha_for_promotion(&self) -> f64 {
+        self.min_alpha_for_promotion
+    }
+
+    /// Returns the per-day decay rate.
+    pub fn decay_rate(&self) -> f64 {
+        self.decay_rate
+    }
 }
 
 fn default_direct_search_config() -> MemoryExtractorSearchResultsConfig {
@@ -154,19 +254,19 @@ model = "default"
 classification_model = "qwen2.5:0.5b"
 "#,
         );
-        let extractor = &cfg.memory.extraction.extractor;
-        assert_eq!(extractor.classification_model, "qwen2.5:0.5b");
-        assert_eq!(extractor.direct_search.max_results, 5);
-        assert_eq!(extractor.direct_search.min_score, 0.70);
-        assert_eq!(extractor.inverted_search.max_results, 3);
-        assert_eq!(extractor.inverted_search.min_score, 0.60);
-        assert_eq!(extractor.bayesian_seed_weight, 10.0);
-        assert_eq!(extractor.max_counter_increment, 5.0);
-        assert_eq!(extractor.max_counter, 100.0);
-        assert_eq!(extractor.auto_discard_threshold, 0.1);
-        assert_eq!(extractor.auto_promotion_threshold, 0.9);
-        assert_eq!(extractor.min_alpha_for_promotion, 12.0);
-        assert_eq!(extractor.decay_rate, 0.99);
+        let extractor = cfg.memory().extraction().extractor();
+        assert_eq!(extractor.classification_model(), "qwen2.5:0.5b");
+        assert_eq!(extractor.direct_search().max_results(), 5);
+        assert_eq!(extractor.direct_search().min_score(), 0.70);
+        assert_eq!(extractor.inverted_search().max_results(), 3);
+        assert_eq!(extractor.inverted_search().min_score(), 0.60);
+        assert_eq!(extractor.bayesian_seed_weight(), 10.0);
+        assert_eq!(extractor.max_counter_increment(), 5.0);
+        assert_eq!(extractor.max_counter(), 100.0);
+        assert_eq!(extractor.auto_discard_threshold(), 0.1);
+        assert_eq!(extractor.auto_promotion_threshold(), 0.9);
+        assert_eq!(extractor.min_alpha_for_promotion(), 12.0);
+        assert_eq!(extractor.decay_rate(), 0.99);
     }
 
     #[test]
@@ -195,19 +295,19 @@ max_results = 6
 min_score   = 0.55
 "#,
         );
-        let extractor = &cfg.memory.extraction.extractor;
-        assert_eq!(extractor.classification_model, "qwen2.5:1.5b");
-        assert_eq!(extractor.direct_search.max_results, 10);
-        assert_eq!(extractor.direct_search.min_score, 0.80);
-        assert_eq!(extractor.inverted_search.max_results, 6);
-        assert_eq!(extractor.inverted_search.min_score, 0.55);
-        assert_eq!(extractor.bayesian_seed_weight, 20.0);
-        assert_eq!(extractor.max_counter_increment, 3.0);
-        assert_eq!(extractor.max_counter, 50.0);
-        assert_eq!(extractor.auto_discard_threshold, 0.05);
-        assert_eq!(extractor.auto_promotion_threshold, 0.95);
-        assert_eq!(extractor.min_alpha_for_promotion, 25.0);
-        assert_eq!(extractor.decay_rate, 0.95);
+        let extractor = cfg.memory().extraction().extractor();
+        assert_eq!(extractor.classification_model(), "qwen2.5:1.5b");
+        assert_eq!(extractor.direct_search().max_results(), 10);
+        assert_eq!(extractor.direct_search().min_score(), 0.80);
+        assert_eq!(extractor.inverted_search().max_results(), 6);
+        assert_eq!(extractor.inverted_search().min_score(), 0.55);
+        assert_eq!(extractor.bayesian_seed_weight(), 20.0);
+        assert_eq!(extractor.max_counter_increment(), 3.0);
+        assert_eq!(extractor.max_counter(), 50.0);
+        assert_eq!(extractor.auto_discard_threshold(), 0.05);
+        assert_eq!(extractor.auto_promotion_threshold(), 0.95);
+        assert_eq!(extractor.min_alpha_for_promotion(), 25.0);
+        assert_eq!(extractor.decay_rate(), 0.95);
     }
 
     #[test]
@@ -221,19 +321,19 @@ model = "default"
 classification_model = "x"
 "#,
         );
-        let extractor = &cfg.memory.extraction.extractor;
-        assert_eq!(extractor.classification_model, "x");
-        assert_eq!(extractor.direct_search.max_results, 5);
-        assert_eq!(extractor.direct_search.min_score, 0.70);
-        assert_eq!(extractor.inverted_search.max_results, 3);
-        assert_eq!(extractor.inverted_search.min_score, 0.60);
-        assert_eq!(extractor.bayesian_seed_weight, 10.0);
-        assert_eq!(extractor.max_counter_increment, 5.0);
-        assert_eq!(extractor.max_counter, 100.0);
-        assert_eq!(extractor.auto_discard_threshold, 0.1);
-        assert_eq!(extractor.auto_promotion_threshold, 0.9);
-        assert_eq!(extractor.min_alpha_for_promotion, 12.0);
-        assert_eq!(extractor.decay_rate, 0.99);
+        let extractor = cfg.memory().extraction().extractor();
+        assert_eq!(extractor.classification_model(), "x");
+        assert_eq!(extractor.direct_search().max_results(), 5);
+        assert_eq!(extractor.direct_search().min_score(), 0.70);
+        assert_eq!(extractor.inverted_search().max_results(), 3);
+        assert_eq!(extractor.inverted_search().min_score(), 0.60);
+        assert_eq!(extractor.bayesian_seed_weight(), 10.0);
+        assert_eq!(extractor.max_counter_increment(), 5.0);
+        assert_eq!(extractor.max_counter(), 100.0);
+        assert_eq!(extractor.auto_discard_threshold(), 0.1);
+        assert_eq!(extractor.auto_promotion_threshold(), 0.9);
+        assert_eq!(extractor.min_alpha_for_promotion(), 12.0);
+        assert_eq!(extractor.decay_rate(), 0.99);
 
         // Smoke-check the file round-trip produces a valid config overall.
         let f = {
@@ -246,6 +346,6 @@ classification_model = "x"
             tmp
         };
         let cfg2 = load_config(f.path()).unwrap();
-        assert_eq!(cfg2.memory.extraction.extractor.decay_rate, 0.99);
+        assert_eq!(cfg2.memory().extraction().extractor().decay_rate(), 0.99);
     }
 }

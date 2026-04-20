@@ -14,8 +14,8 @@ pub fn entry_to_json(e: &loci_core::memory::MemoryEntry) -> serde_json::Value {
             "extracted_memory",
             evidence.bayesian_confidence().unwrap_or(*confidence),
             serde_json::json!({
-                "alpha": evidence.alpha,
-                "beta": evidence.beta,
+                "alpha": evidence.alpha(),
+                "beta": evidence.beta(),
             }),
         ),
     };

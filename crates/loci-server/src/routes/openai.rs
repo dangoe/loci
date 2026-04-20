@@ -321,11 +321,7 @@ fn extract_input(request: &ChatCompletionRequest) -> ChatCompletionInput {
             None
         };
 
-    ChatCompletionInput {
-        prompt,
-        system,
-        tuning,
-    }
+    ChatCompletionInput::new(prompt, system, tuning)
 }
 
 fn unix_now() -> u64 {

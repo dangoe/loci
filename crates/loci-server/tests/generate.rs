@@ -249,7 +249,7 @@ async fn test_generate_returns_internal_error_when_default_model_is_missing() {
         )]),
     ));
     let mut config = mock_config();
-    config.routing.text.default = "missing-model".to_string();
+    config.routing_mut().text_mut().set_default("missing-model");
     let server =
         TestServer::start_with_components(config, Arc::clone(&store), Arc::clone(&provider)).await;
 

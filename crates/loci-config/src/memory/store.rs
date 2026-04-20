@@ -4,6 +4,9 @@
 
 use serde::Deserialize;
 
+use crate::ConfigError;
+use crate::resolve;
+
 /// A named memory store definition.
 ///
 /// Each variant maps to a different backend. Serde uses the `kind` field as the
@@ -45,6 +48,16 @@ impl StoreConfig {
             StoreConfig::Qdrant { .. } => "qdrant",
             StoreConfig::Markdown { .. } => "markdown",
         }
+    }
+
+    /// Resolves `env:VAR` references in the `api_key` field, if present.
+    pub(crate) fn resolve_api_key(&mut self) -> Result<(), ConfigError> {
+        if let StoreConfig::Qdrant { api_key, .. } = self
+            && let Some(key) = api_key.as_mut()
+        {
+            *key = resolve::resolve_secret(key)?;
+        }
+        Ok(())
     }
 }
 

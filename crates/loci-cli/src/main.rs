@@ -62,20 +62,20 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let store = Arc::new(build_store(&config).await?);
             let provider = Arc::new(build_llm_provider(&config)?);
             let text_model = config
-                .models
-                .text
-                .get(&config.routing.text.default)
+                .models()
+                .text()
+                .get(config.routing().text().default())
                 .ok_or_else(|| ConfigError::MissingKey {
                     section: "models.text".into(),
-                    key: config.routing.text.default.clone(),
+                    key: config.routing().text().default().to_owned(),
                 })?
-                .model
-                .clone();
+                .model()
+                .to_owned();
             let handler = MemoryCommandHandler::new(
                 store,
                 provider,
                 text_model,
-                config.memory.extraction.clone(),
+                config.memory().extraction().clone(),
             );
             handler.handle(command, &mut std::io::stdout()).await
         }

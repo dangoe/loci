@@ -146,10 +146,10 @@ impl<E: TextEmbedder> QdrantMemoryStore<E> {
         } = memory.trust()
         {
             payload.insert(FIELD_CONFIDENCE, *confidence);
-            if let Some(alpha) = evidence.alpha {
+            if let Some(alpha) = evidence.alpha() {
                 payload.insert(FIELD_TRUST_EVIDENCE_ALPHA, alpha);
             }
-            if let Some(beta) = evidence.beta {
+            if let Some(beta) = evidence.beta() {
                 payload.insert(FIELD_TRUST_EVIDENCE_BETA, beta);
             }
         }
@@ -712,7 +712,7 @@ fn build_memory_trust(
         "fact" => MemoryTrust::Fact,
         _ => MemoryTrust::Extracted {
             confidence: confidence.unwrap_or(0.5),
-            evidence: TrustEvidence { alpha, beta },
+            evidence: TrustEvidence::with_counters(alpha, beta),
         },
     }
 }
@@ -765,10 +765,7 @@ mod tests {
             HashMap::new(),
             MemoryTrust::Extracted {
                 confidence: 0.5,
-                evidence: TrustEvidence {
-                    alpha: Some(alpha),
-                    beta: Some(beta),
-                },
+                evidence: TrustEvidence::with_counters(Some(alpha), Some(beta)),
             },
         )
     }
@@ -935,18 +932,16 @@ mod tests {
     #[test]
     fn test_build_memory_trust_from_payload_extracted_with_values() {
         let t = build_memory_trust("extracted_memory", Some(0.7), Some(7.0), Some(3.0));
-        assert!(matches!(
-            t,
-            MemoryTrust::Extracted {
-                confidence,
-                evidence: TrustEvidence {
-                    alpha: Some(a),
-                    beta: Some(b),
-                },
-            } if (confidence - 0.7).abs() < f64::EPSILON
-              && (a - 7.0).abs() < f64::EPSILON
-              && (b - 3.0).abs() < f64::EPSILON
-        ));
+        let MemoryTrust::Extracted {
+            confidence,
+            evidence,
+        } = t
+        else {
+            panic!("expected Extracted trust");
+        };
+        assert!((confidence - 0.7).abs() < f64::EPSILON);
+        assert_eq!(evidence.alpha(), Some(7.0));
+        assert_eq!(evidence.beta(), Some(3.0));
     }
 
     #[test]
