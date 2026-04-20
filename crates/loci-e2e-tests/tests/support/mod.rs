@@ -39,9 +39,10 @@ pub async fn start_qdrant_store(
 ) {
     let (container, url) = start_qdrant_container().await;
 
-    let config = QdrantConfig {
-        collection_name: "memory_entries".to_string(),
-        similarity_threshold,
+    let config = if let Some(threshold) = similarity_threshold {
+        QdrantConfig::new("memory_entries").with_similarity_threshold(threshold)
+    } else {
+        QdrantConfig::new("memory_entries")
     };
 
     let store =

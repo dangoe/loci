@@ -200,7 +200,8 @@ async fn test_generate_respects_temperature_zero() {
         .expect("second generate should succeed");
 
     assert_eq!(
-        resp1.text(), resp2.text(),
+        resp1.text(),
+        resp2.text(),
         "temperature=0.0 should produce deterministic output"
     );
 }

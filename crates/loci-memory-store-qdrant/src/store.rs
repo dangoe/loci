@@ -9,7 +9,7 @@ use futures::future::BoxFuture;
 use loci_core::embedding::{Embedding, TextEmbedder};
 use loci_core::error::MemoryStoreError;
 use loci_core::memory::store::{
-    AddEntriesResult, MemoryInput, MemoryQuery, MemoryQueryMode, MemoryStore, PerEntryFailure,
+    AddEntriesResult, MemoryInput, MemoryQuery, MemoryStore, PerEntryFailure,
 };
 use loci_core::memory::{MemoryEntry, MemoryTrust, Score, TrustEvidence};
 use qdrant_client::Payload;
@@ -338,30 +338,6 @@ impl<E: TextEmbedder> QdrantMemoryStore<E> {
             )
             .await;
     }
-    async fn persist_usage_counters(&self, entry: &MemoryEntry) -> Result<(), MemoryStoreError> {
-        let mut payload = Payload::new();
-        payload.insert(FIELD_SEEN_COUNT, i64::from(entry.seen_count()));
-        if let Some(first_seen) = entry.first_seen() {
-            payload.insert(FIELD_FIRST_SEEN, first_seen.timestamp());
-        }
-        if let Some(last_seen) = entry.last_seen() {
-            payload.insert(FIELD_LAST_SEEN, last_seen.timestamp());
-        }
-
-        self.client
-            .set_payload(
-                SetPayloadPointsBuilder::new(self.config.collection_name(), payload)
-                    .points_selector(PointsIdsList {
-                        ids: vec![PointId::from(entry.id().to_string())],
-                    })
-                    .wait(true),
-            )
-            .await
-            .map_err(|e| MemoryStoreError::Query(e.to_string()))?;
-
-        Ok(())
-    }
-
     async fn promote_in_store(&self, memory: &MemoryEntry) -> Result<(), MemoryStoreError> {
         let mut payload = Payload::new();
         payload.insert(FIELD_KIND, trust_kind_str(memory.trust()));
@@ -411,7 +387,7 @@ impl<E: TextEmbedder> MemoryStore for QdrantMemoryStore<E> {
 
             for (idx, input) in inputs.iter().enumerate() {
                 let trust = input.trust().clone();
-                let memory = MemoryEntry::new_with_trust(
+                let mut memory = MemoryEntry::new_with_trust(
                     input.content().to_string(),
                     input.metadata().clone(),
                     trust,
@@ -451,6 +427,8 @@ impl<E: TextEmbedder> MemoryStore for QdrantMemoryStore<E> {
                         }
                     }
                 }
+
+                memory.record_use();
 
                 if let Err(e) = self.do_upsert(&memory, &embedding).await {
                     failures.push(PerEntryFailure::new(idx, e));
@@ -497,19 +475,7 @@ impl<E: TextEmbedder> MemoryStore for QdrantMemoryStore<E> {
                 )
                 .await?;
 
-            if query.mode() == MemoryQueryMode::Use {
-                let mut updated_entries = Vec::with_capacity(entries.len());
-                for mut entry in entries {
-                    entry.record_use();
-                    if let Err(e) = self.persist_usage_counters(&entry).await {
-                        log::warn!("failed to persist usage counters for {}: {e}", entry.id());
-                    }
-                    updated_entries.push(entry);
-                }
-                Ok(updated_entries)
-            } else {
-                Ok(entries)
-            }
+            Ok(entries)
         })
     }
 

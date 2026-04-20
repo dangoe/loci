@@ -56,7 +56,7 @@ impl MemoryInput {
 pub enum MemoryQueryMode {
     /// Retrieval-only lookup. Does not affect lifecycle counters.
     Lookup,
-    /// Retrieval used for prompt-context memory. Updates usage counters.
+    /// Retrieval used for prompt-context memory. Signals intent; does not affect lifecycle counters.
     Use,
 }
 
