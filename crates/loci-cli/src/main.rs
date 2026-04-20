@@ -119,8 +119,9 @@ fn setup_logging(verbose: bool) {
     #[cfg(feature = "systemd-journal-logger")]
     {
         let journald_ok = JournalLog::new()
-            .and_then(|journal| journal.install())
-            .is_ok();
+            .ok()
+            .and_then(|journal| journal.install().ok())
+            .is_some();
         if journald_ok {
             // Journald is active; apply the level filter there instead.
             log::set_max_level(if verbose {

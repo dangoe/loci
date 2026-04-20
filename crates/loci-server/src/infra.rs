@@ -2,9 +2,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // This file is part of loci-server.
 
-// TODO: Extract shared infrastructure builders to a dedicated `loci-infra` crate
-// when a third consumer of these functions appears.
-
 //! Infrastructure builders: constructs concrete store and provider instances
 //! from parsed [`AppConfig`] sections.
 
