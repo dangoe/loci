@@ -326,7 +326,7 @@ mod tests {
         MemoryExtractionConfig, MemoryExtractorConfig, MemoryExtractorSearchResultsConfig,
     };
     use loci_core::{
-        memory::{MemoryEntry as CoreMemoryEntry, MemoryTrust, Score as CoreScore, TrustEvidence},
+        memory::{MemoryEntry as CoreMemoryEntry, MemoryTrust, TrustEvidence},
         model_provider::text_generation::TextGenerationResponse,
         testing::{
             AddEntriesBehavior, EntryBehavior, MockStore, MockTextGenerationModelProvider,
