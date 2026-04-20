@@ -12,7 +12,7 @@ use loci_config::{
     TextModelConfig, TextRoutingConfig,
 };
 use loci_core::{
-    memory_store::MemoryStore, model_provider::text_generation::TextGenerationModelProvider,
+    memory::store::MemoryStore, model_provider::text_generation::TextGenerationModelProvider,
 };
 
 use crate::{

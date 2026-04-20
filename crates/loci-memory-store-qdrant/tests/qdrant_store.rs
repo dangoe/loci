@@ -7,7 +7,6 @@
 use std::collections::HashMap;
 
 use chrono::{Duration, Utc};
-use loci_core::error::MemoryStoreError;
 use loci_core::memory::store::{MemoryInput, MemoryQuery, MemoryQueryMode, MemoryStore};
 use loci_core::memory::{MemoryEntry, MemoryTrust, TrustEvidence};
 use loci_core::testing::MockTextEmbedder;

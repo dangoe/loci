@@ -104,6 +104,32 @@ pub struct MemoryExtractorConfig {
     min_alpha_for_promotion: f64,
 }
 
+impl MemoryExtractorConfig {
+    /// Creates a new `MemoryExtractorConfig` with all fields specified explicitly.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        direct_search: MemoryQueryOptions,
+        inverted_search: MemoryQueryOptions,
+        bayesian_seed_weight: f64,
+        max_counter_increment: f64,
+        max_counter: f64,
+        auto_discard_threshold: f64,
+        auto_promotion_threshold: f64,
+        min_alpha_for_promotion: f64,
+    ) -> Self {
+        Self {
+            direct_search,
+            inverted_search,
+            bayesian_seed_weight,
+            max_counter_increment,
+            max_counter,
+            auto_discard_threshold,
+            auto_promotion_threshold,
+            min_alpha_for_promotion,
+        }
+    }
+}
+
 impl Default for MemoryExtractorConfig {
     fn default() -> Self {
         Self {
