@@ -288,6 +288,7 @@ fn map_view_to_hashmap(map: &buffa::MapView<'_, &str, &str>) -> HashMap<String, 
         .collect()
 }
 
+#[allow(clippy::result_large_err)]
 fn build_extraction_params(
     request: &MemoryServiceExtractRequestView<'_>,
     extraction_config: &loci_config::MemoryExtractionConfig,
