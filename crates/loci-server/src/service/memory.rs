@@ -13,10 +13,8 @@ use connectrpc::{ConnectError, Context};
 use uuid::Uuid;
 
 use loci_core::error::MemoryStoreError;
-use loci_core::memory::{
-    MemoryInput, MemoryQuery, MemoryQueryMode, MemoryQueryResult, MemoryTrust, Score,
-};
-use loci_core::memory_store::MemoryStore;
+use loci_core::memory::store::{MemoryInput, MemoryQuery, MemoryQueryMode, MemoryStore};
+use loci_core::memory::{MemoryEntry as CoreMemoryEntry, MemoryTrust};
 use loci_core::model_provider::text_generation::TextGenerationModelProvider;
 
 use crate::loci::memory::v1::{
@@ -60,12 +58,17 @@ where
     ) -> Result<(MemoryServiceAddEntryResponse, Context), ConnectError> {
         let trust = proto_kind_to_trust(request.kind.as_known());
         let metadata = map_view_to_hashmap(&request.metadata);
-        let input = MemoryInput::new_with_trust(request.content.to_owned(), metadata, trust);
+        let input = MemoryInput::new(request.content.to_owned(), trust, metadata);
 
-        let result = self.state.store.add_entry(input).await.map_err(store_err)?;
+        let result = self
+            .state
+            .store
+            .add_entry(&input)
+            .await
+            .map_err(store_err)?;
         Ok((
             MemoryServiceAddEntryResponse {
-                entry: MessageField::some(query_result_to_proto(&result)),
+                entry: MessageField::some(entry_to_proto(&result)),
                 ..Default::default()
             },
             ctx,
@@ -78,10 +81,16 @@ where
         request: OwnedView<MemoryServiceGetEntryRequestView<'static>>,
     ) -> Result<(MemoryServiceGetEntryResponse, Context), ConnectError> {
         let id = parse_uuid(request.id)?;
-        let result = self.state.store.get_entry(id).await.map_err(store_err)?;
+        let result = self
+            .state
+            .store
+            .get_entry(&id)
+            .await
+            .map_err(store_err)?
+            .ok_or_else(|| ConnectError::not_found(format!("memory entry not found: {id}")))?;
         Ok((
             MemoryServiceGetEntryResponse {
-                entry: MessageField::some(query_result_to_proto(&result)),
+                entry: MessageField::some(entry_to_proto(&result)),
                 ..Default::default()
             },
             ctx,
@@ -93,19 +102,20 @@ where
         ctx: Context,
         request: OwnedView<MemoryServiceQueryRequestView<'static>>,
     ) -> Result<(MemoryServiceQueryResponse, Context), ConnectError> {
-        let min_score = Score::new(request.min_score)
+        use loci_core::memory::Score;
+        use std::num::NonZeroUsize;
+        let min_score = Score::try_new(request.min_score)
             .map_err(|_| ConnectError::invalid_argument("min_score must be in [0.0, 1.0]"))?;
-        let query = MemoryQuery {
-            topic: request.topic.to_owned(),
-            max_results: request.max_results as usize,
-            min_score,
-            filters: map_view_to_hashmap(&request.filters),
-            mode: MemoryQueryMode::Lookup,
-        };
+        let max_results = NonZeroUsize::new(request.max_results as usize)
+            .unwrap_or(NonZeroUsize::new(10).unwrap());
+        let query = MemoryQuery::new(request.topic.to_owned(), MemoryQueryMode::Lookup)
+            .with_max_results(max_results)
+            .with_min_score(min_score)
+            .with_filters(map_view_to_hashmap(&request.filters));
         let results = self.state.store.query(query).await.map_err(store_err)?;
         Ok((
             MemoryServiceQueryResponse {
-                entries: results.iter().map(query_result_to_proto).collect(),
+                entries: results.iter().map(entry_to_proto).collect(),
                 ..Default::default()
             },
             ctx,
@@ -114,28 +124,12 @@ where
 
     async fn update_entry(
         &self,
-        ctx: Context,
+        _ctx: Context,
         request: OwnedView<MemoryServiceUpdateEntryRequestView<'static>>,
     ) -> Result<(MemoryServiceUpdateEntryResponse, Context), ConnectError> {
-        let id = parse_uuid(request.id)?;
-        let trust = proto_kind_to_trust(request.kind.as_known());
-        let input = MemoryInput::new_with_trust(
-            request.content.to_owned(),
-            map_view_to_hashmap(&request.metadata),
-            trust,
-        );
-        let result = self
-            .state
-            .store
-            .update_entry(id, input)
-            .await
-            .map_err(store_err)?;
-        Ok((
-            MemoryServiceUpdateEntryResponse {
-                entry: MessageField::some(query_result_to_proto(&result)),
-                ..Default::default()
-            },
-            ctx,
+        let _id = parse_uuid(request.id)?; // validate UUID format even though operation is unsupported
+        Err(ConnectError::internal(
+            "update_entry is not supported by this store implementation",
         ))
     }
 
@@ -145,16 +139,16 @@ where
         request: OwnedView<MemoryServiceSetEntryKindRequestView<'static>>,
     ) -> Result<(MemoryServiceSetEntryKindResponse, Context), ConnectError> {
         let id = parse_uuid(request.id)?;
-        let trust = proto_kind_to_trust(request.kind.as_known());
         let result = self
             .state
             .store
-            .set_entry_trust(id, trust)
+            .promote(&id)
             .await
-            .map_err(store_err)?;
+            .map_err(store_err)?
+            .ok_or_else(|| ConnectError::not_found(format!("memory entry not found: {id}")))?;
         Ok((
             MemoryServiceSetEntryKindResponse {
-                entry: MessageField::some(query_result_to_proto(&result)),
+                entry: MessageField::some(entry_to_proto(&result)),
                 ..Default::default()
             },
             ctx,
@@ -167,7 +161,11 @@ where
         request: OwnedView<MemoryServiceDeleteEntryRequestView<'static>>,
     ) -> Result<(MemoryServiceDeleteEntryResponse, Context), ConnectError> {
         let id = parse_uuid(request.id)?;
-        self.state.store.delete_entry(id).await.map_err(store_err)?;
+        self.state
+            .store
+            .delete_entry(&id)
+            .await
+            .map_err(store_err)?;
         Ok((
             MemoryServiceDeleteEntryResponse {
                 deleted: true,
@@ -239,22 +237,27 @@ fn map_view_to_hashmap(map: &buffa::MapView<'_, &str, &str>) -> HashMap<String, 
         .collect()
 }
 
-fn query_result_to_proto(r: &MemoryQueryResult) -> MemoryEntry {
-    let e = &r.memory_entry;
+fn entry_to_proto(e: &CoreMemoryEntry) -> MemoryEntry {
     MemoryEntry {
-        id: e.id.to_string(),
-        content: e.content.clone(),
-        metadata: e.metadata.clone(),
-        kind: EnumValue::from(trust_to_proto_kind(&e.trust)),
-        seen_count: e.seen_count,
-        first_seen: MessageField::some(datetime_to_timestamp(e.first_seen)),
-        last_seen: MessageField::some(datetime_to_timestamp(e.last_seen)),
-        expires_at: e
-            .expires_at
+        id: e.id().to_string(),
+        content: e.content().to_owned(),
+        metadata: e.metadata().clone(),
+        kind: EnumValue::from(trust_to_proto_kind(e.trust())),
+        seen_count: e.seen_count(),
+        first_seen: e
+            .first_seen()
             .map(|dt| MessageField::some(datetime_to_timestamp(dt)))
             .unwrap_or_default(),
-        created_at: MessageField::some(datetime_to_timestamp(e.created_at)),
-        score: r.score.value(),
+        last_seen: e
+            .last_seen()
+            .map(|dt| MessageField::some(datetime_to_timestamp(dt)))
+            .unwrap_or_default(),
+        expires_at: e
+            .expires_at()
+            .map(|dt| MessageField::some(datetime_to_timestamp(dt)))
+            .unwrap_or_default(),
+        created_at: MessageField::some(datetime_to_timestamp(e.created_at())),
+        score: e.trust().effective_score().value(),
         ..Default::default()
     }
 }

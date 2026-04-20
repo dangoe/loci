@@ -13,7 +13,7 @@ use loci_config::{
     ModelProviderKind, ModelsConfig, RoutingConfig, StoreConfig, TextModelConfig,
     TextRoutingConfig,
 };
-use loci_core::memory_store::MemoryStore;
+use loci_core::memory::store::MemoryStore;
 use loci_core::model_provider::text_generation::TextGenerationModelProvider;
 
 use crate::commands::config::ConfigCommand;

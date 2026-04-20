@@ -99,10 +99,10 @@ pub async fn build_store(
                 embed_profile.dimension,
             );
 
-            let qdrant_config = QdrantConfig {
-                collection_name: collection.clone(),
-                similarity_threshold: config.memory.config.similarity_threshold,
-            };
+            let mut qdrant_config = QdrantConfig::new(collection.clone());
+            if let Some(threshold) = config.memory.config.similarity_threshold {
+                qdrant_config = qdrant_config.with_similarity_threshold(threshold);
+            }
 
             info!("Connecting to Qdrant at {url}");
             let store = QdrantMemoryStore::new(url, qdrant_config, embedder)?;
@@ -136,11 +136,10 @@ pub fn build_llm_provider(
                 "Using OpenAI-compatible model provider at {}",
                 provider.endpoint
             );
-            let cfg = OpenAIConfig {
-                base_url: provider.endpoint.clone(),
-                api_key: provider.api_key.clone(),
-                timeout: None,
-            };
+            let mut cfg = OpenAIConfig::new(provider.endpoint.clone());
+            if let Some(key) = &provider.api_key {
+                cfg = cfg.with_api_key(key.clone());
+            }
             Ok(AnyModelProvider::OpenAI(OpenAIModelProvider::new(cfg)?))
         }
         ModelProviderKind::Anthropic => Err(Box::new(ConfigError::UnsupportedKind {

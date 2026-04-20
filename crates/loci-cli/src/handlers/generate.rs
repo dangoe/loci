@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // This file is part of loci-cli.
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::{error::Error as StdError, io::Write};
 
@@ -15,8 +16,7 @@ use loci_core::{
         ContextualizerTuningConfig as CoreContextualizerTuningConfig,
     },
     error::ContextualizerError,
-    memory::Score as CoreScore,
-    memory_store::MemoryStore as CoreMemoryStore,
+    memory::{Score as CoreScore, store::MemoryStore as CoreMemoryStore},
     model_provider::text_generation::{
         TextGenerationModelProvider as CoreTextGenerationModelProvider,
         TextGenerationResponse as CoreTextGenerationResponse,
@@ -86,21 +86,23 @@ impl<'a, S: CoreMemoryStore, T: CoreTextGenerationModelProvider + 'static, W: Wr
         let min_score =
             CoreScore::try_new(command.min_score).map_err(|e| format!("invalid min_score: {e}"))?;
 
-        let ctx_config = CoreContextualizerConfig {
-            system: command.system.map(|system| CoreContextualizerSystemConfig {
-                mode: match command.system_mode {
-                    GenerateSystemMode::Append => CoreContextualizerSystemMode::Append,
-                    GenerateSystemMode::Replace => CoreContextualizerSystemMode::Replace,
-                },
-                system,
+        let ctx_config = CoreContextualizerConfig::new(
+            model.model,
+            command.system.map(|system| {
+                CoreContextualizerSystemConfig::new(
+                    match command.system_mode {
+                        GenerateSystemMode::Append => CoreContextualizerSystemMode::Append,
+                        GenerateSystemMode::Replace => CoreContextualizerSystemMode::Replace,
+                    },
+                    system,
+                )
             }),
-            max_memory_entries: command.max_memory_entries,
+            command.memory_mode.into(),
+            NonZeroUsize::new(command.max_memory_entries).unwrap_or(NonZeroUsize::new(5).unwrap()),
             min_score,
-            memory_mode: command.memory_mode.into(),
-            filters: command.filters.into_iter().collect(),
-            text_generation_model: model.model,
-            tuning: model.tuning.as_ref().map(model_tuning_to_contextualizer),
-        };
+            command.filters.into_iter().collect(),
+            model.tuning.as_ref().map(model_tuning_to_contextualizer),
+        );
 
         let contextualizer = CoreContextualizer::new(
             Arc::clone(&self.store),
@@ -117,7 +119,7 @@ impl<'a, S: CoreMemoryStore, T: CoreTextGenerationModelProvider + 'static, W: Wr
             eprintln!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
-                      "retrieved_memory": debug_info.memory_entries.iter().map(entry_to_json).collect::<Vec<_>>(),
+                      "retrieved_memory": debug_info.memory_entries().iter().map(entry_to_json).collect::<Vec<_>>(),
                 }))?
             );
 
@@ -133,17 +135,17 @@ impl<'a, S: CoreMemoryStore, T: CoreTextGenerationModelProvider + 'static, W: Wr
 }
 
 fn model_tuning_to_contextualizer(tuning: &ModelTuningConfig) -> CoreContextualizerTuningConfig {
-    CoreContextualizerTuningConfig {
-        temperature: tuning.temperature,
-        max_tokens: tuning.max_tokens,
-        top_p: tuning.top_p,
-        repeat_penalty: tuning.repeat_penalty,
-        repeat_last_n: tuning.repeat_last_n,
-        thinking: tuning.thinking.as_ref().map(model_thinking_to_core),
-        stop: tuning.stop.clone(),
-        keep_alive: tuning.keep_alive_secs.map(std::time::Duration::from_secs),
-        extra_params: tuning.extra.clone(),
-    }
+    CoreContextualizerTuningConfig::new(
+        tuning.temperature,
+        tuning.max_tokens,
+        tuning.top_p,
+        tuning.repeat_penalty,
+        tuning.repeat_last_n,
+        tuning.thinking.as_ref().map(model_thinking_to_core),
+        tuning.stop.clone(),
+        tuning.keep_alive_secs.map(std::time::Duration::from_secs),
+        tuning.extra.clone(),
+    )
 }
 
 /// Consumes a text-generation stream, printing each chunk to stdout.
@@ -157,9 +159,9 @@ async fn stream_text_generation<W: std::io::Write>(
     use futures::StreamExt as _;
     while let Some(result) = stream.next().await {
         let chunk = result.map_err(|e| e.to_string())?;
-        write!(out, "{}", chunk.text)?;
+        write!(out, "{}", chunk.text())?;
         out.flush()?;
-        if chunk.done {
+        if chunk.is_done() {
             writeln!(out)?;
         }
     }
@@ -237,14 +239,17 @@ mod tests {
 
         let ctx = model_tuning_to_contextualizer(&tuning);
 
-        assert_eq!(ctx.temperature, Some(0.7));
-        assert_eq!(ctx.max_tokens, Some(512));
-        assert_eq!(ctx.top_p, Some(0.9));
-        assert_eq!(ctx.repeat_penalty, Some(1.1));
-        assert_eq!(ctx.repeat_last_n, Some(64));
-        assert_eq!(ctx.stop.as_deref(), Some(["<END>".to_string()].as_slice()));
-        assert_eq!(ctx.keep_alive, Some(Duration::from_secs(300)));
-        assert!(matches!(ctx.thinking, Some(ThinkingMode::Enabled)));
+        assert_eq!(ctx.temperature(), Some(0.7));
+        assert_eq!(ctx.max_tokens(), Some(512));
+        assert_eq!(ctx.top_p(), Some(0.9));
+        assert_eq!(ctx.repeat_penalty(), Some(1.1));
+        assert_eq!(ctx.repeat_last_n(), Some(64));
+        assert_eq!(
+            ctx.stop().map(|s| s.to_vec()),
+            Some(vec!["<END>".to_string()])
+        );
+        assert_eq!(ctx.keep_alive(), Some(Duration::from_secs(300)));
+        assert!(matches!(ctx.thinking(), Some(ThinkingMode::Enabled)));
     }
 
     #[test]
@@ -254,14 +259,14 @@ mod tests {
         let tuning = ModelTuningConfig::default();
         let ctx = model_tuning_to_contextualizer(&tuning);
 
-        assert_eq!(ctx.temperature, None);
-        assert_eq!(ctx.max_tokens, None);
-        assert_eq!(ctx.top_p, None);
-        assert_eq!(ctx.repeat_penalty, None);
-        assert_eq!(ctx.repeat_last_n, None);
-        assert_eq!(ctx.stop, None);
-        assert_eq!(ctx.keep_alive, None);
-        assert!(ctx.thinking.is_none());
+        assert_eq!(ctx.temperature(), None);
+        assert_eq!(ctx.max_tokens(), None);
+        assert_eq!(ctx.top_p(), None);
+        assert_eq!(ctx.repeat_penalty(), None);
+        assert_eq!(ctx.repeat_last_n(), None);
+        assert_eq!(ctx.stop(), None);
+        assert_eq!(ctx.keep_alive(), None);
+        assert!(ctx.thinking().is_none());
     }
 
     #[rstest]
@@ -323,18 +328,18 @@ mod tests {
         use loci_core::model_provider::text_generation::TextGenerationResponse;
 
         let chunks: Vec<Result<TextGenerationResponse, ContextualizerError>> = vec![
-            Ok(TextGenerationResponse {
-                text: "hello ".to_string(),
-                model: "m".to_string(),
-                usage: None,
-                done: false,
-            }),
-            Ok(TextGenerationResponse {
-                text: "world".to_string(),
-                model: "m".to_string(),
-                usage: None,
-                done: true,
-            }),
+            Ok(TextGenerationResponse::new(
+                "hello ".to_string(),
+                "m".to_string(),
+                None,
+                false,
+            )),
+            Ok(TextGenerationResponse::new(
+                "world".to_string(),
+                "m".to_string(),
+                None,
+                true,
+            )),
         ];
 
         let mut out = Vec::new();
@@ -358,12 +363,12 @@ mod tests {
         use loci_core::model_provider::text_generation::TextGenerationResponse;
 
         let chunks: Vec<Result<TextGenerationResponse, ContextualizerError>> = vec![
-            Ok(TextGenerationResponse {
-                text: "partial".to_string(),
-                model: "m".to_string(),
-                usage: None,
-                done: false,
-            }),
+            Ok(TextGenerationResponse::new(
+                "partial".to_string(),
+                "m".to_string(),
+                None,
+                false,
+            )),
             Err(ContextualizerError::MemoryStore(
                 MemoryStoreError::Connection("boom".to_string()),
             )),
@@ -403,13 +408,9 @@ mod tests {
         use loci_core::error::ContextualizerError;
         use loci_core::model_provider::text_generation::TextGenerationResponse;
 
-        let chunks: Vec<Result<TextGenerationResponse, ContextualizerError>> =
-            vec![Ok(TextGenerationResponse {
-                text: "hi".to_string(),
-                model: "m".to_string(),
-                usage: None,
-                done: true,
-            })];
+        let chunks: Vec<Result<TextGenerationResponse, ContextualizerError>> = vec![Ok(
+            TextGenerationResponse::new("hi".to_string(), "m".to_string(), None, true),
+        )];
         let mut out = Vec::new();
         stream_text_generation(stream::iter(chunks), &mut out)
             .await
@@ -426,18 +427,18 @@ mod tests {
         use loci_core::model_provider::text_generation::TextGenerationResponse;
 
         let chunks: Vec<Result<TextGenerationResponse, ContextualizerError>> = vec![
-            Ok(TextGenerationResponse {
-                text: "a".to_string(),
-                model: "m".to_string(),
-                usage: None,
-                done: false,
-            }),
-            Ok(TextGenerationResponse {
-                text: "b".to_string(),
-                model: "m".to_string(),
-                usage: None,
-                done: false,
-            }),
+            Ok(TextGenerationResponse::new(
+                "a".to_string(),
+                "m".to_string(),
+                None,
+                false,
+            )),
+            Ok(TextGenerationResponse::new(
+                "b".to_string(),
+                "m".to_string(),
+                None,
+                false,
+            )),
         ];
         let mut out = Vec::new();
         stream_text_generation(stream::iter(chunks), &mut out)
@@ -464,8 +465,8 @@ mod tests {
 
         let ctx = model_tuning_to_contextualizer(&tuning);
 
-        assert_eq!(ctx.extra_params.get("top_k").unwrap(), &json!(40));
-        assert_eq!(ctx.extra_params.get("seed").unwrap(), &json!(42));
+        assert_eq!(ctx.extra_params().get("top_k").unwrap(), &json!(40));
+        assert_eq!(ctx.extra_params().get("seed").unwrap(), &json!(42));
     }
 
     #[tokio::test]
