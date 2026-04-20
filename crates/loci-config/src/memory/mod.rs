@@ -6,7 +6,11 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
-use crate::{extraction::MemoryExtractionConfig, store::StoreConfig};
+use self::extraction::MemoryExtractionConfig;
+use self::store::StoreConfig;
+
+pub mod extraction;
+pub mod store;
 
 /// Top-level memory section, deserialized from `[memory]`.
 #[derive(Debug, Clone, Deserialize)]

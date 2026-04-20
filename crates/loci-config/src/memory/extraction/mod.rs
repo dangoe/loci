@@ -4,8 +4,10 @@
 
 use serde::Deserialize;
 
-use crate::extractor::MemoryExtractorConfig;
-use crate::model::ModelThinkingConfig;
+use crate::ModelThinkingConfig;
+
+mod extractor;
+pub use extractor::{MemoryExtractorConfig, MemoryExtractorSearchResultsConfig};
 
 /// Chunking settings for splitting input text before LLM extraction,
 /// deserialized from `[memory.extraction.chunking]`.

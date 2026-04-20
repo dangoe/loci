@@ -7,20 +7,6 @@ use std::collections::HashMap;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::embedding::EmbeddingModelConfig;
-
-/// Container for all model registries, deserialized from `[models]`.
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct ModelsConfig {
-    /// Named text-generation model configs, each under `[models.text.<name>]`.
-    #[serde(default)]
-    pub text: HashMap<String, TextModelConfig>,
-
-    /// Named embedding model configs, each under `[models.embedding.<name>]`.
-    #[serde(default)]
-    pub embedding: HashMap<String, EmbeddingModelConfig>,
-}
-
 /// A named text-generation model config, nested under `[models.text.<name>]`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct TextModelConfig {

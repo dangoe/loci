@@ -12,30 +12,27 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-pub use embedding::EmbeddingModelConfig;
 pub use error::ConfigError;
-pub use extraction::{ChunkingConfig, MemoryExtractionConfig};
-pub use extractor::{MemoryExtractorConfig, MemoryExtractorSearchResultsConfig};
 pub use init::{ConfigInitError, DEFAULT_CONFIG_TEMPLATE, init_config};
+pub use memory::extraction::{ChunkingConfig, MemoryExtractionConfig};
+pub use memory::extraction::{MemoryExtractorConfig, MemoryExtractorSearchResultsConfig};
+pub use memory::store::StoreConfig;
 pub use memory::{MemoryConfig, MemorySection};
-pub use model::{
-    ModelThinkingConfig, ModelThinkingEffortLevel, ModelTuningConfig, ModelsConfig, TextModelConfig,
+pub use models::ModelsConfig;
+pub use models::embedding::EmbeddingModelConfig;
+pub use models::text::{
+    ModelThinkingConfig, ModelThinkingEffortLevel, ModelTuningConfig, TextModelConfig,
 };
-pub use provider::{ModelProviderConfig, ModelProviderKind};
+pub use providers::{ModelProviderConfig, ModelProviderKind};
 pub use routing::{EmbeddingRoutingConfig, MemoryRoutingConfig, RoutingConfig, TextRoutingConfig};
-pub use store::StoreConfig;
 
-mod embedding;
 mod error;
-mod extraction;
-mod extractor;
 mod init;
 mod memory;
-mod model;
-mod provider;
+mod models;
+mod providers;
 mod resolve;
 mod routing;
-mod store;
 
 /// Top-level application configuration.
 #[derive(Debug, Clone, serde::Deserialize)]
