@@ -16,19 +16,22 @@ cargo fmt --check                                          # formatting check
 
 ## Workspace Structure
 
-| Crate                        | Path                                | Purpose                                                                                                   |
-| ---------------------------- | ----------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `loci-core`                  | `crates/loci-core`                  | Domain types and core traits (`MemoryStore`, `TextEmbedder`, model-provider traits) plus `Contextualizer` |
-| `loci-memory-store-qdrant`   | `crates/loci-memory-store-qdrant`   | `QdrantMemoryStore` implementation with Bayesian confidence scoring and deduplication                     |
-| `loci-model-provider-ollama` | `crates/loci-model-provider-ollama` | `OllamaModelProvider` for embeddings and text generation                                                  |
-| `loci-config`                | `crates/loci-config`                | Config schema and loader (`env:` secret resolution)                                                       |
-| `loci-cli`                   | `crates/loci-cli`                   | CLI entry point and command handling                                                                      |
-| `loci-e2e-tests`             | `crates/loci-e2e-tests`             | End-to-end tests (requires Docker + Ollama)                                                               |
+| Crate                        | Path                                      | Purpose                                                                                                   |
+| ---------------------------- | ----------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `loci-core`                  | `crates/loci-core`                        | Domain types and core traits (`MemoryStore`, `TextEmbedder`, model-provider traits) plus `Contextualizer` |
+| `loci-memory-store-qdrant`   | `crates/loci-memory-store-qdrant`         | `QdrantMemoryStore` implementation with Bayesian confidence scoring and deduplication                     |
+| `loci-model-provider-ollama` | `crates/loci-model-provider-ollama`       | `OllamaModelProvider` for embeddings and text generation                                                  |
+| `loci-model-provider-openai` | `crates/loci-model-provider-openai`       | `OpenAIModelProvider` for embeddings and text generation (OpenAI-compatible API)                          |
+| `loci-config`                | `crates/loci-config`                      | Config schema and loader (`env:` secret resolution)                                                       |
+| `loci-wire`                  | `crates/loci-wire`                        | Runtime wiring: builds concrete store and provider instances from `AppConfig`; exposes `AnyModelProvider` |
+| `loci-server`                | `crates/loci-server`                      | `loci-server` binary; HTTP server with OpenAI-compatible API and Connect RPC endpoints                    |
+| `loci-cli`                   | `crates/loci-cli`                         | CLI entry point and command handling                                                                      |
+| `loci-e2e-tests`             | `crates/loci-e2e-tests`                   | End-to-end tests (requires Docker + Ollama)                                                               |
 
 ## Runtime Status
 
-- Implemented at runtime: `qdrant` store + `ollama` provider.
-- Config may parse `openai`, `anthropic`, and `markdown`, but runtime currently returns
+- Implemented at runtime: `qdrant` store + `ollama` and `openai`-compatible providers (via `loci-wire`).
+- Config may parse `anthropic` and `markdown` store, but runtime currently returns
   `UnsupportedKind` when those are selected.
 
 ## Core Domain Notes (`loci-core`)
@@ -71,12 +74,15 @@ A candidate that contradicts an existing `MemoryTrust::Fact` entry is immediatel
 
 ## Dependencies in Use
 
-| Crate                                | Used in                                   | Purpose                           |
-| ------------------------------------ | ----------------------------------------- | --------------------------------- |
-| `qdrant-client`                      | `loci-memory-store-qdrant`                | Qdrant API client                 |
-| `reqwest`                            | `loci-core`, `loci-model-provider-ollama` | HTTP model-provider communication |
-| `clap`                               | `loci-cli`                                | CLI parsing                       |
-| `chrono`                             | `loci-core`, `loci-memory-store-qdrant`   | Timestamp and TTL handling        |
-| `serde` / `serde_json` / `toml`      | config + providers                        | Config and payload serialization  |
-| `tokio` / `futures` / `async-stream` | core + cli + providers                    | Async runtime and streaming       |
-| `uuid`                               | core + store + cli                        | Memory IDs                        |
+| Crate                                | Used in                                                          | Purpose                           |
+| ------------------------------------ | ---------------------------------------------------------------- | --------------------------------- |
+| `qdrant-client`                      | `loci-memory-store-qdrant`                                       | Qdrant API client                 |
+| `reqwest`                            | `loci-core`, `loci-model-provider-ollama`, `loci-model-provider-openai` | HTTP model-provider communication |
+| `clap`                               | `loci-cli`, `loci-server`                                        | CLI parsing                       |
+| `chrono`                             | `loci-core`, `loci-memory-store-qdrant`                          | Timestamp and TTL handling        |
+| `serde` / `serde_json` / `toml`      | config + providers                                               | Config and payload serialization  |
+| `tokio` / `futures` / `async-stream` | core + cli + server + providers                                  | Async runtime and streaming       |
+| `uuid`                               | core + store + cli                                               | Memory IDs                        |
+| `axum`                               | `loci-server`                                                    | HTTP routing                      |
+| `buffa` / `buffa-types`              | `loci-server`                                                    | Connect RPC support               |
+| `tower-http`                         | `loci-server`                                                    | CORS and tracing middleware       |
