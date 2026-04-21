@@ -49,27 +49,28 @@ The following is fully implemented and working today.
 
 ### Workspace
 
-| Crate                        | Path                                | Purpose                                                              |
-| ---------------------------- | ----------------------------------- | -------------------------------------------------------------------- |
-| `loci-core`                  | `crates/loci-core`                  | Traits, domain types, `Contextualizer`                               |
-| `loci-memory-store-qdrant`   | `crates/loci-memory-store-qdrant`   | Qdrant-backed `MemoryStore` with lifecycle-aware retrieval           |
-| `loci-model-provider-ollama` | `crates/loci-model-provider-ollama` | Ollama embedding + text generation model provider                    |
-| `loci-model-provider-openai` | `crates/loci-model-provider-openai` | OpenAI-compatible embedding + text generation model provider         |
-| `loci-config`                | `crates/loci-config`                | TOML config loading and secret resolution                            |
-| `loci-wire`                  | `crates/loci-wire`                  | Runtime wiring: builds concrete store and provider from `AppConfig`  |
-| `loci-server`                | `crates/loci-server`                | `loci-server` binary — OpenAI-compatible and Connect RPC HTTP server |
-| `loci-cli`                   | `crates/loci-cli`                   | `loci` CLI binary — memory CRUD, LLM extraction, and prompt enhancement |
+| Crate                        | Path                                | Purpose                                                                              |
+| ---------------------------- | ----------------------------------- | ------------------------------------------------------------------------------------ |
+| `loci-core`                  | `crates/loci-core`                  | Traits, domain types, `Contextualizer`                                               |
+| `loci-memory-store-qdrant`   | `crates/loci-memory-store-qdrant`   | Qdrant-backed `MemoryStore` with lifecycle-aware retrieval                           |
+| `loci-model-provider-ollama` | `crates/loci-model-provider-ollama` | Ollama embedding + text generation model provider                                    |
+| `loci-model-provider-openai` | `crates/loci-model-provider-openai` | OpenAI-compatible embedding + text generation model provider                         |
+| `loci-config`                | `crates/loci-config`                | TOML config loading and secret resolution                                            |
+| `loci-wire`                  | `crates/loci-wire`                  | Runtime wiring: builds concrete store and provider from `AppConfig`                  |
+| `loci-server`                | `crates/loci-server`                | `loci-server` binary — OpenAI-compatible and Connect RPC HTTP server                 |
+| `loci-cli`                   | `crates/loci-cli`                   | `loci` CLI binary — memory operations, LLM extraction, and contextualized generation |
+| `loci-e2e-tests`             | `crates/loci-e2e-tests`             | End-to-end coverage for the CLI and server flows                                     |
 
 ### Core Abstractions (`loci-core`)
 
-| Trait                         | Purpose                                                             |
-| ----------------------------- | ------------------------------------------------------------------- |
-| `MemoryStore`                 | Add, get, query, update, set kind, delete, prune expired memory entries |
-| `TextEmbedder`                | Embed text into a vector                                            |
-| `EmbeddingModelProvider`      | Raw embedding model provider (HTTP, model name)                     |
-| `TextGenerationModelProvider` | Raw text generation model provider                                  |
+| Trait                         | Purpose                                                            |
+| ----------------------------- | ------------------------------------------------------------------ |
+| `MemoryStore`                 | Add, get, query, promote, delete, and prune expired memory entries |
+| `TextEmbedder`                | Embed text into a vector                                           |
+| `EmbeddingModelProvider`      | Raw embedding model provider (HTTP, model name)                    |
+| `TextGenerationModelProvider` | Raw text generation model provider                                 |
 
-Key domain types: `MemoryEntry`, `MemoryQueryResult`, `MemoryInput`, `MemoryQuery`, `MemoryTrust`, `MemoryQueryMode`, `Score`, `Embedding`.
+Key domain types: `MemoryEntry`, `MemoryInput`, `MemoryQuery`, `MemoryTrust`, `TrustEvidence`, `MemoryQueryMode`, `Score`, `Embedding`.
 
 ### Storage (`loci-memory-store-qdrant`)
 
@@ -81,10 +82,23 @@ Features:
 - Two-variant trust model: `MemoryTrust::Extracted` (Bayesian confidence, subject to decay/discard/promotion) and `MemoryTrust::Fact` (confidence 1.0, no expiry)
 - Per-kind TTL defaults and query-time expiry filtering
 - Weighted retrieval ranking (`similarity * kind_weight`)
-- Auto-promotion to `Fact` when Bayesian score exceeds the promotion threshold
-- Manual promotion path (`set_entry_kind`) for promoting to `Fact`
+- Manual promotion path via `loci memory promote`
 - Metadata filtering (AND semantics, exact match)
 - Min score threshold and max result limits
+
+### Memory Extraction (`loci-core`, `loci-cli`)
+
+`MemoryExtractor` turns unstructured text into persisted memory entries using the configured text
+model and classifier.
+
+Features:
+
+- `loci memory extract` accepts positional text, repeatable `--file` inputs, or stdin
+- Optional sentence-aware chunking from `[memory.extraction.chunking]`
+- Per-run overrides for `max_entries`, `min_confidence`, `guidelines`, and attached metadata
+- Dual semantic search plus hit classification before insert/merge decisions
+- Configurable merge strategy (`best_score` or LLM-based)
+- Discard handling for low-confidence candidates and contradictions against existing `Fact` entries
 
 ### Model Providers (`loci-model-provider-ollama`, `loci-model-provider-openai`)
 
@@ -92,7 +106,7 @@ Features:
 against a local [Ollama](https://ollama.com/) instance.
 
 `OpenAIModelProvider` implements the same traits against any OpenAI-compatible HTTP API
-(OpenAI, local proxies, etc.). Configure `base_url` and optionally `api_key` in `config.toml`.
+(OpenAI, local proxies, etc.). Configure `endpoint` and optionally `api_key` in `config.toml`.
 
 Default models in the generated config:
 
@@ -104,11 +118,11 @@ Default models in the generated config:
 `loci-server` is a standalone HTTP server that exposes loci's memory and generation
 capabilities over two APIs:
 
-| Endpoint                        | Protocol          | Description                                                    |
-| ------------------------------- | ----------------- | -------------------------------------------------------------- |
-| `GET  /v1/health`               | HTTP              | Health check                                                   |
+| Endpoint                           | Protocol          | Description                                                                   |
+| ---------------------------------- | ----------------- | ----------------------------------------------------------------------------- |
+| `GET  /v1/health`                  | HTTP              | Health check                                                                  |
 | `POST /openai/v1/chat/completions` | OpenAI-compatible | Chat completions with automatic memory enrichment; supports streaming via SSE |
-| Connect RPC endpoints           | Connect RPC       | Full memory CRUD (`memory.*`) and generate (`generate.*`) services |
+| Connect RPC endpoints              | Connect RPC       | Full memory CRUD (`memory.*`) and generate (`generate.*`) services            |
 
 Any OpenAI-compatible client (e.g. Open WebUI, shell scripts using `curl`) can point its
 base URL at `http://<host>:<port>/openai` and get transparent memory enrichment without
@@ -116,12 +130,12 @@ modification.
 
 **Server flags:**
 
-| Flag          | Env var             | Default       | Description                      |
-| ------------- | ------------------- | ------------- | -------------------------------- |
-| `--config`/`-c` | `LOCI_CONFIG`     | `~/.config/loci/config.toml` | Path to config file |
-| `--host`      | `LOCI_SERVER_HOST`  | `127.0.0.1`   | Listen address                   |
-| `--port`      | `LOCI_SERVER_PORT`  | `8080`        | Listen port                      |
-| `--verbose`/`-v` |                  | off           | Enable debug logging             |
+| Flag             | Env var            | Default                      | Description          |
+| ---------------- | ------------------ | ---------------------------- | -------------------- |
+| `--config`/`-c`  | `LOCI_CONFIG`      | `~/.config/loci/config.toml` | Path to config file  |
+| `--host`         | `LOCI_SERVER_HOST` | `127.0.0.1`                  | Listen address       |
+| `--port`         | `LOCI_SERVER_PORT` | `8080`                       | Listen port          |
+| `--verbose`/`-v` |                    | off                          | Enable debug logging |
 
 ---
 
@@ -202,10 +216,10 @@ loci memory add "Deployment target is Kubernetes" --meta env=production --meta t
 loci memory add "This is a curated fact" --kind fact --meta source=manual
 ```
 
-| Argument / Flag                  | Description                                |
-| -------------------------------- | ------------------------------------------ |
-| `<content>`                      | Memory text (required positional argument) |
-| `--meta KEY=VALUE`               | Metadata key-value pair (repeatable)       |
+| Argument / Flag                     | Description                                          |
+| ----------------------------------- | ---------------------------------------------------- |
+| `<content>`                         | Memory text (required positional argument)           |
+| `--meta KEY=VALUE`                  | Metadata key-value pair (repeatable)                 |
 | `--kind <fact \| extracted-memory>` | Optional kind override (default: `extracted-memory`) |
 
 ### `loci memory query`
@@ -263,8 +277,7 @@ loci memory prune-expired
 
 ### `loci memory extract`
 
-Extract discrete memory entries from a block of text using the configured LLM and persist
-them. Use `--dry-run` to preview candidates without writing to the store.
+Extract discrete memory entries from a block of text using the configured LLM and persist them.
 
 **Input sources (mutually exclusive):**
 
@@ -278,38 +291,28 @@ loci memory extract -f chapter1.md -f chapter2.md
 
 # Stdin (auto-detected when no other input is given)
 cat transcript.txt | loci memory extract
-
-# Preview without persisting
-loci memory extract "…some text…" --dry-run
 ```
 
-| Argument / Flag      | Default      | Description                                                          |
-| -------------------- | ------------ | -------------------------------------------------------------------- |
-| `[TEXT]`             | _(optional)_ | Text to extract from (positional). Mutually exclusive with `--file`. |
-| `--file / -f <PATH>` | _(none)_     | File to read input from. Use `-` for stdin. Repeatable.              |
-| `--meta KEY=VALUE`   | _(none)_     | Metadata applied to every extracted entry (repeatable).              |
-| `--max-entries <n>`  | _(none)_     | Hard cap on the number of entries extracted.                         |
-| `--guidelines <TEXT>`| _(none)_     | Free-form instructions appended to the extraction prompt.            |
-| `--dry-run`          | off          | Print extracted candidates as JSON without persisting.               |
+| Argument / Flag          | Default      | Description                                                          |
+| ------------------------ | ------------ | -------------------------------------------------------------------- |
+| `[TEXT]`                 | _(optional)_ | Text to extract from (positional). Mutually exclusive with `--file`. |
+| `--file / -f <PATH>`     | _(none)_     | File to read input from. Use `-` for stdin. Repeatable.              |
+| `--meta KEY=VALUE`       | _(none)_     | Metadata applied to every extracted entry (repeatable).              |
+| `--max-entries <n>`      | _(none)_     | Hard cap on the number of entries extracted.                         |
+| `--min-confidence <f64>` | _(none)_     | Discard extracted candidates below this LLM confidence score.        |
+| `--guidelines <TEXT>`    | _(none)_     | Free-form instructions appended to the extraction prompt.            |
 
 > **Note:** Chunking and thinking mode are configured in `config.toml` under `[memory.extraction]`,
 > not as CLI flags.
 
-**Output (persist mode):**
+**Output:**
 
 ```json
 {
-  "added":    [ { "id": "…", "content": "…", "kind": "extracted_memory", … } ],
-  "failures": []
+  "inserted": 2,
+  "merged": 1,
+  "discarded": 0
 }
-```
-
-**Output (dry-run mode):**
-
-```json
-[
-  { "content": "The team uses Qdrant.", "kind": "extracted_memory", "metadata": {} }
-]
 ```
 
 ### `loci generate` (alias: `gen`)
@@ -319,15 +322,20 @@ Generate a response for a prompt, with optional memory retrieval and contextuali
 ```bash
 loci gen "What storage backend do we use?"
 loci gen "Summarise our deployment setup" --max-memory-entries 8 --min-score 0.5
+loci gen "Summarise production deployment" --filters env=production
+loci gen "Answer in one paragraph" --system "Be concise." --system-mode replace
 ```
 
-| Flag                       | Default      | Description                                       |
-| -------------------------- | ------------ | ------------------------------------------------- |
-| `<prompt>`                 | _(required)_ | Prompt text (positional)                          |
-| `--max-memory-entries <n>` | `5`          | Max memory entries to inject as context           |
-| `--min-score <f64>`        | `0.5`        | Minimum weighted score for context memory entries |
-| `--memory-mode`            | 'auto'       | Memory query mode (`auto` and `off`)              |
-| `--debug-flags <FLAGS>`    | _(none)_     | Comma-separated debug flags (e.g. `memory`)       |
+| Flag                       | Default      | Description                                         |
+| -------------------------- | ------------ | --------------------------------------------------- |
+| `<prompt>`                 | _(required)_ | Prompt text (positional)                            |
+| `--system <TEXT>`          | _(none)_     | Override or extend the default system prompt        |
+| `--system-mode <MODE>`     | `append`     | How `--system` interacts with the default prompt    |
+| `--max-memory-entries <n>` | `5`          | Max memory entries to inject as context             |
+| `--min-score <f64>`        | `0.5`        | Minimum weighted score for context memory entries   |
+| `--memory-mode`            | 'auto'       | Memory query mode (`auto` and `off`)                |
+| `--filters KEY=VALUE`      | _(none)_     | Metadata filter for retrieved memory (repeatable)   |
+| `--debug-flags <FLAG>`     | _(none)_     | Extra debug output (repeatable; currently `memory`) |
 
 ### `loci config init`
 
@@ -338,17 +346,42 @@ loci config init
 loci --config /path/to/config.toml config init
 ```
 
-### Memory config keys
+### Key config sections
 
 ```toml
-[memory.backends.qdrant]
+[resources.model_providers.ollama]
+kind     = "ollama"
+endpoint = "http://localhost:11434"
+
+[resources.models.text.default]
+provider = "ollama"
+model    = "qwen3.5:0.8b"
+
+[resources.models.embedding.default]
+provider  = "ollama"
+model     = "qwen3-embedding:0.6b"
+dimension = 768
+
+[resources.memory_stores.qdrant]
 kind       = "qdrant"
 url        = "http://localhost:6334"
 collection = "memory_entries"
 
-[memory.config]
-backend = "qdrant"
+[generation.text]
+model = "default"
+
+[embedding]
+model = "default"
+
+[memory]
+store = "qdrant"
 # similarity_threshold = 0.95  # deduplicate by semantic similarity (0.0–1.0)
+
+[memory.extraction]
+model = "default"
+# max_entries    = 20
+# min_confidence = 0.7
+# guidelines     = "Focus on technical facts only."
 ```
 
 ---
@@ -357,18 +390,18 @@ backend = "qdrant"
 
 ```bash
 cargo check          # type-check workspace
-cargo test           # run all unit tests
+cargo test           # run workspace tests
 cargo clippy         # lint
-cargo fmt            # format
+cargo fmt --check    # formatting check
 
 # Integration tests — requires Docker (Qdrant via testcontainers)
-cargo test-it        # shorthand for 'cargo test --features integration -- --test-threads=1'
+cargo test-it        # shorthand for 'cargo test --features integration,testing -- --test-threads=1'
 
 # E2E tests — requires a running Ollama instance + Docker
-cargo test-e2e       # shorthand for 'cargo test --features e2e -- --test-threads=1'
+cargo test-e2e       # shorthand for 'cargo test --features e2e,testing -- --test-threads=1'
 
 # All tests (unit + integration + e2e)
-cargo test-all       # shorthand for 'cargo test --features integration,e2e -- --test-threads=1'
+cargo test-all       # shorthand for 'cargo test --features integration,e2e,testing -- --test-threads=1'
 ```
 
 ### E2E test prerequisites
@@ -382,6 +415,7 @@ ollama pull qwen3-embedding:0.6b     # embedding model
 ```
 
 Override models/URL via environment variables:
+
 - `OLLAMA_BASE_URL` (default: `http://localhost:11434`)
 - `OLLAMA_TEXT_MODEL` (default: `qwen3:0.6b`)
 - `OLLAMA_EMBEDDING_MODEL` (default: `qwen3-embedding:0.6b`)
@@ -390,21 +424,9 @@ Override models/URL via environment variables:
 
 ## Roadmap
 
-The items below are **planned** — they are not yet implemented. They are listed in
-dependency order: each step builds on the capabilities introduced by the previous ones.
+The items below are **planned** — they are not yet implemented.
 
-### ~~Phase 1: Memory Extraction Strategies~~ ✓ Done
-
-The `MemoryExtractionStrategy` trait and the LLM-based implementation
-(`LlmMemoryExtractionStrategy`) are shipped and fully tested. The `MemoryExtractor`
-orchestrator optionally chunks large inputs via `SentenceAwareChunker` before running
-extraction. The `MemoryExtractionPipeline` adds a Bayesian confidence layer with
-auto-discard, auto-promotion to `Fact`, and Fact-contradiction detection. The
-`loci memory extract` CLI subcommand exposes both paths with full support for positional
-text, file(s), stdin, chunking, dry-run preview, metadata, and entry caps. See the
-[CLI Reference](#loci-memory-extract) above.
-
-### Phase 2: Scanner Integration
+### Scanner Integration
 
 With extraction strategies in place, loci can begin ingesting knowledge from external
 sources automatically. Scanners provide the raw content; extraction strategies decide
@@ -420,9 +442,9 @@ scanners include:
 
 Scanners feed content into extraction strategies, which produce memory entries that flow
 into the existing memory store with full lifecycle support (deduplication, Bayesian
-confidence scoring, auto-discard, and auto-promotion to `Fact`).
+confidence scoring, contradiction checks against `Fact` entries, and auto-discard).
 
-### Phase 3: Session-Aware Memory Proxy
+### Session-Aware Memory Proxy
 
 With rich memory populated by scanners and extraction, the next step is scoping retrieval
 and injection per session.
@@ -432,7 +454,7 @@ session ID. Each session carries configuration (filters, model preferences, cont
 size) and a lightweight interaction history. The proxy itself remains stateless — no
 per-session state is held in process memory beyond the current request.
 
-### Phase 4: Enhanced REPL CLI
+### Enhanced REPL CLI
 
 A chat-mode REPL for interactive sessions, building on session-aware memory:
 
@@ -441,14 +463,7 @@ A chat-mode REPL for interactive sessions, building on session-aware memory:
 - Formatted memory context display with relevance scores
 - Session ID management directly from the REPL prompt
 
-### ~~Phase 5: Protocol Layer~~ ✓ Done
-
-`loci-server` ships an OpenAI-compatible HTTP API (`POST /openai/v1/chat/completions`,
-streaming via SSE) alongside Connect RPC endpoints for memory CRUD and generation.
-Any client that supports a configurable OpenAI base URL works out of the box without
-modification.
-
-### Phase 6: Semantic Knowledge Graph
+### Semantic Knowledge Graph
 
 The long-term vision is to move beyond flat memory entries toward a semantic knowledge
 graph that captures relationships between concepts. Building on the volume and variety

@@ -49,7 +49,7 @@ ongoing feature work on `main`.
 
 ## Commit Messages
 
-Write concise commit messages that focus on the *why* rather than the *what*. Use
+Write concise commit messages that focus on the _why_ rather than the _what_. Use
 imperative mood (e.g., "Add extraction trait" not "Added extraction trait").
 
 ---
@@ -66,8 +66,8 @@ cargo test           # unit tests
 cargo clippy         # lint
 cargo fmt            # format
 
-# Integration tests (requires Docker for Qdrant via testcontainers)
-cargo test-it
+# All tests (requires Docker for Qdrant via testcontainers and Ollama)
+cargo test-all
 
 # Open a pull request against main
 ```
