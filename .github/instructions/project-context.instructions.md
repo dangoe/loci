@@ -11,20 +11,23 @@ A Rust workspace for memory-augmented LLM prompts.
 
 ## Workspace
 
-| Crate                        | Purpose                                                                        |
-| ---------------------------- | ------------------------------------------------------------------------------ |
-| `loci-core`                  | Core traits and domain types (`MemoryStore`, `TextEmbedder`, `Contextualizer`) |
-| `loci-memory-store-qdrant`   | Qdrant-backed memory store with deduplication, tiers, and metadata filtering   |
-| `loci-model-provider-ollama` | Ollama model provider (embeddings + text generation, including streaming)      |
-| `loci-config`                | TOML config schema, parsing, and `env:` secret resolution                      |
-| `loci-cli`                   | `loci` binary (`memory add/query/get/update/delete/prune-expired/extract`, `generate`, `config init`) |
-| `loci-e2e-tests`             | End-to-end tests (requires Docker + Ollama)                                    |
+| Crate                         | Purpose                                                                                               |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `loci-core`                   | Core traits and domain types (`MemoryStore`, `TextEmbedder`, `Contextualizer`)                        |
+| `loci-memory-store-qdrant`    | Qdrant-backed memory store with deduplication, tiers, and metadata filtering                          |
+| `loci-model-provider-ollama`  | Ollama model provider (embeddings + text generation, including streaming)                             |
+| `loci-model-provider-openai`  | OpenAI-compatible model provider (embeddings + text generation, including streaming)                  |
+| `loci-config`                 | TOML config schema, parsing, and `env:` secret resolution                                             |
+| `loci-wire`                   | Runtime wiring: builds concrete store and provider instances from `AppConfig`                         |
+| `loci-server`                 | `loci-server` binary; HTTP server exposing an OpenAI-compatible API and Connect RPC endpoints         |
+| `loci-cli`                    | `loci` binary (`memory add/query/get/update/delete/prune-expired/extract`, `generate`, `config init`) |
+| `loci-e2e-tests`              | End-to-end tests (requires Docker + Ollama)                                                           |
 
 ## Runtime Support
 
 - Active memory backend: `qdrant`
-- Active model provider: `ollama`
-- `openai`, `anthropic`, and `markdown` store are parsed in config but currently return
+- Active model providers: `ollama`, `openai`-compatible (via `loci-wire` / `loci-server`)
+- `anthropic` and `markdown` store are parsed in config but currently return
   `UnsupportedKind` at runtime when selected.
 
 ## Quick Reference

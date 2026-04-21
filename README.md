@@ -49,12 +49,15 @@ The following is fully implemented and working today.
 
 ### Workspace
 
-| Crate                        | Path                                | Purpose                                                    |
-| ---------------------------- | ----------------------------------- | ---------------------------------------------------------- |
-| `loci-core`                  | `crates/loci-core`                  | Traits, domain types, `Contextualizer`                     |
-| `loci-memory-store-qdrant`   | `crates/loci-memory-store-qdrant`   | Qdrant-backed `MemoryStore` with lifecycle-aware retrieval |
-| `loci-model-provider-ollama` | `crates/loci-model-provider-ollama` | Ollama embedding + text generation model provider          |
-| `loci-config`                | `crates/loci-config`                | TOML config loading and secret resolution                  |
+| Crate                        | Path                                | Purpose                                                              |
+| ---------------------------- | ----------------------------------- | -------------------------------------------------------------------- |
+| `loci-core`                  | `crates/loci-core`                  | Traits, domain types, `Contextualizer`                               |
+| `loci-memory-store-qdrant`   | `crates/loci-memory-store-qdrant`   | Qdrant-backed `MemoryStore` with lifecycle-aware retrieval           |
+| `loci-model-provider-ollama` | `crates/loci-model-provider-ollama` | Ollama embedding + text generation model provider                    |
+| `loci-model-provider-openai` | `crates/loci-model-provider-openai` | OpenAI-compatible embedding + text generation model provider         |
+| `loci-config`                | `crates/loci-config`                | TOML config loading and secret resolution                            |
+| `loci-wire`                  | `crates/loci-wire`                  | Runtime wiring: builds concrete store and provider from `AppConfig`  |
+| `loci-server`                | `crates/loci-server`                | `loci-server` binary — OpenAI-compatible and Connect RPC HTTP server |
 | `loci-cli`                   | `crates/loci-cli`                   | `loci` CLI binary — memory CRUD, LLM extraction, and prompt enhancement |
 
 ### Core Abstractions (`loci-core`)
@@ -66,7 +69,7 @@ The following is fully implemented and working today.
 | `EmbeddingModelProvider`      | Raw embedding model provider (HTTP, model name)                     |
 | `TextGenerationModelProvider` | Raw text generation model provider                                  |
 
-Key domain types: `MemoryEntry`, `MemoryQueryResult`, `MemoryInput`, `MemoryQuery`, `MemoryKind`, `MemoryQueryMode`, `Score`, `Embedding`.
+Key domain types: `MemoryEntry`, `MemoryQueryResult`, `MemoryInput`, `MemoryQuery`, `MemoryTrust`, `MemoryQueryMode`, `Score`, `Embedding`.
 
 ### Storage (`loci-memory-store-qdrant`)
 
@@ -75,7 +78,7 @@ Key domain types: `MemoryEntry`, `MemoryQueryResult`, `MemoryInput`, `MemoryQuer
 Features:
 
 - Configurable deduplication (`similarity_threshold`) to reuse near-duplicates
-- Two-kind memory model: `ExtractedMemory` (Bayesian confidence, subject to decay/discard/promotion) and `Fact` (confidence 1.0, no expiry)
+- Two-variant trust model: `MemoryTrust::Extracted` (Bayesian confidence, subject to decay/discard/promotion) and `MemoryTrust::Fact` (confidence 1.0, no expiry)
 - Per-kind TTL defaults and query-time expiry filtering
 - Weighted retrieval ranking (`similarity * kind_weight`)
 - Auto-promotion to `Fact` when Bayesian score exceeds the promotion threshold
@@ -83,15 +86,42 @@ Features:
 - Metadata filtering (AND semantics, exact match)
 - Min score threshold and max result limits
 
-### Model Providers (`loci-model-provider-ollama`)
+### Model Providers (`loci-model-provider-ollama`, `loci-model-provider-openai`)
 
 `OllamaModelProvider` implements both `EmbeddingModelProvider` and `TextGenerationModelProvider`
 against a local [Ollama](https://ollama.com/) instance.
+
+`OpenAIModelProvider` implements the same traits against any OpenAI-compatible HTTP API
+(OpenAI, local proxies, etc.). Configure `base_url` and optionally `api_key` in `config.toml`.
 
 Default models in the generated config:
 
 - Embedding: `qwen3-embedding:0.6b` (768 dimensions)
 - Text generation: `qwen3.5:0.8b`
+
+### Server (`loci-server`)
+
+`loci-server` is a standalone HTTP server that exposes loci's memory and generation
+capabilities over two APIs:
+
+| Endpoint                        | Protocol          | Description                                                    |
+| ------------------------------- | ----------------- | -------------------------------------------------------------- |
+| `GET  /v1/health`               | HTTP              | Health check                                                   |
+| `POST /openai/v1/chat/completions` | OpenAI-compatible | Chat completions with automatic memory enrichment; supports streaming via SSE |
+| Connect RPC endpoints           | Connect RPC       | Full memory CRUD (`memory.*`) and generate (`generate.*`) services |
+
+Any OpenAI-compatible client (e.g. Open WebUI, shell scripts using `curl`) can point its
+base URL at `http://<host>:<port>/openai` and get transparent memory enrichment without
+modification.
+
+**Server flags:**
+
+| Flag          | Env var             | Default       | Description                      |
+| ------------- | ------------------- | ------------- | -------------------------------- |
+| `--config`/`-c` | `LOCI_CONFIG`     | `~/.config/loci/config.toml` | Path to config file |
+| `--host`      | `LOCI_SERVER_HOST`  | `127.0.0.1`   | Listen address                   |
+| `--port`      | `LOCI_SERVER_PORT`  | `8080`        | Listen port                      |
+| `--verbose`/`-v` |                  | off           | Enable debug logging             |
 
 ---
 
@@ -140,13 +170,15 @@ explaining every option.
 
 ```bash
 cargo build --release
-# Binary at: target/release/loci
+# Binaries at: target/release/loci  (CLI)
+#              target/release/loci-server
 ```
 
 Or run directly:
 
 ```bash
 cargo run --bin loci -- <subcommand>
+cargo run --bin loci-server -- --host 0.0.0.0 --port 8080
 ```
 
 ---
@@ -409,11 +441,12 @@ A chat-mode REPL for interactive sessions, building on session-aware memory:
 - Formatted memory context display with relevance scores
 - Session ID management directly from the REPL prompt
 
-### Phase 5: Protocol Layer
+### ~~Phase 5: Protocol Layer~~ ✓ Done
 
-Expose loci as a network proxy that any client can target without modification. The
-specific protocol is undecided; an **OpenAI-compatible API** is the leading candidate
-for maximum client interoperability.
+`loci-server` ships an OpenAI-compatible HTTP API (`POST /openai/v1/chat/completions`,
+streaming via SSE) alongside Connect RPC endpoints for memory CRUD and generation.
+Any client that supports a configurable OpenAI base URL works out of the box without
+modification.
 
 ### Phase 6: Semantic Knowledge Graph
 
