@@ -31,8 +31,8 @@ async fn test_config_init_creates_file() {
 
     let contents = fs::read_to_string(&config_path).expect("should read config file");
     assert!(
-        contents.contains("[providers"),
-        "config should contain providers section"
+        contents.contains("[resources.model_providers"),
+        "config should contain model_providers section"
     );
 }
 

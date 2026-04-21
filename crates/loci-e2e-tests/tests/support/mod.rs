@@ -2,9 +2,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // This file is part of loci-e2e-tests.
 
-//! Shared test infrastructure: Qdrant container helpers and type aliases
-//! used across multiple e2e test files.
-
 // Each test binary gets its own copy of this module; items not needed by a
 // particular binary show up as dead_code warnings even though they are used
 // by other binaries.
@@ -42,10 +39,10 @@ pub async fn start_qdrant_store(
 ) {
     let (container, url) = start_qdrant_container().await;
 
-    let config = QdrantConfig {
-        collection_name: "memory_entries".to_string(),
-        similarity_threshold,
-        promotion_source_threshold: 2,
+    let config = if let Some(threshold) = similarity_threshold {
+        QdrantConfig::new("memory_entries").with_similarity_threshold(threshold)
+    } else {
+        QdrantConfig::new("memory_entries")
     };
 
     let store =

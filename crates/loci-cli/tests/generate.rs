@@ -6,7 +6,9 @@
 
 mod common;
 
-use loci_core::memory::MemoryQueryMode;
+use pretty_assertions::assert_eq;
+
+use loci_core::memory::store::MemoryQueryMode;
 
 use loci_cli::commands::generate::{GenerateArgs, GenerateMemoryMode, GenerateSystemMode};
 
@@ -46,9 +48,9 @@ async fn test_generate_streams_response_to_stdout() {
         .query
         .expect("generate should query the store");
     assert_eq!(
-        query.mode,
+        query.mode(),
         MemoryQueryMode::Use,
-        "generate should query with Use mode to update access counters"
+        "generate should query with Use mode for prompt-context retrieval"
     );
 }
 
@@ -90,10 +92,7 @@ async fn test_generate_with_system_prompt_replace() {
     let req = snapshot
         .last_request
         .expect("provider should capture request");
-    let system = req
-        .system
-        .as_deref()
-        .expect("request should have a system prompt");
+    let system = req.system().expect("request should have a system prompt");
     assert!(
         system.starts_with("custom system"),
         "replace mode should start with the custom system prompt, got: {system:?}"

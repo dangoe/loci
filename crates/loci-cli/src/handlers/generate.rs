@@ -2,12 +2,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // This file is part of loci-cli.
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::{error::Error as StdError, io::Write};
 
-use loci_config::{
-    AppConfig, ConfigError, ModelThinkingConfig, ModelThinkingEffortLevel, ModelTuningConfig,
-};
+use loci_config::{AppConfig, ConfigError, ModelTuningConfig};
 use loci_core::{
     contextualization::{
         ContextualizationMemoryMode as CoreContextualizationMemoryMode,
@@ -17,13 +16,11 @@ use loci_core::{
         ContextualizerTuningConfig as CoreContextualizerTuningConfig,
     },
     error::ContextualizerError,
-    memory::Score as CoreScore,
+    memory::{Score as CoreScore, store::MemoryStore as CoreMemoryStore},
     model_provider::text_generation::{
         TextGenerationModelProvider as CoreTextGenerationModelProvider,
         TextGenerationResponse as CoreTextGenerationResponse,
-        ThinkingEffortLevel as CoreThinkingEffortLevel, ThinkingMode as CoreThinkingMode,
     },
-    store::MemoryStore as CoreMemoryStore,
 };
 
 use crate::{
@@ -31,7 +28,7 @@ use crate::{
         GenerateCommand,
         generate::{GenerateDebugFlags, GenerateMemoryMode, GenerateSystemMode},
     },
-    handlers::{CommandHandler, json::entry_to_json},
+    handlers::{CommandHandler, json::entry_to_json, mapping::model_thinking_to_core},
 };
 
 impl From<GenerateMemoryMode> for CoreContextualizationMemoryMode {
@@ -75,35 +72,38 @@ impl<'a, S: CoreMemoryStore, T: CoreTextGenerationModelProvider + 'static, W: Wr
     async fn handle(&self, command: GenerateCommand, out: &mut W) -> Result<(), Box<dyn StdError>> {
         let GenerateCommand::Execute(command) = command;
         let model = {
-            let model_key = &self.config.routing.text.default;
+            let model_key = self.config.generation().text().model();
             self.config
-                .models
-                .text
+                .resources()
+                .models()
+                .text()
                 .get(model_key)
                 .ok_or_else(|| ConfigError::MissingKey {
-                    section: "models.text".into(),
-                    key: model_key.clone(),
+                    section: "resources.models.text".into(),
+                    key: model_key.to_owned(),
                 })?
                 .clone()
         };
         let min_score =
-            CoreScore::new(command.min_score).map_err(|e| format!("invalid min_score: {e}"))?;
+            CoreScore::try_new(command.min_score).map_err(|e| format!("invalid min_score: {e}"))?;
 
-        let ctx_config = CoreContextualizerConfig {
-            system: command.system.map(|system| CoreContextualizerSystemConfig {
-                mode: match command.system_mode {
-                    GenerateSystemMode::Append => CoreContextualizerSystemMode::Append,
-                    GenerateSystemMode::Replace => CoreContextualizerSystemMode::Replace,
-                },
-                system,
+        let ctx_config = CoreContextualizerConfig::new(
+            model.model().to_owned(),
+            command.system.map(|system| {
+                CoreContextualizerSystemConfig::new(
+                    match command.system_mode {
+                        GenerateSystemMode::Append => CoreContextualizerSystemMode::Append,
+                        GenerateSystemMode::Replace => CoreContextualizerSystemMode::Replace,
+                    },
+                    system,
+                )
             }),
-            max_memory_entries: command.max_memory_entries,
+            command.memory_mode.into(),
+            NonZeroUsize::new(command.max_memory_entries).unwrap_or(NonZeroUsize::new(5).unwrap()),
             min_score,
-            memory_mode: command.memory_mode.into(),
-            filters: command.filters.into_iter().collect(),
-            text_generation_model: model.model,
-            tuning: model.tuning.as_ref().map(model_tuning_to_contextualizer),
-        };
+            command.filters.into_iter().collect(),
+            model.tuning().map(model_tuning_to_contextualizer),
+        );
 
         let contextualizer = CoreContextualizer::new(
             Arc::clone(&self.store),
@@ -120,7 +120,7 @@ impl<'a, S: CoreMemoryStore, T: CoreTextGenerationModelProvider + 'static, W: Wr
             eprintln!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
-                      "retrieved_memory": debug_info.memory_entries.iter().map(entry_to_json).collect::<Vec<_>>(),
+                      "retrieved_memory": debug_info.memory_entries().iter().map(entry_to_json).collect::<Vec<_>>(),
                 }))?
             );
 
@@ -136,34 +136,17 @@ impl<'a, S: CoreMemoryStore, T: CoreTextGenerationModelProvider + 'static, W: Wr
 }
 
 fn model_tuning_to_contextualizer(tuning: &ModelTuningConfig) -> CoreContextualizerTuningConfig {
-    CoreContextualizerTuningConfig {
-        temperature: tuning.temperature,
-        max_tokens: tuning.max_tokens,
-        top_p: tuning.top_p,
-        repeat_penalty: tuning.repeat_penalty,
-        repeat_last_n: tuning.repeat_last_n,
-        thinking: tuning.thinking.as_ref().map(model_thinking_to_core),
-        stop: tuning.stop.clone(),
-        keep_alive: tuning.keep_alive_secs.map(std::time::Duration::from_secs),
-        extra_params: tuning.extra.clone(),
-    }
-}
-
-fn model_thinking_to_core(thinking: &ModelThinkingConfig) -> CoreThinkingMode {
-    match thinking {
-        ModelThinkingConfig::Enabled => CoreThinkingMode::Enabled,
-        ModelThinkingConfig::Disabled => CoreThinkingMode::Disabled,
-        ModelThinkingConfig::Effort { level } => CoreThinkingMode::Effort {
-            level: match level {
-                ModelThinkingEffortLevel::Low => CoreThinkingEffortLevel::Low,
-                ModelThinkingEffortLevel::Medium => CoreThinkingEffortLevel::Medium,
-                ModelThinkingEffortLevel::High => CoreThinkingEffortLevel::High,
-            },
-        },
-        ModelThinkingConfig::Budgeted { max_tokens } => CoreThinkingMode::Budgeted {
-            max_tokens: *max_tokens,
-        },
-    }
+    CoreContextualizerTuningConfig::new(
+        tuning.temperature(),
+        tuning.max_tokens(),
+        tuning.top_p(),
+        tuning.repeat_penalty(),
+        tuning.repeat_last_n(),
+        tuning.thinking().map(model_thinking_to_core),
+        tuning.stop().map(|s| s.to_vec()),
+        tuning.keep_alive_secs().map(std::time::Duration::from_secs),
+        tuning.extra().clone(),
+    )
 }
 
 /// Consumes a text-generation stream, printing each chunk to stdout.
@@ -177,9 +160,9 @@ async fn stream_text_generation<W: std::io::Write>(
     use futures::StreamExt as _;
     while let Some(result) = stream.next().await {
         let chunk = result.map_err(|e| e.to_string())?;
-        write!(out, "{}", chunk.text)?;
+        write!(out, "{}", chunk.text())?;
         out.flush()?;
-        if chunk.done {
+        if chunk.is_done() {
             writeln!(out)?;
         }
     }
@@ -202,9 +185,9 @@ mod tests {
         handlers::{
             CommandHandler,
             generate::{
-                GenerateCommandHandler, model_thinking_to_core, model_tuning_to_contextualizer,
-                stream_text_generation,
+                GenerateCommandHandler, model_tuning_to_contextualizer, stream_text_generation,
             },
+            mapping::model_thinking_to_core,
         },
         testing,
     };
@@ -243,28 +226,31 @@ mod tests {
         use loci_core::model_provider::text_generation::ThinkingMode;
         use std::time::Duration;
 
-        let tuning = ModelTuningConfig {
-            temperature: Some(0.7),
-            max_tokens: Some(512),
-            top_p: Some(0.9),
-            repeat_penalty: Some(1.1),
-            repeat_last_n: Some(64),
-            stop: Some(vec!["<END>".to_string()]),
-            keep_alive_secs: Some(300),
-            thinking: Some(ModelThinkingConfig::Enabled),
-            extra: HashMap::new(),
-        };
+        let tuning = ModelTuningConfig::new(
+            Some(0.7),
+            Some(512),
+            Some(0.9),
+            Some(1.1),
+            Some(64),
+            Some(vec!["<END>".to_string()]),
+            Some(300),
+            Some(ModelThinkingConfig::Enabled),
+            HashMap::new(),
+        );
 
         let ctx = model_tuning_to_contextualizer(&tuning);
 
-        assert_eq!(ctx.temperature, Some(0.7));
-        assert_eq!(ctx.max_tokens, Some(512));
-        assert_eq!(ctx.top_p, Some(0.9));
-        assert_eq!(ctx.repeat_penalty, Some(1.1));
-        assert_eq!(ctx.repeat_last_n, Some(64));
-        assert_eq!(ctx.stop.as_deref(), Some(["<END>".to_string()].as_slice()));
-        assert_eq!(ctx.keep_alive, Some(Duration::from_secs(300)));
-        assert!(matches!(ctx.thinking, Some(ThinkingMode::Enabled)));
+        assert_eq!(ctx.temperature(), Some(0.7));
+        assert_eq!(ctx.max_tokens(), Some(512));
+        assert_eq!(ctx.top_p(), Some(0.9));
+        assert_eq!(ctx.repeat_penalty(), Some(1.1));
+        assert_eq!(ctx.repeat_last_n(), Some(64));
+        assert_eq!(
+            ctx.stop().map(|s| s.to_vec()),
+            Some(vec!["<END>".to_string()])
+        );
+        assert_eq!(ctx.keep_alive(), Some(Duration::from_secs(300)));
+        assert!(matches!(ctx.thinking(), Some(ThinkingMode::Enabled)));
     }
 
     #[test]
@@ -274,14 +260,14 @@ mod tests {
         let tuning = ModelTuningConfig::default();
         let ctx = model_tuning_to_contextualizer(&tuning);
 
-        assert_eq!(ctx.temperature, None);
-        assert_eq!(ctx.max_tokens, None);
-        assert_eq!(ctx.top_p, None);
-        assert_eq!(ctx.repeat_penalty, None);
-        assert_eq!(ctx.repeat_last_n, None);
-        assert_eq!(ctx.stop, None);
-        assert_eq!(ctx.keep_alive, None);
-        assert!(ctx.thinking.is_none());
+        assert_eq!(ctx.temperature(), None);
+        assert_eq!(ctx.max_tokens(), None);
+        assert_eq!(ctx.top_p(), None);
+        assert_eq!(ctx.repeat_penalty(), None);
+        assert_eq!(ctx.repeat_last_n(), None);
+        assert_eq!(ctx.stop(), None);
+        assert_eq!(ctx.keep_alive(), None);
+        assert!(ctx.thinking().is_none());
     }
 
     #[rstest]
@@ -343,18 +329,18 @@ mod tests {
         use loci_core::model_provider::text_generation::TextGenerationResponse;
 
         let chunks: Vec<Result<TextGenerationResponse, ContextualizerError>> = vec![
-            Ok(TextGenerationResponse {
-                text: "hello ".to_string(),
-                model: "m".to_string(),
-                usage: None,
-                done: false,
-            }),
-            Ok(TextGenerationResponse {
-                text: "world".to_string(),
-                model: "m".to_string(),
-                usage: None,
-                done: true,
-            }),
+            Ok(TextGenerationResponse::new(
+                "hello ".to_string(),
+                "m".to_string(),
+                None,
+                false,
+            )),
+            Ok(TextGenerationResponse::new(
+                "world".to_string(),
+                "m".to_string(),
+                None,
+                true,
+            )),
         ];
 
         let mut out = Vec::new();
@@ -378,12 +364,12 @@ mod tests {
         use loci_core::model_provider::text_generation::TextGenerationResponse;
 
         let chunks: Vec<Result<TextGenerationResponse, ContextualizerError>> = vec![
-            Ok(TextGenerationResponse {
-                text: "partial".to_string(),
-                model: "m".to_string(),
-                usage: None,
-                done: false,
-            }),
+            Ok(TextGenerationResponse::new(
+                "partial".to_string(),
+                "m".to_string(),
+                None,
+                false,
+            )),
             Err(ContextualizerError::MemoryStore(
                 MemoryStoreError::Connection("boom".to_string()),
             )),
@@ -423,13 +409,9 @@ mod tests {
         use loci_core::error::ContextualizerError;
         use loci_core::model_provider::text_generation::TextGenerationResponse;
 
-        let chunks: Vec<Result<TextGenerationResponse, ContextualizerError>> =
-            vec![Ok(TextGenerationResponse {
-                text: "hi".to_string(),
-                model: "m".to_string(),
-                usage: None,
-                done: true,
-            })];
+        let chunks: Vec<Result<TextGenerationResponse, ContextualizerError>> = vec![Ok(
+            TextGenerationResponse::new("hi".to_string(), "m".to_string(), None, true),
+        )];
         let mut out = Vec::new();
         stream_text_generation(stream::iter(chunks), &mut out)
             .await
@@ -446,18 +428,18 @@ mod tests {
         use loci_core::model_provider::text_generation::TextGenerationResponse;
 
         let chunks: Vec<Result<TextGenerationResponse, ContextualizerError>> = vec![
-            Ok(TextGenerationResponse {
-                text: "a".to_string(),
-                model: "m".to_string(),
-                usage: None,
-                done: false,
-            }),
-            Ok(TextGenerationResponse {
-                text: "b".to_string(),
-                model: "m".to_string(),
-                usage: None,
-                done: false,
-            }),
+            Ok(TextGenerationResponse::new(
+                "a".to_string(),
+                "m".to_string(),
+                None,
+                false,
+            )),
+            Ok(TextGenerationResponse::new(
+                "b".to_string(),
+                "m".to_string(),
+                None,
+                false,
+            )),
         ];
         let mut out = Vec::new();
         stream_text_generation(stream::iter(chunks), &mut out)
@@ -477,15 +459,12 @@ mod tests {
         extra.insert("top_k".to_string(), json!(40));
         extra.insert("seed".to_string(), json!(42));
 
-        let tuning = ModelTuningConfig {
-            extra,
-            ..ModelTuningConfig::default()
-        };
+        let tuning = ModelTuningConfig::new(None, None, None, None, None, None, None, None, extra);
 
         let ctx = model_tuning_to_contextualizer(&tuning);
 
-        assert_eq!(ctx.extra_params.get("top_k").unwrap(), &json!(40));
-        assert_eq!(ctx.extra_params.get("seed").unwrap(), &json!(42));
+        assert_eq!(ctx.extra_params().get("top_k").unwrap(), &json!(40));
+        assert_eq!(ctx.extra_params().get("seed").unwrap(), &json!(42));
     }
 
     #[tokio::test]
@@ -514,7 +493,7 @@ mod tests {
         let store = MockStore::new();
         let provider = MockTextGenerationModelProvider::ok();
         let mut config = testing::minimal_ollama_config();
-        config.routing.text.default = "nonexistent".to_string();
+        config.generation_mut().text_mut().set_model("nonexistent");
         let mut out = Vec::new();
 
         let handler = GenerateCommandHandler::new(Arc::new(store), Arc::new(provider), &config);
@@ -606,9 +585,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_generate_handle_system_mode_append_succeeds() {
+    async fn test_generate_handle_includes_custom_system_prompt_when_system_mode_is_append() {
         let store = MockStore::new().with_query(vec![]);
-        let provider = MockTextGenerationModelProvider::ok();
+        let provider = Arc::new(MockTextGenerationModelProvider::ok());
         let config = testing::minimal_ollama_config();
         let mut out = Vec::new();
 
@@ -616,19 +595,35 @@ mod tests {
         args.system = Some("be brief".to_string());
         args.system_mode = GenerateSystemMode::Append;
 
-        let handler = GenerateCommandHandler::new(Arc::new(store), Arc::new(provider), &config);
+        let handler = GenerateCommandHandler::new(Arc::new(store), Arc::clone(&provider), &config);
         handler
             .handle(GenerateCommand::Execute(args), &mut out)
             .await
             .unwrap();
 
-        assert!(!out.is_empty(), "should produce output");
+        let request = provider
+            .snapshot()
+            .last_request
+            .expect("provider should capture request");
+        let system = request
+            .system()
+            .expect("request should contain a system prompt");
+        assert!(
+            system.contains("be brief"),
+            "append mode should keep the custom system prompt, got: {system:?}"
+        );
+        assert!(
+            system.contains(
+                "You are a helpful assistant with a long-term memory of past conversations."
+            ),
+            "append mode should retain the base contextualizer prompt, got: {system:?}"
+        );
     }
 
     #[tokio::test]
-    async fn test_generate_handle_system_mode_replace_succeeds() {
+    async fn test_generate_handle_replaces_base_prompt_when_system_mode_is_replace() {
         let store = MockStore::new().with_query(vec![]);
-        let provider = MockTextGenerationModelProvider::ok();
+        let provider = Arc::new(MockTextGenerationModelProvider::ok());
         let config = testing::minimal_ollama_config();
         let mut out = Vec::new();
 
@@ -636,12 +631,28 @@ mod tests {
         args.system = Some("you are a pirate".to_string());
         args.system_mode = GenerateSystemMode::Replace;
 
-        let handler = GenerateCommandHandler::new(Arc::new(store), Arc::new(provider), &config);
+        let handler = GenerateCommandHandler::new(Arc::new(store), Arc::clone(&provider), &config);
         handler
             .handle(GenerateCommand::Execute(args), &mut out)
             .await
             .unwrap();
 
-        assert!(!out.is_empty(), "should produce output");
+        let request = provider
+            .snapshot()
+            .last_request
+            .expect("provider should capture request");
+        let system = request
+            .system()
+            .expect("request should contain a system prompt");
+        assert!(
+            system.starts_with("you are a pirate"),
+            "replace mode should start with the custom system prompt, got: {system:?}"
+        );
+        assert!(
+            !system.contains(
+                "You are a helpful assistant with a long-term memory of past conversations."
+            ),
+            "replace mode should not include the base contextualizer prompt, got: {system:?}"
+        );
     }
 }

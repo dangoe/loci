@@ -16,11 +16,11 @@ use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
 use loci_config::load_config;
+use loci_core::memory::store::MemoryStore;
 use loci_core::model_provider::text_generation::TextGenerationModelProvider;
-use loci_core::store::MemoryStore;
+use loci_wire::{build_llm_provider, build_store};
 
 use crate::cli::ServerArgs;
-use crate::infra::{build_llm_provider, build_store};
 use crate::loci::generate::v1::GenerateServiceExt as _;
 use crate::loci::memory::v1::MemoryServiceExt as _;
 use crate::service::generate::GenerateServiceImpl;
@@ -54,11 +54,7 @@ pub(crate) async fn run_server(args: ServerArgs) -> Result<(), Box<dyn std::erro
 
     let store = Arc::new(build_store(&config).await?);
     let llm_provider = Arc::new(build_llm_provider(&config)?);
-    let state = Arc::new(AppState {
-        store,
-        llm_provider,
-        config: Arc::new(config),
-    });
+    let state = Arc::new(AppState::new(store, llm_provider, Arc::new(config)));
 
     let router = build_router(state);
     let addr: std::net::SocketAddr = format!("{}:{}", args.host, args.port).parse()?;
@@ -89,13 +85,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resolve_config_path_uses_cli_value_when_set() {
+    fn test_resolve_config_path_uses_cli_value_when_set() {
         let p = resolve_config_path(Some(PathBuf::from("/tmp/my-config.toml")));
         assert_eq!(p, PathBuf::from("/tmp/my-config.toml"));
     }
 
     #[test]
-    fn resolve_config_path_falls_back_to_xdg_when_empty() {
+    fn test_resolve_config_path_falls_back_to_xdg_when_empty() {
         let p = resolve_config_path(None);
         assert!(p.ends_with("loci/config.toml"));
     }

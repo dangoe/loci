@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // This file is part of loci-cli.
 
+use std::path::PathBuf;
+
 use clap::Subcommand;
 use uuid::Uuid;
 
@@ -18,9 +20,9 @@ pub enum MemoryCommand {
         /// Metadata as key=value pairs (repeatable).
         #[arg(long = "meta", value_parser = parse_key_value)]
         metadata: Vec<(String, String)>,
-        /// Optional tier (candidate|stable|core).
+        /// Optional kind (fact|extracted-memory).
         #[arg(long)]
-        tier: Option<MemoryTier>,
+        kind: Option<MemoryKind>,
     },
     /// Query memory entries by semantic similarity.
     #[command(name = "query")]
@@ -43,19 +45,11 @@ pub enum MemoryCommand {
         /// Memory entry ID.
         id: Uuid,
     },
-    /// Update an existing memory entry by ID.
-    #[command(name = "update")]
-    Update {
+    /// Promote a memory entry to Fact (confidence 1.0, no expiry).
+    #[command(name = "promote")]
+    Promote {
         /// Memory entry ID.
         id: Uuid,
-        /// New content (optional).
-        content: Option<String>,
-        /// New metadata as key=value pairs (repeatable).
-        #[arg(long = "meta", value_parser = parse_key_value)]
-        metadata: Vec<(String, String)>,
-        /// Optional tier override (candidate|stable|core).
-        #[arg(long)]
-        tier: Option<MemoryTier>,
     },
     /// Delete a memory entry by ID.
     #[command(name = "delete")]
@@ -66,17 +60,38 @@ pub enum MemoryCommand {
     /// Prunes all expired memory entries from the collection.
     #[command(name = "prune-expired")]
     PruneExpired,
+    /// Extract discrete memory entries from text using the configured LLM and
+    /// persist them.
+    #[command(name = "extract")]
+    Extract {
+        /// Text to extract memories from.
+        /// Mutually exclusive with --file and auto-stdin.
+        text: Option<String>,
+        /// File(s) to read input from. Use `-` for stdin. Repeatable.
+        /// Mutually exclusive with a positional text argument.
+        #[arg(long = "file", short = 'f')]
+        files: Vec<PathBuf>,
+        /// Metadata key=value pairs applied to every extracted entry (repeatable).
+        #[arg(long = "meta", value_parser = parse_key_value)]
+        metadata: Vec<(String, String)>,
+        /// Hard cap on the number of entries extracted.
+        #[arg(long)]
+        max_entries: Option<usize>,
+        /// Minimum LLM confidence score to keep an entry (0.0–1.0).
+        /// Entries below this threshold are discarded before storing.
+        #[arg(long)]
+        min_confidence: Option<f64>,
+        /// Free-form guidelines appended to the extraction prompt.
+        #[arg(long)]
+        guidelines: Option<String>,
+    },
 }
 
-/// A semantic memory tier.
+/// The kind of a memory entry.
 #[derive(clap::ValueEnum, PartialEq, Eq, Clone, Debug)]
-pub enum MemoryTier {
-    /// Request-scoped only, not persisted.
-    Ephemeral,
-    /// New persisted memory with shorter TTL and lower retrieval priority.
-    Candidate,
-    /// Promoted memory with longer TTL and higher retrieval priority.
-    Stable,
-    /// Manually curated long-term memory that does not expire.
-    Core,
+pub enum MemoryKind {
+    /// Confidence 1.0, no decay, manual removal only.
+    Fact,
+    /// Bayesian confidence in (0.0, 1.0), subject to decay/discard/promotion.
+    ExtractedMemory,
 }

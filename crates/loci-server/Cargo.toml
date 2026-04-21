@@ -12,7 +12,7 @@ name = "loci-server"
 path = "src/main.rs"
 
 [features]
-testing = ["loci-core/testing"]
+testing = ["loci-core/testing", "loci-wire/testing"]
 
 [dependencies]
 loci-core = { path = "../loci-core" }
@@ -20,6 +20,7 @@ loci-config = { path = "../loci-config" }
 loci-memory-store-qdrant = { path = "../loci-memory-store-qdrant", features = ["background-delete"] }
 loci-model-provider-ollama = { path = "../loci-model-provider-ollama" }
 loci-model-provider-openai = { path = "../loci-model-provider-openai" }
+loci-wire = { path = "../loci-wire" }
 
 async-stream.workspace = true
 axum.workspace = true

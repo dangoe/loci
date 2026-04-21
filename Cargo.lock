@@ -1551,6 +1551,7 @@ dependencies = [
  "loci-core",
  "loci-memory-store-qdrant",
  "loci-model-provider-ollama",
+ "loci-wire",
  "log",
  "pretty_assertions",
  "rstest",
@@ -1611,6 +1612,7 @@ name = "loci-memory-store-qdrant"
 version = "0.2.0-dev"
 dependencies = [
  "chrono",
+ "futures",
  "loci-core",
  "log",
  "pretty_assertions",
@@ -1629,6 +1631,7 @@ dependencies = [
  "futures",
  "loci-core",
  "log",
+ "pretty_assertions",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -1670,6 +1673,7 @@ dependencies = [
  "loci-model-provider-ollama",
  "loci-model-provider-openai",
  "loci-server",
+ "loci-wire",
  "log",
  "pretty_assertions",
  "reqwest 0.12.28",
@@ -1680,6 +1684,19 @@ dependencies = [
  "tokio",
  "tower-http",
  "uuid",
+]
+
+[[package]]
+name = "loci-wire"
+version = "0.2.0-dev"
+dependencies = [
+ "futures",
+ "loci-config",
+ "loci-core",
+ "loci-memory-store-qdrant",
+ "loci-model-provider-ollama",
+ "loci-model-provider-openai",
+ "log",
 ]
 
 [[package]]

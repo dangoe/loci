@@ -35,6 +35,39 @@ impl std::error::Error for ContextualizerError {
     }
 }
 
+#[derive(Debug)]
+pub enum MemoryExtractionError {
+    /// The memory store returned an error while persisting extracted entries.
+    MemoryStore(MemoryStoreError),
+    /// The model provider call failed during extraction.
+    ModelProvider(ModelProviderError),
+    /// The model's response could not be parsed into memory entries.
+    Parse(String),
+    /// An error that does not fit any other variant (e.g. classification failures).
+    Other(String),
+}
+
+impl fmt::Display for MemoryExtractionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MemoryStore(e) => write!(f, "memory store error: {e}"),
+            Self::ModelProvider(e) => write!(f, "model provider error: {e}"),
+            Self::Parse(msg) => write!(f, "parse error: {msg}"),
+            Self::Other(msg) => write!(f, "{msg}"),
+        }
+    }
+}
+
+impl std::error::Error for MemoryExtractionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::MemoryStore(e) => Some(e),
+            Self::ModelProvider(e) => Some(e),
+            Self::Parse(_) | Self::Other(_) => None,
+        }
+    }
+}
+
 /// Errors produced by a [`MemoryStore`][crate::store::MemoryStore] implementation.
 #[derive(Debug)]
 pub enum MemoryStoreError {
@@ -44,7 +77,7 @@ pub enum MemoryStoreError {
     Query(String),
     /// An error occurred while embedding a memory.
     Embedding(EmbeddingError),
-    /// No memory with the given ID exists in the store.
+    /// The requested memory entry was not found in the store.
     NotFound(Uuid),
     /// An error occurred while saving a memory to the store.
     GenericSave(String),

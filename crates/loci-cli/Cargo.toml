@@ -13,13 +13,14 @@ path = "src/main.rs"
 
 [features]
 systemd-journal-logger = ["dep:systemd-journal-logger"]
-testing = ["loci-core/testing"]
+testing = ["loci-core/testing", "loci-wire/testing"]
 
 [dependencies]
 loci-core = { path = "../loci-core" }
 loci-config = { path = "../loci-config" }
 loci-memory-store-qdrant = { path = "../loci-memory-store-qdrant", features = ["background-delete"] }
 loci-model-provider-ollama = { path = "../loci-model-provider-ollama" }
+loci-wire = { path = "../loci-wire" }
 clap = { version = "4", features = ["derive", "env"] }
 dirs.workspace = true
 futures.workspace = true

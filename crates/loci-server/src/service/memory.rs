@@ -3,6 +3,7 @@
 // This file is part of loci-server.
 
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use buffa::view::OwnedView;
@@ -12,22 +13,34 @@ use chrono::{DateTime, Utc};
 use connectrpc::{ConnectError, Context};
 use uuid::Uuid;
 
-use loci_core::error::MemoryStoreError;
-use loci_core::memory::{
-    MemoryInput, MemoryQuery, MemoryQueryMode, MemoryQueryResult, MemoryTier as CoreMemoryTier,
-    Score,
+use loci_config::{
+    MemoryExtractorConfig as ConfigMemoryExtractorConfig, MergeStrategyConfig, ModelThinkingConfig,
+    ModelThinkingEffortLevel,
 };
-use loci_core::model_provider::text_generation::TextGenerationModelProvider;
-use loci_core::store::MemoryStore;
+use loci_core::error::MemoryStoreError;
+use loci_core::memory::Score;
+use loci_core::memory::extraction::{
+    BestScoreMergeStrategy, DiscardReason, LlmMemoryExtractionStrategy,
+    LlmMemoryExtractionStrategyParams, LlmMemoryMergeStrategy, MemoryExtractor,
+    MemoryExtractorConfig, MemoryQueryOptions,
+};
+use loci_core::memory::store::{MemoryInput, MemoryQuery, MemoryQueryMode, MemoryStore};
+use loci_core::memory::{MemoryEntry as CoreMemoryEntry, MemoryTrust};
+use loci_core::memory_extraction::llm::ChunkingStrategy;
+use loci_core::model_provider::text_generation::{
+    TextGenerationModelProvider, ThinkingEffortLevel, ThinkingMode,
+};
+use loci_model_provider_ollama::classification::LlmClassificationModelProvider;
 
 use crate::loci::memory::v1::{
-    MemoryEntry, MemoryServiceAddEntryRequestView, MemoryServiceAddEntryResponse,
+    MemoryEntry, MemoryExtractionDiscardReason, MemoryExtractionDiscardedEntry, MemoryKind,
+    MemoryServiceAddEntryRequestView, MemoryServiceAddEntryResponse,
     MemoryServiceDeleteEntryRequestView, MemoryServiceDeleteEntryResponse,
+    MemoryServiceExtractRequestView, MemoryServiceExtractResponse,
     MemoryServiceGetEntryRequestView, MemoryServiceGetEntryResponse,
+    MemoryServicePromoteRequestView, MemoryServicePromoteResponse,
     MemoryServicePruneExpiredRequestView, MemoryServicePruneExpiredResponse,
     MemoryServiceQueryRequestView, MemoryServiceQueryResponse,
-    MemoryServiceSetEntryTierRequestView, MemoryServiceSetEntryTierResponse,
-    MemoryServiceUpdateEntryRequestView, MemoryServiceUpdateEntryResponse, MemoryTier,
 };
 use crate::state::AppState;
 
@@ -59,14 +72,19 @@ where
         ctx: Context,
         request: OwnedView<MemoryServiceAddEntryRequestView<'static>>,
     ) -> Result<(MemoryServiceAddEntryResponse, Context), ConnectError> {
-        let tier = proto_tier_to_core(request.tier.as_known());
+        let trust = proto_kind_to_trust(request.kind.as_known());
         let metadata = map_view_to_hashmap(&request.metadata);
-        let input = MemoryInput::new_with_tier(request.content.to_owned(), metadata, tier);
+        let input = MemoryInput::new(request.content.to_owned(), trust, metadata);
 
-        let result = self.state.store.add_entry(input).await.map_err(store_err)?;
+        let result = self
+            .state
+            .store()
+            .add_entry(&input)
+            .await
+            .map_err(store_err)?;
         Ok((
             MemoryServiceAddEntryResponse {
-                entry: MessageField::some(query_result_to_proto(&result)),
+                entry: MessageField::some(entry_to_proto(&result)),
                 ..Default::default()
             },
             ctx,
@@ -79,10 +97,16 @@ where
         request: OwnedView<MemoryServiceGetEntryRequestView<'static>>,
     ) -> Result<(MemoryServiceGetEntryResponse, Context), ConnectError> {
         let id = parse_uuid(request.id)?;
-        let result = self.state.store.get_entry(id).await.map_err(store_err)?;
+        let result = self
+            .state
+            .store()
+            .get_entry(&id)
+            .await
+            .map_err(store_err)?
+            .ok_or_else(|| ConnectError::not_found(format!("memory entry not found: {id}")))?;
         Ok((
             MemoryServiceGetEntryResponse {
-                entry: MessageField::some(query_result_to_proto(&result)),
+                entry: MessageField::some(entry_to_proto(&result)),
                 ..Default::default()
             },
             ctx,
@@ -94,68 +118,40 @@ where
         ctx: Context,
         request: OwnedView<MemoryServiceQueryRequestView<'static>>,
     ) -> Result<(MemoryServiceQueryResponse, Context), ConnectError> {
-        let min_score = Score::new(request.min_score)
+        let min_score = Score::try_new(request.min_score)
             .map_err(|_| ConnectError::invalid_argument("min_score must be in [0.0, 1.0]"))?;
-        let query = MemoryQuery {
-            topic: request.topic.to_owned(),
-            max_results: request.max_results as usize,
-            min_score,
-            filters: map_view_to_hashmap(&request.filters),
-            mode: MemoryQueryMode::Lookup,
-        };
-        let results = self.state.store.query(query).await.map_err(store_err)?;
+        let max_results = NonZeroUsize::new(request.max_results as usize)
+            .unwrap_or(NonZeroUsize::new(10).unwrap());
+        let query = MemoryQuery::new(request.topic.to_owned(), MemoryQueryMode::Lookup)
+            .with_max_results(max_results)
+            .with_min_score(min_score)
+            .with_filters(map_view_to_hashmap(&request.filters));
+        let results = self.state.store().query(query).await.map_err(store_err)?;
         Ok((
             MemoryServiceQueryResponse {
-                entries: results.iter().map(query_result_to_proto).collect(),
+                entries: results.iter().map(entry_to_proto).collect(),
                 ..Default::default()
             },
             ctx,
         ))
     }
 
-    async fn update_entry(
+    async fn promote(
         &self,
         ctx: Context,
-        request: OwnedView<MemoryServiceUpdateEntryRequestView<'static>>,
-    ) -> Result<(MemoryServiceUpdateEntryResponse, Context), ConnectError> {
+        request: OwnedView<MemoryServicePromoteRequestView<'static>>,
+    ) -> Result<(MemoryServicePromoteResponse, Context), ConnectError> {
         let id = parse_uuid(request.id)?;
-        let tier = proto_tier_to_core(request.tier.as_known());
-        let input = MemoryInput::new_with_tier(
-            request.content.to_owned(),
-            map_view_to_hashmap(&request.metadata),
-            tier,
-        );
         let result = self
             .state
-            .store
-            .update_entry(id, input)
+            .store()
+            .promote(&id)
             .await
-            .map_err(store_err)?;
+            .map_err(store_err)?
+            .ok_or_else(|| ConnectError::not_found(format!("memory entry not found: {id}")))?;
         Ok((
-            MemoryServiceUpdateEntryResponse {
-                entry: MessageField::some(query_result_to_proto(&result)),
-                ..Default::default()
-            },
-            ctx,
-        ))
-    }
-
-    async fn set_entry_tier(
-        &self,
-        ctx: Context,
-        request: OwnedView<MemoryServiceSetEntryTierRequestView<'static>>,
-    ) -> Result<(MemoryServiceSetEntryTierResponse, Context), ConnectError> {
-        let id = parse_uuid(request.id)?;
-        let tier = proto_tier_to_core(request.tier.as_known());
-        let result = self
-            .state
-            .store
-            .set_entry_tier(id, tier)
-            .await
-            .map_err(store_err)?;
-        Ok((
-            MemoryServiceSetEntryTierResponse {
-                entry: MessageField::some(query_result_to_proto(&result)),
+            MemoryServicePromoteResponse {
+                entry: MessageField::some(entry_to_proto(&result)),
                 ..Default::default()
             },
             ctx,
@@ -168,7 +164,11 @@ where
         request: OwnedView<MemoryServiceDeleteEntryRequestView<'static>>,
     ) -> Result<(MemoryServiceDeleteEntryResponse, Context), ConnectError> {
         let id = parse_uuid(request.id)?;
-        self.state.store.delete_entry(id).await.map_err(store_err)?;
+        self.state
+            .store()
+            .delete_entry(&id)
+            .await
+            .map_err(store_err)?;
         Ok((
             MemoryServiceDeleteEntryResponse {
                 deleted: true,
@@ -183,10 +183,75 @@ where
         ctx: Context,
         _request: OwnedView<MemoryServicePruneExpiredRequestView<'static>>,
     ) -> Result<(MemoryServicePruneExpiredResponse, Context), ConnectError> {
-        self.state.store.prune_expired().await.map_err(store_err)?;
+        self.state
+            .store()
+            .prune_expired()
+            .await
+            .map_err(store_err)?;
         Ok((
             MemoryServicePruneExpiredResponse {
                 pruned: true,
+                ..Default::default()
+            },
+            ctx,
+        ))
+    }
+
+    async fn extract(
+        &self,
+        ctx: Context,
+        request: OwnedView<MemoryServiceExtractRequestView<'static>>,
+    ) -> Result<(MemoryServiceExtractResponse, Context), ConnectError> {
+        let extraction_config = self.state.config().memory().extraction();
+        let strategy = LlmMemoryExtractionStrategy::new(
+            Arc::clone(self.state.llm_provider()),
+            extraction_config.model().to_owned(),
+        );
+        let extractor_cfg = extraction_config.extractor();
+        let classifier = Arc::new(LlmClassificationModelProvider::new(
+            Arc::clone(self.state.llm_provider()),
+            extractor_cfg.classification_model().to_owned(),
+        ));
+        let params = build_extraction_params(&request, extraction_config)?;
+        let core_cfg = config_extractor_config_to_core(extractor_cfg);
+        let result = match extractor_cfg.merge_strategy() {
+            MergeStrategyConfig::BestScore => {
+                MemoryExtractor::new(
+                    Arc::clone(self.state.store()),
+                    Arc::new(strategy),
+                    Arc::new(BestScoreMergeStrategy),
+                    Arc::clone(&classifier),
+                    core_cfg,
+                )
+                .extract_memory_entries(request.text, &params)
+                .await
+            }
+            MergeStrategyConfig::Llm { model } => {
+                MemoryExtractor::new(
+                    Arc::clone(self.state.store()),
+                    Arc::new(strategy),
+                    Arc::new(LlmMemoryMergeStrategy::new(
+                        Arc::clone(self.state.llm_provider()),
+                        model.clone(),
+                    )),
+                    Arc::clone(&classifier),
+                    core_cfg,
+                )
+                .extract_memory_entries(request.text, &params)
+                .await
+            }
+        };
+        let result = result.map_err(|e| ConnectError::internal(e.to_string()))?;
+
+        Ok((
+            MemoryServiceExtractResponse {
+                inserted: result.inserted().iter().map(entry_to_proto).collect(),
+                merged: result.merged().iter().map(entry_to_proto).collect(),
+                discarded: result
+                    .discarded()
+                    .iter()
+                    .map(discarded_entry_to_proto)
+                    .collect(),
                 ..Default::default()
             },
             ctx,
@@ -209,21 +274,20 @@ fn store_err(e: MemoryStoreError) -> ConnectError {
     }
 }
 
-fn proto_tier_to_core(tier: Option<MemoryTier>) -> CoreMemoryTier {
-    match tier {
-        Some(MemoryTier::MEMORY_TIER_EPHEMERAL) => CoreMemoryTier::Ephemeral,
-        Some(MemoryTier::MEMORY_TIER_STABLE) => CoreMemoryTier::Stable,
-        Some(MemoryTier::MEMORY_TIER_CORE) => CoreMemoryTier::Core,
-        _ => CoreMemoryTier::Candidate,
+fn proto_kind_to_trust(kind: Option<MemoryKind>) -> MemoryTrust {
+    match kind {
+        Some(MemoryKind::MEMORY_KIND_FACT) => MemoryTrust::Fact,
+        _ => MemoryTrust::Extracted {
+            confidence: 0.5,
+            evidence: Default::default(),
+        },
     }
 }
 
-fn core_tier_to_proto(tier: CoreMemoryTier) -> MemoryTier {
-    match tier {
-        CoreMemoryTier::Ephemeral => MemoryTier::MEMORY_TIER_EPHEMERAL,
-        CoreMemoryTier::Candidate => MemoryTier::MEMORY_TIER_CANDIDATE,
-        CoreMemoryTier::Stable => MemoryTier::MEMORY_TIER_STABLE,
-        CoreMemoryTier::Core => MemoryTier::MEMORY_TIER_CORE,
+fn trust_to_proto_kind(trust: &MemoryTrust) -> MemoryKind {
+    match trust {
+        MemoryTrust::Fact => MemoryKind::MEMORY_KIND_FACT,
+        MemoryTrust::Extracted { .. } => MemoryKind::MEMORY_KIND_EXTRACTED_MEMORY,
     }
 }
 
@@ -241,23 +305,120 @@ fn map_view_to_hashmap(map: &buffa::MapView<'_, &str, &str>) -> HashMap<String, 
         .collect()
 }
 
-fn query_result_to_proto(r: &MemoryQueryResult) -> MemoryEntry {
-    let e = &r.memory_entry;
+#[allow(clippy::result_large_err)]
+fn build_extraction_params(
+    request: &MemoryServiceExtractRequestView<'_>,
+    extraction_config: &loci_config::MemoryExtractionConfig,
+) -> Result<LlmMemoryExtractionStrategyParams, ConnectError> {
+    if let Some(min_confidence) = request.min_confidence {
+        Score::try_new(min_confidence)
+            .map_err(|_| ConnectError::invalid_argument("min_confidence must be in [0.0, 1.0]"))?;
+    }
+
+    Ok(LlmMemoryExtractionStrategyParams::new(
+        match (
+            request.guidelines.map(str::to_owned),
+            extraction_config.guidelines(),
+        ) {
+            (Some(request), Some(config)) => Some(format!("{config}\n\n{request}")),
+            (Some(request), None) => Some(request),
+            (None, Some(config)) => Some(config.to_owned()),
+            (None, None) => None,
+        },
+        map_view_to_hashmap(&request.metadata),
+        request
+            .max_entries
+            .map(|value| value as usize)
+            .or(extraction_config.max_entries()),
+        request
+            .min_confidence
+            .or(extraction_config.min_confidence()),
+        extraction_config.thinking().map(model_thinking_to_core),
+        extraction_config
+            .chunking()
+            .map(|chunking| ChunkingStrategy::SentenceAware {
+                chunk_size: NonZeroUsize::new(chunking.chunk_size())
+                    .expect("chunk_size must be > 0"),
+                overlap_size: chunking.overlap_size(),
+            })
+            .unwrap_or(ChunkingStrategy::WholeInput),
+    ))
+}
+
+fn model_thinking_to_core(thinking: &ModelThinkingConfig) -> ThinkingMode {
+    match thinking {
+        ModelThinkingConfig::Enabled => ThinkingMode::Enabled,
+        ModelThinkingConfig::Disabled => ThinkingMode::Disabled,
+        ModelThinkingConfig::Effort { level } => ThinkingMode::Effort {
+            level: match level {
+                ModelThinkingEffortLevel::Low => ThinkingEffortLevel::Low,
+                ModelThinkingEffortLevel::Medium => ThinkingEffortLevel::Medium,
+                ModelThinkingEffortLevel::High => ThinkingEffortLevel::High,
+            },
+        },
+        ModelThinkingConfig::Budgeted { max_tokens } => ThinkingMode::Budgeted {
+            max_tokens: *max_tokens,
+        },
+    }
+}
+
+fn config_extractor_config_to_core(cfg: &ConfigMemoryExtractorConfig) -> MemoryExtractorConfig {
+    MemoryExtractorConfig::new(
+        MemoryQueryOptions::try_new(
+            cfg.direct_search().max_results(),
+            cfg.direct_search().min_score(),
+        )
+        .expect("invalid extractor config: direct_search"),
+        MemoryQueryOptions::try_new(
+            cfg.inverted_search().max_results(),
+            cfg.inverted_search().min_score(),
+        )
+        .expect("invalid extractor config: inverted_search"),
+        cfg.bayesian_seed_weight(),
+        cfg.max_counter_increment(),
+        cfg.max_counter(),
+        cfg.auto_discard_threshold(),
+    )
+}
+
+fn entry_to_proto(e: &CoreMemoryEntry) -> MemoryEntry {
     MemoryEntry {
-        id: e.id.to_string(),
-        content: e.content.clone(),
-        metadata: e.metadata.clone(),
-        tier: EnumValue::from(core_tier_to_proto(e.tier)),
-        seen_count: e.seen_count,
-        sources: e.sources.clone(),
-        first_seen: MessageField::some(datetime_to_timestamp(e.first_seen)),
-        last_seen: MessageField::some(datetime_to_timestamp(e.last_seen)),
-        expires_at: e
-            .expires_at
+        id: e.id().to_string(),
+        content: e.content().to_owned(),
+        metadata: e.metadata().clone(),
+        kind: EnumValue::from(trust_to_proto_kind(e.trust())),
+        seen_count: e.seen_count(),
+        first_seen: e
+            .first_seen()
             .map(|dt| MessageField::some(datetime_to_timestamp(dt)))
             .unwrap_or_default(),
-        created_at: MessageField::some(datetime_to_timestamp(e.created_at)),
-        score: r.score.value(),
+        last_seen: e
+            .last_seen()
+            .map(|dt| MessageField::some(datetime_to_timestamp(dt)))
+            .unwrap_or_default(),
+        expires_at: e
+            .expires_at()
+            .map(|dt| MessageField::some(datetime_to_timestamp(dt)))
+            .unwrap_or_default(),
+        created_at: MessageField::some(datetime_to_timestamp(e.created_at())),
+        score: e.trust().effective_score().value(),
+        ..Default::default()
+    }
+}
+
+fn discarded_entry_to_proto(
+    discarded: &loci_core::memory::extraction::DiscardedEntry,
+) -> MemoryExtractionDiscardedEntry {
+    MemoryExtractionDiscardedEntry {
+        content: discarded.content().to_owned(),
+        reason: EnumValue::from(match discarded.reason() {
+            DiscardReason::LowScore => {
+                MemoryExtractionDiscardReason::MEMORY_EXTRACTION_DISCARD_REASON_LOW_SCORE
+            }
+            DiscardReason::ContradictsAFact => {
+                MemoryExtractionDiscardReason::MEMORY_EXTRACTION_DISCARD_REASON_CONTRADICTS_A_FACT
+            }
+        }),
         ..Default::default()
     }
 }

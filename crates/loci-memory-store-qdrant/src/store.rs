@@ -5,20 +5,21 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
+use futures::future::BoxFuture;
 use loci_core::embedding::{Embedding, TextEmbedder};
 use loci_core::error::MemoryStoreError;
-use loci_core::memory::{
-    MemoryEntry, MemoryInput, MemoryQuery, MemoryQueryMode, MemoryQueryResult, MemoryTier, Score,
+use loci_core::memory::store::{
+    AddEntriesResult, MemoryInput, MemoryQuery, MemoryStore, PerEntryFailure,
 };
-use loci_core::store::{AddEntriesResult, MemoryStore, PerEntryFailure};
+use loci_core::memory::{MemoryEntry, MemoryTrust, Score, TrustEvidence};
 use qdrant_client::Payload;
 use qdrant_client::Qdrant;
 use qdrant_client::qdrant::{Condition, Filter, Range};
 use qdrant_client::qdrant::{
-    CreateCollectionBuilder, DeletePointsBuilder, Distance, GetCollectionInfoResponse,
-    GetPointsBuilder, PointId, PointStruct, PointsIdsList, ScrollPointsBuilder,
-    SearchPointsBuilder, UpsertPointsBuilder, VectorParamsBuilder, point_id::PointIdOptions,
-    vectors_config::Config as VectorsConfigVariant,
+    CreateCollectionBuilder, DeletePayloadPointsBuilder, DeletePointsBuilder, Distance,
+    GetCollectionInfoResponse, GetPointsBuilder, PointId, PointStruct, PointsIdsList,
+    ScrollPointsBuilder, SearchPointsBuilder, SetPayloadPointsBuilder, UpsertPointsBuilder,
+    VectorParamsBuilder, point_id::PointIdOptions, vectors_config::Config as VectorsConfigVariant,
 };
 #[cfg(feature = "background-delete")]
 use tokio::spawn;
@@ -30,12 +31,14 @@ use crate::config::QdrantConfig;
 const FIELD_CONTENT: &str = "content";
 const FIELD_METADATA: &str = "metadata";
 const FIELD_CREATED_AT: &str = "created_at";
-const FIELD_TIER: &str = "tier";
+const FIELD_KIND: &str = "kind";
 const FIELD_SEEN_COUNT: &str = "seen_count";
 const FIELD_FIRST_SEEN: &str = "first_seen";
 const FIELD_LAST_SEEN: &str = "last_seen";
 const FIELD_EXPIRES_AT: &str = "expires_at";
-const FIELD_SOURCES: &str = "sources";
+const FIELD_CONFIDENCE: &str = "confidence";
+const FIELD_TRUST_EVIDENCE_ALPHA: &str = "credibility_belief_alpha";
+const FIELD_TRUST_EVIDENCE_BETA: &str = "credibility_belief_beta";
 
 const SOURCE_METADATA_KEY: &str = "source";
 
@@ -79,14 +82,14 @@ impl<E: TextEmbedder> QdrantMemoryStore<E> {
     pub async fn initialize(&self) -> Result<(), MemoryStoreError> {
         let exists = self
             .client
-            .collection_exists(&self.config.collection_name)
+            .collection_exists(self.config.collection_name())
             .await
             .map_err(|e| MemoryStoreError::Connection(e.to_string()))?;
 
         if exists {
             let info = self
                 .client
-                .collection_info(&self.config.collection_name)
+                .collection_info(self.config.collection_name())
                 .await
                 .map_err(|e| MemoryStoreError::Connection(e.to_string()))?;
 
@@ -97,14 +100,14 @@ impl<E: TextEmbedder> QdrantMemoryStore<E> {
                 return Err(MemoryStoreError::Connection(format!(
                     "collection '{}' has vector dimension {dim} \
                      but embedder produces {expected_dim}",
-                    self.config.collection_name
+                    self.config.collection_name()
                 )));
             }
         } else {
             let dim = self.embedder.embedding_dimension() as u64;
             self.client
                 .create_collection(
-                    CreateCollectionBuilder::new(&self.config.collection_name)
+                    CreateCollectionBuilder::new(self.config.collection_name())
                         .vectors_config(VectorParamsBuilder::new(dim, Distance::Cosine)),
                 )
                 .await
@@ -119,33 +122,47 @@ impl<E: TextEmbedder> QdrantMemoryStore<E> {
         memory: &MemoryEntry,
         embedding: &Embedding,
     ) -> Result<(), MemoryStoreError> {
-        let metadata_value = serde_json::to_value(&memory.metadata)
+        let metadata_value = serde_json::to_value(memory.metadata())
             .map_err(|e| MemoryStoreError::Query(e.to_string()))?;
 
         let mut payload = Payload::new();
-        payload.insert(FIELD_CONTENT, memory.content.clone());
+        payload.insert(FIELD_CONTENT, memory.content().to_string());
         payload.insert(FIELD_METADATA, metadata_value);
-        payload.insert(FIELD_CREATED_AT, memory.created_at.timestamp());
-        payload.insert(FIELD_TIER, memory.tier.as_str());
-        payload.insert(FIELD_SEEN_COUNT, i64::from(memory.seen_count));
-        payload.insert(FIELD_FIRST_SEEN, memory.first_seen.timestamp());
-        payload.insert(FIELD_LAST_SEEN, memory.last_seen.timestamp());
-        if let Some(expires_at) = memory.expires_at {
+        payload.insert(FIELD_CREATED_AT, memory.created_at().timestamp());
+        payload.insert(FIELD_KIND, trust_kind_str(memory.trust()));
+        payload.insert(FIELD_SEEN_COUNT, i64::from(memory.seen_count()));
+        if let Some(first_seen) = memory.first_seen() {
+            payload.insert(FIELD_FIRST_SEEN, first_seen.timestamp());
+        }
+        if let Some(last_seen) = memory.last_seen() {
+            payload.insert(FIELD_LAST_SEEN, last_seen.timestamp());
+        }
+        if let Some(expires_at) = memory.expires_at() {
             payload.insert(FIELD_EXPIRES_AT, expires_at.timestamp());
         }
-        let sources_value = serde_json::to_value(&memory.sources)
-            .map_err(|e| MemoryStoreError::Query(e.to_string()))?;
-        payload.insert(FIELD_SOURCES, sources_value);
+        if let MemoryTrust::Extracted {
+            confidence,
+            evidence,
+        } = memory.trust()
+        {
+            payload.insert(FIELD_CONFIDENCE, *confidence);
+            if let Some(alpha) = evidence.alpha() {
+                payload.insert(FIELD_TRUST_EVIDENCE_ALPHA, alpha);
+            }
+            if let Some(beta) = evidence.beta() {
+                payload.insert(FIELD_TRUST_EVIDENCE_BETA, beta);
+            }
+        }
 
         let point = PointStruct::new(
-            PointId::from(memory.id.to_string()),
+            PointId::from(memory.id().to_string()),
             embedding.values().to_vec(),
             payload,
         );
 
         self.client
             .upsert_points(
-                UpsertPointsBuilder::new(&self.config.collection_name, vec![point]).wait(true),
+                UpsertPointsBuilder::new(self.config.collection_name(), vec![point]).wait(true),
             )
             .await
             .map_err(|e| MemoryStoreError::Query(e.to_string()))?;
@@ -158,7 +175,7 @@ impl<E: TextEmbedder> QdrantMemoryStore<E> {
             .client
             .get_points(
                 GetPointsBuilder::new(
-                    &self.config.collection_name,
+                    self.config.collection_name(),
                     vec![PointId::from(id.to_string())],
                 )
                 .with_payload(true),
@@ -181,11 +198,11 @@ impl<E: TextEmbedder> QdrantMemoryStore<E> {
         max_results: usize,
         min_score: f64,
         filters: &HashMap<String, String>,
-    ) -> Result<Vec<MemoryQueryResult>, MemoryStoreError> {
+    ) -> Result<Vec<MemoryEntry>, MemoryStoreError> {
         let vector: Vec<f32> = embedding.values().to_vec();
         let now = Utc::now();
 
-        // Workaround until rescoring is supported
+        // Workaround until rescoring is supported by Qdrant rust client
         let fetch_limit = (max_results * 5) as u64;
 
         let mut conditions: Vec<Condition> = filters
@@ -207,7 +224,7 @@ impl<E: TextEmbedder> QdrantMemoryStore<E> {
             .into(),
         );
 
-        let request = SearchPointsBuilder::new(&self.config.collection_name, vector, fetch_limit)
+        let request = SearchPointsBuilder::new(self.config.collection_name(), vector, fetch_limit)
             .filter(Filter::must(conditions))
             .with_payload(true);
 
@@ -217,24 +234,21 @@ impl<E: TextEmbedder> QdrantMemoryStore<E> {
             .await
             .map_err(|e| MemoryStoreError::Query(e.to_string()))?;
 
-        let mut entries = Vec::new();
+        let mut scored_entries: Vec<(Score, MemoryEntry)> = Vec::new();
         for point in response.result {
             let candidate = Self::parse_scored_point(&point)?;
-            let weighted = blend_score(candidate.similarity, candidate.memory_entry.tier)?;
+            let weighted = blend_score(candidate.similarity, &candidate.memory_entry)?;
 
             if weighted.value() < min_score {
                 continue;
             }
 
-            entries.push(MemoryQueryResult {
-                memory_entry: candidate.memory_entry,
-                score: weighted,
-            });
+            scored_entries.push((weighted, candidate.memory_entry));
         }
 
-        entries.sort_by(|a, b| b.score.value().total_cmp(&a.score.value()));
-        entries.truncate(max_results);
-        Ok(entries)
+        scored_entries.sort_by(|a, b| b.0.value().total_cmp(&a.0.value()));
+        scored_entries.truncate(max_results);
+        Ok(scored_entries.into_iter().map(|(_, e)| e).collect())
     }
 
     async fn search_for_dedup(
@@ -242,12 +256,12 @@ impl<E: TextEmbedder> QdrantMemoryStore<E> {
         embedding: &Embedding,
         threshold: f64,
         incoming_metadata: &HashMap<String, String>,
-    ) -> Result<Option<MemoryQueryResult>, MemoryStoreError> {
+    ) -> Result<Option<MemoryEntry>, MemoryStoreError> {
         let vector: Vec<f32> = embedding.values().to_vec();
         let response = self
             .client
             .search_points(
-                SearchPointsBuilder::new(&self.config.collection_name, vector, 16)
+                SearchPointsBuilder::new(self.config.collection_name(), vector, 16)
                     .with_payload(true),
             )
             .await
@@ -256,46 +270,24 @@ impl<E: TextEmbedder> QdrantMemoryStore<E> {
         let now = Utc::now();
         for point in response.result {
             let candidate = Self::parse_scored_point(&point)?;
-            if is_expired(candidate.memory_entry.expires_at, now) {
-                self.delete_expired(candidate.memory_entry.id).await;
+            if is_expired(candidate.memory_entry.expires_at(), now) {
+                self.delete_expired(*candidate.memory_entry.id()).await;
                 continue;
             }
             if candidate.similarity < threshold {
                 continue;
             }
-            if !metadata_matches_for_dedup(&candidate.memory_entry.metadata, incoming_metadata) {
+            if !metadata_matches_for_dedup(
+                &candidate.memory_entry.metadata().clone(),
+                incoming_metadata,
+            ) {
                 continue;
             }
 
-            let weighted = blend_score(candidate.similarity, candidate.memory_entry.tier)?;
-            return Ok(Some(MemoryQueryResult {
-                memory_entry: candidate.memory_entry,
-                score: weighted,
-            }));
+            return Ok(Some(candidate.memory_entry));
         }
 
         Ok(None)
-    }
-
-    fn maybe_promote_from_source(
-        &self,
-        memory: &mut MemoryEntry,
-        incoming_metadata: &HashMap<String, String>,
-    ) {
-        if memory.tier != MemoryTier::Candidate {
-            return;
-        }
-
-        if let Some(incoming_source) = incoming_metadata.get(SOURCE_METADATA_KEY) {
-            if !memory.sources.contains(incoming_source) {
-                memory.sources.push(incoming_source.clone());
-            }
-
-            if memory.sources.len() >= self.config.promotion_source_threshold as usize {
-                memory.tier = MemoryTier::Stable;
-                memory.expires_at = memory.tier.default_ttl().map(|ttl| Utc::now() + ttl);
-            }
-        }
     }
 
     fn parse_scored_point(
@@ -315,12 +307,12 @@ impl<E: TextEmbedder> QdrantMemoryStore<E> {
         // Fire-and-forget: clone what we need and spawn a background task.
         // Qdrant client is cheap-to-clone (it holds an Arc internally) so this is ok.
         let client = self.client.clone();
-        let collection = self.config.collection_name.clone();
+        let collection = self.config.collection_name().to_owned();
 
         spawn(async move {
             let _ = client
                 .delete_points(
-                    DeletePointsBuilder::new(&collection)
+                    DeletePointsBuilder::new(collection)
                         .points(PointsIdsList {
                             ids: vec![PointId::from(id.to_string())],
                         })
@@ -338,7 +330,7 @@ impl<E: TextEmbedder> QdrantMemoryStore<E> {
         let _ = self
             .client
             .delete_points(
-                DeletePointsBuilder::new(&self.config.collection_name)
+                DeletePointsBuilder::new(self.config.collection_name())
                     .points(PointsIdsList {
                         ids: vec![PointId::from(id.to_string())],
                     })
@@ -346,266 +338,241 @@ impl<E: TextEmbedder> QdrantMemoryStore<E> {
             )
             .await;
     }
-}
+    async fn promote_in_store(&self, memory: &MemoryEntry) -> Result<(), MemoryStoreError> {
+        let mut payload = Payload::new();
+        payload.insert(FIELD_KIND, trust_kind_str(memory.trust()));
 
-impl<E: TextEmbedder> MemoryStore for QdrantMemoryStore<E> {
-    async fn add_entries(
-        &self,
-        inputs: Vec<MemoryInput>,
-    ) -> Result<AddEntriesResult, MemoryStoreError> {
-        let mut added: Vec<MemoryQueryResult> = Vec::new();
-        let mut failures: Vec<PerEntryFailure> = Vec::new();
-
-        for (idx, input) in inputs.into_iter().enumerate() {
-            let tier = input.tier.unwrap_or(MemoryTier::Candidate);
-            if tier == MemoryTier::Ephemeral {
-                failures.push(PerEntryFailure {
-                    index: idx,
-                    error: MemoryStoreError::Query(
-                        "ephemeral memory entries are request-scoped and cannot be persisted"
-                            .to_string(),
-                    ),
-                });
-                continue;
-            }
-
-            let memory = MemoryEntry::new_with_tier(input.content, input.metadata, tier);
-
-            let embedding = match self.embedder.embed(&memory.content).await {
-                Ok(e) => e,
-                Err(e) => {
-                    failures.push(PerEntryFailure {
-                        index: idx,
-                        error: MemoryStoreError::Embedding(e),
-                    });
-                    continue;
-                }
-            };
-
-            if let Some(threshold) = self.config.similarity_threshold {
-                match self
-                    .search_for_dedup(&embedding, threshold, &memory.metadata)
-                    .await
-                {
-                    Ok(Some(mut existing)) => {
-                        self.maybe_promote_from_source(
-                            &mut existing.memory_entry,
-                            &memory.metadata,
-                        );
-                        existing.memory_entry.last_seen = Utc::now();
-                        existing.memory_entry.seen_count =
-                            existing.memory_entry.seen_count.saturating_add(1);
-
-                        if let Err(e) = self.do_upsert(&existing.memory_entry, &embedding).await {
-                            failures.push(PerEntryFailure {
-                                index: idx,
-                                error: e,
-                            });
-                            continue;
-                        }
-
-                        log::debug!(
-                            "deduplication: reusing memory {} (score {:.4})",
-                            existing.memory_entry.id,
-                            existing.score.value()
-                        );
-                        added.push(existing);
-                        continue;
-                    }
-                    Ok(None) => {
-                        // No dedupe candidate found — proceed to upsert new memory.
-                    }
-                    Err(e) => {
-                        failures.push(PerEntryFailure {
-                            index: idx,
-                            error: e,
-                        });
-                        continue;
-                    }
-                }
-            }
-
-            if let Err(e) = self.do_upsert(&memory, &embedding).await {
-                failures.push(PerEntryFailure {
-                    index: idx,
-                    error: e,
-                });
-                continue;
-            }
-
-            added.push(MemoryQueryResult {
-                memory_entry: memory,
-                score: Score::MAX,
-            });
-        }
-
-        Ok(AddEntriesResult { added, failures })
-    }
-
-    async fn get_entry(&self, id: Uuid) -> Result<MemoryQueryResult, MemoryStoreError> {
-        let memory = self.load_memory(id).await?;
-        Ok(MemoryQueryResult {
-            memory_entry: memory,
-            score: Score::MAX,
-        })
-    }
-
-    async fn query(&self, query: MemoryQuery) -> Result<Vec<MemoryQueryResult>, MemoryStoreError> {
-        let embedding = self
-            .embedder
-            .embed(&query.topic)
-            .await
-            .map_err(MemoryStoreError::Embedding)?;
-
-        let entries = self
-            .search_by_embedding(
-                &embedding,
-                query.max_results,
-                query.min_score.value(),
-                &query.filters,
-            )
-            .await?;
-
-        match query.mode {
-            MemoryQueryMode::Lookup | MemoryQueryMode::Use => Ok(entries),
-        }
-    }
-
-    async fn update_entry(
-        &self,
-        id: Uuid,
-        input: MemoryInput,
-    ) -> Result<MemoryQueryResult, MemoryStoreError> {
-        let existing = self.load_memory(id).await?;
-        let tier = input.tier.unwrap_or(existing.tier);
-        if tier == MemoryTier::Ephemeral {
-            return Err(MemoryStoreError::Query(
-                "ephemeral tier cannot be set on persisted memory entries".to_string(),
-            ));
-        }
-
-        let now = Utc::now();
-        let expires_at = if tier == existing.tier {
-            existing.expires_at
-        } else {
-            tier.default_ttl().map(|ttl| now + ttl)
-        };
-
-        let memory = MemoryEntry {
-            id,
-            content: input.content,
-            metadata: input.metadata,
-            tier,
-            seen_count: existing.seen_count,
-            sources: existing.sources,
-            first_seen: existing.first_seen,
-            last_seen: existing.last_seen,
-            expires_at,
-            created_at: existing.created_at,
-        };
-
-        let embedding = self
-            .embedder
-            .embed(&memory.content)
-            .await
-            .map_err(MemoryStoreError::Embedding)?;
-        self.do_upsert(&memory, &embedding).await?;
-
-        Ok(MemoryQueryResult {
-            memory_entry: memory,
-            score: Score::MAX,
-        })
-    }
-
-    async fn set_entry_tier(
-        &self,
-        id: Uuid,
-        tier: MemoryTier,
-    ) -> Result<MemoryQueryResult, MemoryStoreError> {
-        if tier == MemoryTier::Ephemeral {
-            return Err(MemoryStoreError::Query(
-                "ephemeral tier cannot be set on persisted memory entries".to_string(),
-            ));
-        }
-
-        let mut memory = self.load_memory(id).await?;
-        memory.tier = tier;
-        memory.expires_at = tier.default_ttl().map(|ttl| Utc::now() + ttl);
-
-        let embedding = self
-            .embedder
-            .embed(&memory.content)
-            .await
-            .map_err(MemoryStoreError::Embedding)?;
-        self.do_upsert(&memory, &embedding).await?;
-
-        Ok(MemoryQueryResult {
-            memory_entry: memory,
-            score: Score::MAX,
-        })
-    }
-
-    async fn delete_entry(&self, id: Uuid) -> Result<(), MemoryStoreError> {
         self.client
-            .delete_points(
-                DeletePointsBuilder::new(&self.config.collection_name)
-                    .points(PointsIdsList {
-                        ids: vec![PointId::from(id.to_string())],
+            .set_payload(
+                SetPayloadPointsBuilder::new(self.config.collection_name(), payload)
+                    .points_selector(PointsIdsList {
+                        ids: vec![PointId::from(memory.id().to_string())],
                     })
                     .wait(true),
             )
             .await
             .map_err(|e| MemoryStoreError::Query(e.to_string()))?;
+
+        self.client
+            .delete_payload(
+                DeletePayloadPointsBuilder::new(
+                    self.config.collection_name(),
+                    vec![
+                        FIELD_EXPIRES_AT.to_string(),
+                        FIELD_CONFIDENCE.to_string(),
+                        FIELD_TRUST_EVIDENCE_ALPHA.to_string(),
+                        FIELD_TRUST_EVIDENCE_BETA.to_string(),
+                    ],
+                )
+                .points_selector(PointsIdsList {
+                    ids: vec![PointId::from(memory.id().to_string())],
+                })
+                .wait(true),
+            )
+            .await
+            .map_err(|e| MemoryStoreError::Query(e.to_string()))?;
+
         Ok(())
     }
+}
 
-    async fn prune_expired(&self) -> Result<(), MemoryStoreError> {
-        let now = Utc::now();
-        let mut expired_ids = Vec::new();
-        let mut offset = None;
+impl<E: TextEmbedder> MemoryStore for QdrantMemoryStore<E> {
+    fn add_entries<'a>(
+        &'a self,
+        inputs: &'a [MemoryInput],
+    ) -> BoxFuture<'a, Result<AddEntriesResult, MemoryStoreError>> {
+        Box::pin(async move {
+            let mut added: Vec<MemoryEntry> = Vec::new();
+            let mut failures: Vec<PerEntryFailure> = Vec::new();
 
-        loop {
-            let mut request = ScrollPointsBuilder::new(&self.config.collection_name)
-                .limit(256)
-                .with_payload(true)
-                .with_vectors(false);
-            if let Some(next_offset) = offset.clone() {
-                request = request.offset(next_offset);
-            }
+            for (idx, input) in inputs.iter().enumerate() {
+                let trust = input.trust().clone();
+                let mut memory = MemoryEntry::new_with_trust(
+                    input.content().to_string(),
+                    input.metadata().clone(),
+                    trust,
+                );
 
-            let response = self
-                .client
-                .scroll(request)
-                .await
-                .map_err(|e| MemoryStoreError::Query(e.to_string()))?;
+                let embedding = match self.embedder.embed(memory.content()).await {
+                    Ok(e) => e,
+                    Err(e) => {
+                        failures.push(PerEntryFailure::new(idx, MemoryStoreError::Embedding(e)));
+                        continue;
+                    }
+                };
 
-            for point in response.result {
-                let id = extract_uuid_from_point_id(point.id.as_ref())?;
-                let expires_at =
-                    parse_optional_value(&point.payload, FIELD_EXPIRES_AT, parse_timestamp)?;
-                if is_expired(expires_at, now) {
-                    expired_ids.push(PointId::from(id.to_string()));
+                if let Some(threshold) = self.config.similarity_threshold() {
+                    match self
+                        .search_for_dedup(&embedding, threshold, memory.metadata())
+                        .await
+                    {
+                        Ok(Some(mut existing)) => {
+                            existing.record_use();
+
+                            if let Err(e) = self.do_upsert(&existing, &embedding).await {
+                                failures.push(PerEntryFailure::new(idx, e));
+                                continue;
+                            }
+
+                            log::debug!("deduplication: reusing memory {}", existing.id(),);
+                            added.push(existing);
+                            continue;
+                        }
+                        Ok(None) => {
+                            // No dedupe candidate found — proceed to upsert new memory.
+                        }
+                        Err(e) => {
+                            failures.push(PerEntryFailure::new(idx, e));
+                            continue;
+                        }
+                    }
                 }
+
+                memory.record_use();
+
+                if let Err(e) = self.do_upsert(&memory, &embedding).await {
+                    failures.push(PerEntryFailure::new(idx, e));
+                    continue;
+                }
+
+                added.push(memory);
             }
 
-            offset = response.next_page_offset;
-            if offset.is_none() {
-                break;
-            }
-        }
+            Ok(AddEntriesResult::new(added, failures))
+        })
+    }
 
-        if !expired_ids.is_empty() {
+    fn get_entry<'a>(
+        &'a self,
+        id: &'a Uuid,
+    ) -> BoxFuture<'a, Result<Option<MemoryEntry>, MemoryStoreError>> {
+        Box::pin(async move {
+            match self.load_memory(*id).await {
+                Ok(memory) => Ok(Some(memory)),
+                Err(MemoryStoreError::NotFound(_)) => Ok(None),
+                Err(e) => Err(e),
+            }
+        })
+    }
+
+    fn query(
+        &self,
+        query: MemoryQuery,
+    ) -> BoxFuture<'_, Result<Vec<MemoryEntry>, MemoryStoreError>> {
+        Box::pin(async move {
+            let embedding = self
+                .embedder
+                .embed(query.topic())
+                .await
+                .map_err(MemoryStoreError::Embedding)?;
+
+            let entries = self
+                .search_by_embedding(
+                    &embedding,
+                    query.max_results().get(),
+                    query.min_score().value(),
+                    query.filters(),
+                )
+                .await?;
+
+            Ok(entries)
+        })
+    }
+
+    fn promote<'a>(
+        &'a self,
+        id: &'a Uuid,
+    ) -> BoxFuture<'a, Result<Option<MemoryEntry>, MemoryStoreError>> {
+        Box::pin(async move {
+            let memory = match self.load_memory(*id).await {
+                Ok(m) => m,
+                Err(MemoryStoreError::NotFound(_)) => return Ok(None),
+                Err(e) => return Err(e),
+            };
+
+            let promoted = MemoryEntry::reconstruct(
+                *memory.id(),
+                memory.content().to_string(),
+                memory.metadata().clone(),
+                MemoryTrust::Fact,
+                memory.seen_count(),
+                memory.first_seen(),
+                memory.last_seen(),
+                None,
+                memory.created_at(),
+            );
+
+            self.promote_in_store(&promoted).await?;
+
+            Ok(Some(promoted))
+        })
+    }
+
+    fn delete_entry<'a>(&'a self, id: &'a Uuid) -> BoxFuture<'a, Result<(), MemoryStoreError>> {
+        Box::pin(async move {
             self.client
                 .delete_points(
-                    DeletePointsBuilder::new(&self.config.collection_name)
-                        .points(PointsIdsList { ids: expired_ids })
+                    DeletePointsBuilder::new(self.config.collection_name())
+                        .points(PointsIdsList {
+                            ids: vec![PointId::from(id.to_string())],
+                        })
                         .wait(true),
                 )
                 .await
                 .map_err(|e| MemoryStoreError::Query(e.to_string()))?;
-        }
+            Ok(())
+        })
+    }
 
-        Ok(())
+    fn prune_expired(&self) -> BoxFuture<'_, Result<(), MemoryStoreError>> {
+        Box::pin(async move {
+            let now = Utc::now();
+            let mut expired_ids = Vec::new();
+            let mut offset = None;
+
+            loop {
+                let mut request = ScrollPointsBuilder::new(self.config.collection_name())
+                    .limit(256)
+                    .with_payload(true)
+                    .with_vectors(false);
+                if let Some(next_offset) = offset.clone() {
+                    request = request.offset(next_offset);
+                }
+
+                let response = self
+                    .client
+                    .scroll(request)
+                    .await
+                    .map_err(|e| MemoryStoreError::Query(e.to_string()))?;
+
+                for point in response.result {
+                    let id = extract_uuid_from_point_id(point.id.as_ref())?;
+                    let expires_at =
+                        parse_optional_value(&point.payload, FIELD_EXPIRES_AT, parse_timestamp)?;
+                    if is_expired(expires_at, now) {
+                        expired_ids.push(PointId::from(id.to_string()));
+                    }
+                }
+
+                offset = response.next_page_offset;
+                if offset.is_none() {
+                    break;
+                }
+            }
+
+            if !expired_ids.is_empty() {
+                self.client
+                    .delete_points(
+                        DeletePointsBuilder::new(self.config.collection_name())
+                            .points(PointsIdsList { ids: expired_ids })
+                            .wait(true),
+                    )
+                    .await
+                    .map_err(|e| MemoryStoreError::Query(e.to_string()))?;
+            }
+
+            Ok(())
+        })
     }
 }
 
@@ -691,23 +658,33 @@ fn parse_payload_to_memory(
 
     let metadata: HashMap<String, String> = payload
         .get(FIELD_METADATA)
-        .and_then(|v| serde_json::to_value(v).ok()) // get the nested JSON object
+        .and_then(|v| serde_json::to_value(v).ok())
         .and_then(|v| serde_json::from_value(v).ok())
         .unwrap_or_default();
 
     let created_at = parse_mandatory_value(payload, FIELD_CREATED_AT, parse_timestamp)?;
-    let tier = payload
-        .get(FIELD_TIER)
-        .and_then(|value| value.as_str())
-        .and_then(|value_as_string| {
-            MemoryTier::parse(value_as_string).or_else(|| {
-                log::warn!(
-                    "unknown tier value '{value_as_string}' for entry {id}, defaulting to Candidate"
-                );
-                None
-            })
-        })
-        .unwrap_or(MemoryTier::Candidate);
+
+    let kind_str_owned;
+    let kind_str = match payload.get(FIELD_KIND).and_then(|v| v.as_str()) {
+        Some(s) => {
+            kind_str_owned = s.clone();
+            kind_str_owned.as_str()
+        }
+        None => {
+            log::warn!("missing kind field for entry {id}, defaulting to extracted_memory");
+            "extracted_memory"
+        }
+    };
+
+    let confidence = payload.get(FIELD_CONFIDENCE).and_then(|v| v.as_double());
+    let alpha = payload
+        .get(FIELD_TRUST_EVIDENCE_ALPHA)
+        .and_then(|v| v.as_double());
+    let beta = payload
+        .get(FIELD_TRUST_EVIDENCE_BETA)
+        .and_then(|v| v.as_double());
+
+    let trust = build_memory_trust(kind_str, confidence, alpha, beta);
 
     let seen_count = payload
         .get(FIELD_SEEN_COUNT)
@@ -715,36 +692,34 @@ fn parse_payload_to_memory(
         .map(|v| v.max(0) as u32)
         .unwrap_or(1);
 
-    let first_seen =
-        parse_optional_value(payload, FIELD_FIRST_SEEN, parse_timestamp)?.unwrap_or(created_at);
-    let last_seen =
-        parse_optional_value(payload, FIELD_LAST_SEEN, parse_timestamp)?.unwrap_or(created_at);
+    let first_seen = parse_optional_value(payload, FIELD_FIRST_SEEN, parse_timestamp)?;
+    let last_seen = parse_optional_value(payload, FIELD_LAST_SEEN, parse_timestamp)?;
     let expires_at = parse_optional_value(payload, FIELD_EXPIRES_AT, parse_timestamp)?
-        .or_else(|| tier.default_ttl().map(|ttl| created_at + ttl));
+        .or_else(|| trust.default_ttl().map(|ttl| created_at + ttl));
 
-    let sources: Vec<String> = payload
-        .get(FIELD_SOURCES)
-        .and_then(|value| serde_json::to_value(value).ok())
-        .and_then(|value| serde_json::from_value(value).ok())
-        .unwrap_or_default();
-
-    Ok(MemoryEntry {
-        id,
-        content,
-        metadata,
-        tier,
-        seen_count,
-        sources,
-        first_seen,
-        last_seen,
-        expires_at,
-        created_at,
-    })
+    Ok(MemoryEntry::reconstruct(
+        id, content, metadata, trust, seen_count, first_seen, last_seen, expires_at, created_at,
+    ))
 }
 
-fn blend_score(similarity: f64, tier: MemoryTier) -> Result<Score, MemoryStoreError> {
-    let weighted = (similarity * tier.retrieval_weight()).clamp(0.0, 1.0);
-    Score::new(weighted).map_err(|e| MemoryStoreError::Query(e.to_string()))
+fn build_memory_trust(
+    kind_str: &str,
+    confidence: Option<f64>,
+    alpha: Option<f64>,
+    beta: Option<f64>,
+) -> MemoryTrust {
+    match kind_str {
+        "fact" => MemoryTrust::Fact,
+        _ => MemoryTrust::Extracted {
+            confidence: confidence.unwrap_or(0.5),
+            evidence: TrustEvidence::with_counters(alpha, beta),
+        },
+    }
+}
+
+fn blend_score(similarity: f64, entry: &MemoryEntry) -> Result<Score, MemoryStoreError> {
+    let weighted = (similarity * entry.trust().effective_score().value()).clamp(0.0, 1.0);
+    Score::try_new(weighted).map_err(|e| MemoryStoreError::Query(e.to_string()))
 }
 
 fn is_expired(expires_at: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
@@ -765,90 +740,131 @@ fn metadata_matches_for_dedup(
             .all(|(k, v)| existing.get(k) == Some(v))
 }
 
+fn trust_kind_str(trust: &MemoryTrust) -> &'static str {
+    match trust {
+        MemoryTrust::Fact => "fact",
+        MemoryTrust::Extracted { .. } => "extracted_memory",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
 
     use chrono::Utc;
 
-    use loci_core::memory::MemoryTier;
+    use loci_core::memory::{MemoryEntry, MemoryTrust, TrustEvidence};
+    use pretty_assertions::assert_eq;
+
+    use crate::store::build_memory_trust;
 
     use super::{blend_score, is_expired, metadata_matches_for_dedup};
 
-    #[test]
-    fn blend_score_candidate_at_full_similarity() {
-        // Candidate weight is 0.6; 1.0 * 0.6 = 0.6
-        let score = blend_score(1.0, MemoryTier::Candidate).unwrap();
-        assert!((score.value() - 0.6).abs() < 1e-9);
+    fn extracted_with_evidence(alpha: f64, beta: f64) -> MemoryEntry {
+        MemoryEntry::new_with_trust(
+            "".to_string(),
+            HashMap::new(),
+            MemoryTrust::Extracted {
+                confidence: 0.5,
+                evidence: TrustEvidence::with_counters(Some(alpha), Some(beta)),
+            },
+        )
+    }
+
+    fn extracted_with_confidence(confidence: f64) -> MemoryEntry {
+        MemoryEntry::new_with_trust(
+            "".to_string(),
+            HashMap::new(),
+            MemoryTrust::Extracted {
+                confidence,
+                evidence: TrustEvidence::default(),
+            },
+        )
+    }
+
+    fn fact_entry() -> MemoryEntry {
+        MemoryEntry::new_with_trust("".to_string(), HashMap::new(), MemoryTrust::Fact)
     }
 
     #[test]
-    fn blend_score_stable_at_full_similarity() {
-        // Stable weight is 0.9
-        let score = blend_score(1.0, MemoryTier::Stable).unwrap();
-        assert!((score.value() - 0.9).abs() < 1e-9);
-    }
-
-    #[test]
-    fn blend_score_core_at_full_similarity() {
-        // Core weight is 1.0
-        let score = blend_score(1.0, MemoryTier::Core).unwrap();
+    fn test_blend_score_returns_full_confidence_for_fact_entries() {
+        let score = blend_score(1.0, &fact_entry()).unwrap();
         assert!((score.value() - 1.0).abs() < 1e-9);
     }
 
     #[test]
-    fn blend_score_ephemeral_is_zero_regardless_of_similarity() {
-        // Ephemeral weight is 0.0
-        let score = blend_score(1.0, MemoryTier::Ephemeral).unwrap();
-        assert_eq!(score.value(), 0.0);
+    fn test_blend_score_uses_bayesian_confidence_when_evidence_is_present() {
+        // alpha=9, beta=1 → confidence = 0.9
+        let entry = extracted_with_evidence(9.0, 1.0);
+        let score = blend_score(1.0, &entry).unwrap();
+        assert!((score.value() - 0.9).abs() < 1e-9);
     }
 
     #[test]
-    fn blend_score_zero_similarity_yields_zero() {
-        for tier in [
-            MemoryTier::Candidate,
-            MemoryTier::Stable,
-            MemoryTier::Core,
-            MemoryTier::Ephemeral,
+    fn test_blend_score_falls_back_to_stored_confidence_when_evidence_is_absent() {
+        let entry = extracted_with_confidence(0.7);
+        let score = blend_score(1.0, &entry).unwrap();
+        assert!((score.value() - 0.7).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_blend_score_defaults_to_half_when_extracted_confidence_is_missing() {
+        let entry = MemoryEntry::new("".to_string(), HashMap::new());
+        let score = blend_score(1.0, &entry).unwrap();
+        assert!((score.value() - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_blend_score_returns_zero_when_similarity_is_zero() {
+        for entry in [
+            fact_entry(),
+            extracted_with_evidence(9.0, 1.0),
+            extracted_with_confidence(0.8),
         ] {
-            let score = blend_score(0.0, tier).unwrap();
-            assert_eq!(score.value(), 0.0, "expected 0.0 for tier {tier:?}");
+            let score = blend_score(0.0, &entry).unwrap();
+            assert_eq!(
+                score.value(),
+                0.0,
+                "expected 0.0 for entry {:?}",
+                entry.trust()
+            );
         }
     }
 
     #[test]
-    fn blend_score_partial_similarity_is_scaled() {
-        // Stable weight 0.9 * similarity 0.5 = 0.45
-        let score = blend_score(0.5, MemoryTier::Stable).unwrap();
-        assert!((score.value() - 0.45).abs() < 1e-9);
+    fn test_blend_score_scales_similarity_by_effective_confidence() {
+        // alpha=8, beta=2 → confidence = 0.8; similarity = 0.5 → score = 0.4
+        let entry = extracted_with_evidence(8.0, 2.0);
+        let score = blend_score(0.5, &entry).unwrap();
+        assert!((score.value() - 0.4).abs() < 1e-9);
     }
 
     #[test]
-    fn is_expired_none_expires_at_is_never_expired() {
+    fn test_is_expired_returns_false_when_expires_at_is_none() {
         assert!(!is_expired(None, Utc::now()));
     }
 
     #[test]
-    fn is_expired_future_timestamp_is_not_expired() {
+    fn test_is_expired_returns_false_when_expires_at_is_in_the_future() {
         let future = Utc::now() + chrono::Duration::days(1);
         assert!(!is_expired(Some(future), Utc::now()));
     }
 
     #[test]
-    fn is_expired_past_timestamp_is_expired() {
+    fn test_is_expired_returns_true_when_expires_at_is_in_the_past() {
         let past = Utc::now() - chrono::Duration::days(1);
         assert!(is_expired(Some(past), Utc::now()));
     }
 
     #[test]
-    fn is_expired_exact_now_is_expired() {
+    fn test_is_expired_returns_true_when_expires_at_matches_now() {
         // The function uses `<=`, so a timestamp equal to `now` is expired.
         let now = Utc::now();
         assert!(is_expired(Some(now), now));
     }
 
     #[test]
-    fn metadata_matches_for_dedup_identical_maps_match() {
+    fn test_metadata_matches_for_dedup_returns_true_for_identical_maps() {
         let meta: HashMap<String, String> = [("lang".to_string(), "rust".to_string())]
             .into_iter()
             .collect();
@@ -856,12 +872,12 @@ mod tests {
     }
 
     #[test]
-    fn metadata_matches_for_dedup_empty_maps_match() {
+    fn test_metadata_matches_for_dedup_returns_true_for_empty_maps() {
         assert!(metadata_matches_for_dedup(&HashMap::new(), &HashMap::new()));
     }
 
     #[test]
-    fn metadata_matches_for_dedup_differing_values_do_not_match() {
+    fn test_metadata_matches_for_dedup_returns_false_when_values_differ() {
         let existing: HashMap<String, String> = [("env".to_string(), "prod".to_string())]
             .into_iter()
             .collect();
@@ -872,7 +888,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_matches_for_dedup_different_keys_do_not_match() {
+    fn test_metadata_matches_for_dedup_returns_false_when_keys_differ() {
         let existing: HashMap<String, String> =
             [("a".to_string(), "1".to_string())].into_iter().collect();
         let incoming: HashMap<String, String> =
@@ -881,9 +897,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_matches_for_dedup_source_key_is_excluded_from_comparison() {
-        // Two maps that differ only in the "source" key must be considered matching,
-        // because source provenance is intentionally excluded from dedup comparison.
+    fn test_metadata_matches_for_dedup_ignores_source_key_differences() {
         let existing: HashMap<String, String> = [
             ("source".to_string(), "wiki".to_string()),
             ("lang".to_string(), "rust".to_string()),
@@ -900,9 +914,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_matches_for_dedup_source_only_maps_match() {
-        // Both maps contain only the "source" key with different values.
-        // Since "source" is excluded, both filtered maps are empty → they match.
+    fn test_metadata_matches_for_dedup_returns_true_when_only_source_differs() {
         let existing: HashMap<String, String> = [("source".to_string(), "a".to_string())]
             .into_iter()
             .collect();
@@ -910,5 +922,36 @@ mod tests {
             .into_iter()
             .collect();
         assert!(metadata_matches_for_dedup(&existing, &incoming));
+    }
+
+    #[test]
+    fn test_build_memory_trust_from_payload_fact() {
+        let t = build_memory_trust("fact", None, None, None);
+        assert_eq!(t, MemoryTrust::Fact);
+    }
+
+    #[test]
+    fn test_build_memory_trust_from_payload_extracted_with_values() {
+        let t = build_memory_trust("extracted_memory", Some(0.7), Some(7.0), Some(3.0));
+        let MemoryTrust::Extracted {
+            confidence,
+            evidence,
+        } = t
+        else {
+            panic!("expected Extracted trust");
+        };
+        assert!((confidence - 0.7).abs() < f64::EPSILON);
+        assert_eq!(evidence.alpha(), Some(7.0));
+        assert_eq!(evidence.beta(), Some(3.0));
+    }
+
+    #[test]
+    fn test_build_memory_trust_from_payload_extracted_defaults_confidence() {
+        let t = build_memory_trust("extracted_memory", None, None, None);
+        assert!(matches!(
+            t,
+            MemoryTrust::Extracted { confidence, .. }
+            if (confidence - 0.5).abs() < f64::EPSILON
+        ));
     }
 }

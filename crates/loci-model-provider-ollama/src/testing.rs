@@ -24,6 +24,14 @@ pub fn text_model() -> String {
     std::env::var("OLLAMA_TEXT_MODEL").unwrap_or_else(|_| "qwen3:0.6b".to_string())
 }
 
+/// Returns the classification model name.
+///
+/// Reads from the `OLLAMA_CLASSIFICATION_MODEL` environment variable, defaulting to
+/// `qwen3:0.6b`.
+pub fn classification_model() -> String {
+    std::env::var("OLLAMA_CLASSIFICATION_MODEL").unwrap_or_else(|_| "qwen3:0.6b".to_string())
+}
+
 /// Returns the embedding model name.
 ///
 /// Reads from the `OLLAMA_EMBEDDING_MODEL` environment variable, defaulting to
@@ -34,11 +42,8 @@ pub fn embedding_model() -> String {
 
 /// Creates an [`OllamaModelProvider`] configured from environment variables.
 pub fn ollama_provider() -> OllamaModelProvider {
-    OllamaModelProvider::new(OllamaConfig {
-        base_url: base_url(),
-        timeout: None,
-    })
-    .expect("Failed to create OllamaModelProvider")
+    OllamaModelProvider::new(OllamaConfig::new(base_url()))
+        .expect("Failed to create OllamaModelProvider")
 }
 
 /// Panics with a helpful message if Ollama is not reachable.

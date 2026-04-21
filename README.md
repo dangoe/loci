@@ -55,18 +55,18 @@ The following is fully implemented and working today.
 | `loci-memory-store-qdrant`   | `crates/loci-memory-store-qdrant`   | Qdrant-backed `MemoryStore` with lifecycle-aware retrieval |
 | `loci-model-provider-ollama` | `crates/loci-model-provider-ollama` | Ollama embedding + text generation model provider          |
 | `loci-config`                | `crates/loci-config`                | TOML config loading and secret resolution                  |
-| `loci-cli`                   | `crates/loci-cli`                   | `loci` CLI binary for CRUD + prompt enhancement            |
+| `loci-cli`                   | `crates/loci-cli`                   | `loci` CLI binary — memory CRUD, LLM extraction, and prompt enhancement |
 
 ### Core Abstractions (`loci-core`)
 
 | Trait                         | Purpose                                                             |
 | ----------------------------- | ------------------------------------------------------------------- |
-| `MemoryStore`                 | Add, get, query, update, set tier, delete, prune expired memory entries |
+| `MemoryStore`                 | Add, get, query, update, set kind, delete, prune expired memory entries |
 | `TextEmbedder`                | Embed text into a vector                                            |
 | `EmbeddingModelProvider`      | Raw embedding model provider (HTTP, model name)                     |
 | `TextGenerationModelProvider` | Raw text generation model provider                                  |
 
-Key domain types: `MemoryEntry`, `MemoryQueryResult`, `MemoryInput`, `MemoryQuery`, `MemoryTier`, `MemoryQueryMode`, `Score`, `Embedding`.
+Key domain types: `MemoryEntry`, `MemoryQueryResult`, `MemoryInput`, `MemoryQuery`, `MemoryKind`, `MemoryQueryMode`, `Score`, `Embedding`.
 
 ### Storage (`loci-memory-store-qdrant`)
 
@@ -75,11 +75,11 @@ Key domain types: `MemoryEntry`, `MemoryQueryResult`, `MemoryInput`, `MemoryQuer
 Features:
 
 - Configurable deduplication (`similarity_threshold`) to reuse near-duplicates
-- Tiered memory lifecycle (`Candidate`, `Stable`, `Core`; `Ephemeral` is request-scoped only)
-- Per-tier TTL defaults and query-time expiry filtering
-- Weighted retrieval ranking (`similarity * tier_weight`)
-- Source-corroboration promotion (`Candidate -> Stable`) when the same fact is observed from a different `source` metadata value
-- Manual curation path (`set_entry_tier`) for promoting to `Core`
+- Two-kind memory model: `ExtractedMemory` (Bayesian confidence, subject to decay/discard/promotion) and `Fact` (confidence 1.0, no expiry)
+- Per-kind TTL defaults and query-time expiry filtering
+- Weighted retrieval ranking (`similarity * kind_weight`)
+- Auto-promotion to `Fact` when Bayesian score exceeds the promotion threshold
+- Manual promotion path (`set_entry_kind`) for promoting to `Fact`
 - Metadata filtering (AND semantics, exact match)
 - Min score threshold and max result limits
 
@@ -167,14 +167,14 @@ Add a new memory entry.
 ```bash
 loci memory add "The project uses Qdrant for vector storage"
 loci memory add "Deployment target is Kubernetes" --meta env=production --meta team=platform
-loci memory add "This is a curated fact" --tier core --meta source=manual
+loci memory add "This is a curated fact" --kind fact --meta source=manual
 ```
 
-| Argument / Flag                        | Description                                |
-| -------------------------------------- | ------------------------------------------ |
-| `<content>`                            | Memory text (required positional argument) |
-| `--meta KEY=VALUE`                     | Metadata key-value pair (repeatable)       |
-| `--tier <candidate \| stable \| core>` | Optional persisted tier override           |
+| Argument / Flag                  | Description                                |
+| -------------------------------- | ------------------------------------------ |
+| `<content>`                      | Memory text (required positional argument) |
+| `--meta KEY=VALUE`               | Metadata key-value pair (repeatable)       |
+| `--kind <fact \| extracted-memory>` | Optional kind override (default: `extracted-memory`) |
 
 ### `loci memory query`
 
@@ -201,22 +201,17 @@ Fetch one memory entry by UUID.
 loci memory get <uuid>
 ```
 
-### `loci memory update`
+### `loci memory promote`
 
-Update an existing memory by UUID.
+Promote a memory entry to `Fact` (confidence 1.0, no expiry).
 
 ```bash
-loci memory update <uuid> "Updated content" --meta key=value
-loci memory update <uuid> --tier core
-loci memory update <uuid> --meta source=manual
+loci memory promote <uuid>
 ```
 
-| Argument / Flag                        | Description                                       |
-| -------------------------------------- | ------------------------------------------------- |
-| `<uuid>`                               | Memory entry ID (required)                        |
-| `[content]`                            | New content (optional positional argument)        |
-| `--meta KEY=VALUE`                     | Replace metadata with provided pairs (repeatable) |
-| `--tier <candidate \| stable \| core>` | Optional tier override                            |
+| Argument / Flag | Description                |
+| --------------- | -------------------------- |
+| `<uuid>`        | Memory entry ID (required) |
 
 ### `loci memory delete`
 
@@ -232,6 +227,57 @@ Remove **all** expired memory entries from the collection.
 
 ```bash
 loci memory prune-expired
+```
+
+### `loci memory extract`
+
+Extract discrete memory entries from a block of text using the configured LLM and persist
+them. Use `--dry-run` to preview candidates without writing to the store.
+
+**Input sources (mutually exclusive):**
+
+```bash
+# Positional string
+loci memory extract "The team uses Qdrant for vector storage and Ollama for embeddings."
+
+# File(s) — use - for stdin, repeatable
+loci memory extract -f notes.md
+loci memory extract -f chapter1.md -f chapter2.md
+
+# Stdin (auto-detected when no other input is given)
+cat transcript.txt | loci memory extract
+
+# Preview without persisting
+loci memory extract "…some text…" --dry-run
+```
+
+| Argument / Flag      | Default      | Description                                                          |
+| -------------------- | ------------ | -------------------------------------------------------------------- |
+| `[TEXT]`             | _(optional)_ | Text to extract from (positional). Mutually exclusive with `--file`. |
+| `--file / -f <PATH>` | _(none)_     | File to read input from. Use `-` for stdin. Repeatable.              |
+| `--meta KEY=VALUE`   | _(none)_     | Metadata applied to every extracted entry (repeatable).              |
+| `--max-entries <n>`  | _(none)_     | Hard cap on the number of entries extracted.                         |
+| `--guidelines <TEXT>`| _(none)_     | Free-form instructions appended to the extraction prompt.            |
+| `--dry-run`          | off          | Print extracted candidates as JSON without persisting.               |
+
+> **Note:** Chunking and thinking mode are configured in `config.toml` under `[memory.extraction]`,
+> not as CLI flags.
+
+**Output (persist mode):**
+
+```json
+{
+  "added":    [ { "id": "…", "content": "…", "kind": "extracted_memory", … } ],
+  "failures": []
+}
+```
+
+**Output (dry-run mode):**
+
+```json
+[
+  { "content": "The team uses Qdrant.", "kind": "extracted_memory", "metadata": {} }
+]
 ```
 
 ### `loci generate` (alias: `gen`)
@@ -263,11 +309,14 @@ loci --config /path/to/config.toml config init
 ### Memory config keys
 
 ```toml
-[memory]
-store = "qdrant"
+[memory.backends.qdrant]
+kind       = "qdrant"
+url        = "http://localhost:6334"
 collection = "memory_entries"
-# similarity_threshold = 0.95     # deduplicate by semantic similarity
-# promotion_source_threshold = 2  # promote Candidate -> Stable when corroborated by a different source
+
+[memory.config]
+backend = "qdrant"
+# similarity_threshold = 0.95  # deduplicate by semantic similarity (0.0–1.0)
 ```
 
 ---
@@ -312,22 +361,16 @@ Override models/URL via environment variables:
 The items below are **planned** — they are not yet implemented. They are listed in
 dependency order: each step builds on the capabilities introduced by the previous ones.
 
-### Phase 1: Memory Extraction Strategies
+### ~~Phase 1: Memory Extraction Strategies~~ ✓ Done
 
-Currently, saving memories is a manual process. Before any automated ingestion can be
-useful, loci needs the ability to distill raw content into meaningful memory entries.
-
-A `MemoryExtractionStrategy` trait will process content asynchronously and produce
-candidate memory entries. Two built-in strategies are planned:
-
-- **`LlmSummarizationStrategy`** — sends content to the LLM with a system prompt that
-  extracts factual statements as new memory entries.
-- **`KeywordEntityStrategy`** — lightweight keyword and entity extraction that does not
-  require an additional LLM call.
-
-The trait is open for extension; custom strategies can be plugged in. Once extraction
-strategies exist, they also enable automatic memory extraction from prompt/response pairs
-during generation.
+The `MemoryExtractionStrategy` trait and the LLM-based implementation
+(`LlmMemoryExtractionStrategy`) are shipped and fully tested. The `MemoryExtractor`
+orchestrator optionally chunks large inputs via `SentenceAwareChunker` before running
+extraction. The `MemoryExtractionPipeline` adds a Bayesian confidence layer with
+auto-discard, auto-promotion to `Fact`, and Fact-contradiction detection. The
+`loci memory extract` CLI subcommand exposes both paths with full support for positional
+text, file(s), stdin, chunking, dry-run preview, metadata, and entry caps. See the
+[CLI Reference](#loci-memory-extract) above.
 
 ### Phase 2: Scanner Integration
 
@@ -344,8 +387,8 @@ scanners include:
   content through extraction.
 
 Scanners feed content into extraction strategies, which produce memory entries that flow
-into the existing memory store with full lifecycle support (deduplication, tiering,
-source-corroboration promotion).
+into the existing memory store with full lifecycle support (deduplication, Bayesian
+confidence scoring, auto-discard, and auto-promotion to `Fact`).
 
 ### Phase 3: Session-Aware Memory Proxy
 

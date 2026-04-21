@@ -12,20 +12,50 @@ use loci_core::contextualization::{
 };
 use loci_core::error::ContextualizerError;
 use loci_core::memory::Score;
+use loci_core::memory::store::MemoryStore;
 use loci_core::model_provider::text_generation::TextGenerationModelProvider;
-use loci_core::store::MemoryStore;
 
 use crate::state::AppState;
 
 /// Protocol-agnostic input for a single chat completion request.
 pub(crate) struct ChatCompletionInput {
     /// The final user message — used as the memory-retrieval prompt and LLM prompt.
-    pub prompt: String,
+    prompt: String,
     /// Optional system message from the incoming request. Appended to the
     /// loci base template when present.
-    pub system: Option<String>,
+    system: Option<String>,
     /// Optional generation tuning forwarded from the incoming request.
-    pub tuning: Option<ContextualizerTuningConfig>,
+    tuning: Option<ContextualizerTuningConfig>,
+}
+
+impl ChatCompletionInput {
+    /// Constructs a new `ChatCompletionInput`.
+    pub(crate) fn new(
+        prompt: String,
+        system: Option<String>,
+        tuning: Option<ContextualizerTuningConfig>,
+    ) -> Self {
+        Self {
+            prompt,
+            system,
+            tuning,
+        }
+    }
+
+    /// Returns the prompt text.
+    pub(crate) fn prompt(&self) -> &str {
+        &self.prompt
+    }
+
+    /// Returns the optional system message.
+    pub(crate) fn system(&self) -> Option<&str> {
+        self.system.as_deref()
+    }
+
+    /// Returns the optional tuning configuration.
+    pub(crate) fn tuning(&self) -> Option<&ContextualizerTuningConfig> {
+        self.tuning.as_ref()
+    }
 }
 
 /// Errors produced by [`OpenAICompletionService::complete`].
@@ -78,11 +108,11 @@ where
         &self,
         input: ChatCompletionInput,
     ) -> Result<ResultStream, OpenAIServiceError> {
-        let prompt = input.prompt.clone();
+        let prompt = input.prompt().to_owned();
         let config = self.build_contextualizer_config(&input)?;
         let contextualizer = Contextualizer::new(
-            Arc::clone(&self.state.store),
-            Arc::clone(&self.state.llm_provider),
+            Arc::clone(self.state.store()),
+            Arc::clone(self.state.llm_provider()),
             config,
         );
         contextualizer
@@ -95,27 +125,27 @@ where
         &self,
         input: &ChatCompletionInput,
     ) -> Result<ContextualizerConfig, OpenAIServiceError> {
-        let model_key = &self.state.config.routing.text.default;
+        let model_key = self.state.config().generation().text().model();
         let model = self
             .state
-            .config
-            .models
-            .text
+            .config()
+            .resources()
+            .models()
+            .text()
             .get(model_key)
-            .ok_or_else(|| OpenAIServiceError::MissingModel(model_key.clone()))?;
+            .ok_or_else(|| OpenAIServiceError::MissingModel(model_key.to_owned()))?;
 
-        Ok(ContextualizerConfig {
-            text_generation_model: model.model.clone(),
-            system: input.system.as_deref().map(|s| ContextualizerSystemConfig {
-                mode: ContextualizerSystemMode::Append,
-                system: s.to_owned(),
+        Ok(ContextualizerConfig::new(
+            model.model().to_owned(),
+            input.system().map(|s| {
+                ContextualizerSystemConfig::new(ContextualizerSystemMode::Append, s.to_owned())
             }),
-            memory_mode: ContextualizationMemoryMode::Auto,
-            max_memory_entries: 5,
-            min_score: Score::ZERO,
-            filters: HashMap::new(),
-            tuning: input.tuning.clone(),
-        })
+            ContextualizationMemoryMode::Auto,
+            std::num::NonZeroUsize::new(5).unwrap(),
+            Score::ZERO,
+            HashMap::new(),
+            input.tuning().cloned(),
+        ))
     }
 }
 
@@ -142,7 +172,11 @@ mod tests {
             &self,
             req: TextGenerationRequest,
         ) -> ModelProviderResult<TextGenerationResponse> {
-            Ok(TextGenerationResponse::done("ok".into(), req.model, None))
+            Ok(TextGenerationResponse::new_done(
+                "ok".into(),
+                req.model().to_owned(),
+                None,
+            ))
         }
     }
 
@@ -154,60 +188,40 @@ mod tests {
                 .with_query_behavior(QueryBehavior::Ok(vec![])),
         );
         let provider = Arc::new(StubProvider);
-        let state = Arc::new(AppState {
-            store,
-            llm_provider: provider,
-            config: Arc::new(config),
-        });
+        let state = Arc::new(AppState::new(store, provider, Arc::new(config)));
         OpenAICompletionService::new(state)
     }
 
     #[test]
-    fn build_config_uses_default_text_model() {
+    fn test_build_config_uses_default_text_model() {
         let svc = make_service();
-        let input = ChatCompletionInput {
-            prompt: "test".into(),
-            system: None,
-            tuning: None,
-        };
+        let input = ChatCompletionInput::new("test".into(), None, None);
         let config = svc.build_contextualizer_config(&input).unwrap();
-        assert_eq!(config.text_generation_model, "test-text-model");
+        assert_eq!(config.text_generation_model(), "test-text-model");
     }
 
     #[test]
-    fn build_config_sets_system_append_mode_when_system_present() {
+    fn test_build_config_sets_system_append_mode_when_system_present() {
         let svc = make_service();
-        let input = ChatCompletionInput {
-            prompt: "test".into(),
-            system: Some("Be concise.".into()),
-            tuning: None,
-        };
+        let input = ChatCompletionInput::new("test".into(), Some("Be concise.".into()), None);
         let config = svc.build_contextualizer_config(&input).unwrap();
-        let system = config.system.unwrap();
-        assert_eq!(system.system, "Be concise.");
-        assert!(matches!(system.mode, ContextualizerSystemMode::Append));
+        let system = config.system().unwrap();
+        assert_eq!(system.system(), "Be concise.");
+        assert!(matches!(system.mode(), ContextualizerSystemMode::Append));
     }
 
     #[test]
-    fn build_config_returns_error_when_model_key_missing() {
+    fn test_build_config_returns_error_when_model_key_missing() {
         let mut cfg = mock_config();
-        cfg.routing.text.default = "nonexistent".into();
+        cfg.generation_mut().text_mut().set_model("nonexistent");
         let store = Arc::new(
             MockStore::new()
                 .with_add_entries_behavior(AddEntriesBehavior::Ok(vec![]))
                 .with_query_behavior(QueryBehavior::Ok(vec![])),
         );
-        let state = Arc::new(AppState {
-            store,
-            llm_provider: Arc::new(StubProvider),
-            config: Arc::new(cfg),
-        });
+        let state = Arc::new(AppState::new(store, Arc::new(StubProvider), Arc::new(cfg)));
         let svc = OpenAICompletionService::new(state);
-        let input = ChatCompletionInput {
-            prompt: "test".into(),
-            system: None,
-            tuning: None,
-        };
+        let input = ChatCompletionInput::new("test".into(), None, None);
         let err = svc.build_contextualizer_config(&input).unwrap_err();
         assert!(
             matches!(err, OpenAIServiceError::MissingModel(ref k) if k == "nonexistent"),
@@ -216,35 +230,37 @@ mod tests {
     }
 
     #[test]
-    fn build_config_memory_mode_is_auto() {
+    fn test_build_config_memory_mode_is_auto() {
         let svc = make_service();
-        let input = ChatCompletionInput {
-            prompt: "test".into(),
-            system: None,
-            tuning: None,
-        };
+        let input = ChatCompletionInput::new("test".into(), None, None);
         let config = svc.build_contextualizer_config(&input).unwrap();
         assert!(matches!(
-            config.memory_mode,
+            config.memory_mode(),
             ContextualizationMemoryMode::Auto
         ));
     }
 
     #[test]
-    fn build_config_tuning_is_forwarded() {
+    fn test_build_config_tuning_is_forwarded() {
         let svc = make_service();
-        let input = ChatCompletionInput {
-            prompt: "test".into(),
-            system: None,
-            tuning: Some(ContextualizerTuningConfig {
-                temperature: Some(0.5),
-                max_tokens: Some(128),
-                ..Default::default()
-            }),
-        };
+        let input = ChatCompletionInput::new(
+            "test".into(),
+            None,
+            Some(ContextualizerTuningConfig::new(
+                Some(0.5),
+                Some(128),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Default::default(),
+            )),
+        );
         let config = svc.build_contextualizer_config(&input).unwrap();
-        let t = config.tuning.unwrap();
-        assert_eq!(t.temperature, Some(0.5));
-        assert_eq!(t.max_tokens, Some(128));
+        let t = config.tuning().cloned().unwrap();
+        assert_eq!(t.temperature(), Some(0.5));
+        assert_eq!(t.max_tokens(), Some(128));
     }
 }

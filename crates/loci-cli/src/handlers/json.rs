@@ -3,19 +3,35 @@
 // This file is part of loci-cli.
 
 /// Serialises a [`loci_core::memory::MemoryEntry`] to a [`serde_json::Value`].
-pub fn entry_to_json(e: &loci_core::memory::MemoryQueryResult) -> serde_json::Value {
+pub fn entry_to_json(e: &loci_core::memory::MemoryEntry) -> serde_json::Value {
+    use loci_core::memory::MemoryTrust;
+    let (kind, confidence, trust_evidence) = match e.trust() {
+        MemoryTrust::Fact => ("fact", 1.0_f64, serde_json::Value::Null),
+        MemoryTrust::Extracted {
+            confidence,
+            evidence,
+        } => (
+            "extracted_memory",
+            evidence.bayesian_confidence().unwrap_or(*confidence),
+            serde_json::json!({
+                "alpha": evidence.alpha(),
+                "beta": evidence.beta(),
+            }),
+        ),
+    };
     serde_json::json!({
-        "id": e.memory_entry.id.to_string(),
-        "content": e.memory_entry.content,
-        "metadata": e.memory_entry.metadata,
-        "tier": e.memory_entry.tier.as_str(),
-        "seen_count": e.memory_entry.seen_count,
-        "sources": e.memory_entry.sources,
-        "first_seen": e.memory_entry.first_seen.to_rfc3339(),
-        "last_seen": e.memory_entry.last_seen.to_rfc3339(),
-        "expires_at": e.memory_entry.expires_at.map(|dt| dt.to_rfc3339()),
-        "created_at": e.memory_entry.created_at.to_rfc3339(),
-        "score": e.score.value(),
+        "id": e.id().to_string(),
+        "content": e.content(),
+        "metadata": e.metadata(),
+        "kind": kind,
+        "confidence": confidence,
+        "trust_evidence": trust_evidence,
+        "seen_count": e.seen_count(),
+        "first_seen": e.first_seen().map(|dt| dt.to_rfc3339()),
+        "last_seen": e.last_seen().map(|dt| dt.to_rfc3339()),
+        "expires_at": e.expires_at().map(|dt| dt.to_rfc3339()),
+        "created_at": e.created_at().to_rfc3339(),
+        "score": e.trust().effective_score().value(),
     })
 }
 
@@ -23,40 +39,33 @@ pub fn entry_to_json(e: &loci_core::memory::MemoryQueryResult) -> serde_json::Va
 mod tests {
     use std::collections::HashMap;
 
-    use loci_core::memory::{
-        MemoryEntry as CoreMemoryEntry, MemoryQueryResult as CoreMemoryQueryResult,
-        Score as CoreScore,
-    };
+    use loci_core::memory::{MemoryEntry as CoreMemoryEntry, MemoryTrust};
     use serde_json::Value as JsonValue;
 
     use crate::handlers::json::entry_to_json;
 
     #[test]
-    fn entry_to_json_serializes_fields() {
+    fn test_entry_to_json_serializes_fields() {
         let mut metadata = HashMap::new();
         metadata.insert("source".to_string(), "unit-test".to_string());
 
-        let entry = CoreMemoryEntry::new_with_tier(
+        let entry = CoreMemoryEntry::new_with_trust(
             "my content".to_string(),
             metadata.clone(),
-            loci_core::memory::MemoryTier::Core,
+            MemoryTrust::Fact,
         );
-        let mq = CoreMemoryQueryResult {
-            memory_entry: entry.clone(),
-            score: CoreScore::new(0.75).unwrap(),
-        };
 
-        let v: JsonValue = entry_to_json(&mq);
+        let v: JsonValue = entry_to_json(&entry);
 
-        assert_eq!(v["id"].as_str().unwrap(), entry.id.to_string().as_str());
+        assert_eq!(v["id"].as_str().unwrap(), entry.id().to_string().as_str());
         assert_eq!(v["content"].as_str().unwrap(), "my content");
         assert_eq!(v["metadata"]["source"].as_str().unwrap(), "unit-test");
-        assert_eq!(v["tier"].as_str().unwrap(), "core");
-        assert_eq!(v["seen_count"].as_u64().unwrap(), entry.seen_count as u64);
+        assert_eq!(v["kind"].as_str().unwrap(), "fact");
+        assert_eq!(v["seen_count"].as_u64().unwrap(), entry.seen_count() as u64);
         assert!(v.get("expires_at").unwrap().is_null());
-        assert_eq!(v["score"].as_f64().unwrap(), 0.75);
+        assert_eq!(v["score"].as_f64().unwrap(), 1.0);
         assert!(v["created_at"].as_str().is_some());
-        assert!(v["first_seen"].as_str().is_some());
-        assert!(v["last_seen"].as_str().is_some());
+        assert!(v["first_seen"].as_str().is_none()); // first_seen is None by default
+        assert!(v["last_seen"].as_str().is_none()); // last_seen is None by default
     }
 }

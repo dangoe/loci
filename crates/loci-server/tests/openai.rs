@@ -8,8 +8,9 @@ mod common;
 
 use std::sync::Arc;
 
-use loci_core::memory::MemoryTier;
-use loci_core::model_provider::text_generation::{TextGenerationResponse, TokenUsage};
+use loci_core::memory::{MemoryTrust, TrustEvidence};
+use loci_core::model_provider::common::TokenUsage;
+use loci_core::model_provider::text_generation::TextGenerationResponse;
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -31,7 +32,7 @@ fn http_client() -> reqwest::Client {
 }
 
 fn url(server: &TestServer) -> String {
-    format!("http://{}{ENDPOINT}", server.addr)
+    format!("http://{}{ENDPOINT}", server.addr())
 }
 
 /// Parse a streaming SSE body into a `Vec` of parsed JSON objects, excluding
@@ -39,22 +40,14 @@ fn url(server: &TestServer) -> String {
 fn parse_sse_events(body: &str) -> Vec<Value> {
     body.split("\n\n")
         .filter(|block| !block.is_empty())
-        .filter_map(|block| {
-            block
-                .lines()
-                .find_map(|line| line.strip_prefix("data: "))
-                .and_then(|data| {
-                    if data.trim() == "[DONE]" {
-                        None
-                    } else {
-                        serde_json::from_str(data).ok()
-                    }
-                })
+        .filter_map(|block| block.lines().find_map(|line| line.strip_prefix("data: ")))
+        .filter(|data| data.trim() != "[DONE]")
+        .map(|data| {
+            serde_json::from_str(data)
+                .unwrap_or_else(|err| panic!("failed to parse SSE event JSON: {err}; data: {data}"))
         })
         .collect()
 }
-
-// ── Non-streaming ─────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn test_non_streaming_returns_assembled_text() {
@@ -65,20 +58,11 @@ async fn test_non_streaming_returns_assembled_text() {
     );
     let provider = Arc::new(MockTextGenerationModelProvider::new(
         ProviderBehavior::Stream(vec![
-            TextGenerationResponse {
-                text: "Hello".into(),
-                model: "test-model".into(),
-                usage: None,
-                done: false,
-            },
-            TextGenerationResponse::done(
+            TextGenerationResponse::new("Hello".into(), "test-model".into(), None, false),
+            TextGenerationResponse::new_done(
                 " world".into(),
                 "test-model".into(),
-                Some(TokenUsage {
-                    prompt_tokens: Some(4),
-                    completion_tokens: Some(2),
-                    total_tokens: Some(6),
-                }),
+                Some(TokenUsage::new(Some(4), Some(2), Some(6))),
             ),
         ]),
     ));
@@ -117,7 +101,7 @@ async fn test_non_streaming_memory_is_queried_with_last_user_message() {
             .with_query_behavior(QueryBehavior::Ok(vec![])),
     );
     let provider = Arc::new(MockTextGenerationModelProvider::new(
-        ProviderBehavior::Stream(vec![TextGenerationResponse::done(
+        ProviderBehavior::Stream(vec![TextGenerationResponse::new_done(
             "ok".into(),
             "test-model".into(),
             None,
@@ -147,7 +131,8 @@ async fn test_non_streaming_memory_is_queried_with_last_user_message() {
         .query
         .expect("store should have been queried");
     assert_eq!(
-        query.topic, "actual prompt",
+        query.topic(),
+        "actual prompt",
         "memory should be queried with the last user message"
     );
 }
@@ -160,7 +145,7 @@ async fn test_non_streaming_system_message_is_forwarded_to_contextualizer() {
             .with_query_behavior(QueryBehavior::Ok(vec![])),
     );
     let provider = Arc::new(MockTextGenerationModelProvider::new(
-        ProviderBehavior::Stream(vec![TextGenerationResponse::done(
+        ProviderBehavior::Stream(vec![TextGenerationResponse::new_done(
             "ok".into(),
             "test-model".into(),
             None,
@@ -189,7 +174,7 @@ async fn test_non_streaming_system_message_is_forwarded_to_contextualizer() {
         .last_request
         .expect("provider should have been called");
     let system = request
-        .system
+        .system()
         .expect("provider request should include a system prompt");
     assert!(
         system.contains("Always respond in French."),
@@ -205,7 +190,7 @@ async fn test_non_streaming_tuning_params_are_forwarded_to_provider() {
             .with_query_behavior(QueryBehavior::Ok(vec![])),
     );
     let provider = Arc::new(MockTextGenerationModelProvider::new(
-        ProviderBehavior::Stream(vec![TextGenerationResponse::done(
+        ProviderBehavior::Stream(vec![TextGenerationResponse::new_done(
             "ok".into(),
             "test-model".into(),
             None,
@@ -233,13 +218,13 @@ async fn test_non_streaming_tuning_params_are_forwarded_to_provider() {
         .snapshot()
         .last_request
         .expect("provider should have been called");
-    assert_eq!(request.temperature, Some(0.2));
-    assert_eq!(request.max_tokens, Some(64));
-    assert_eq!(request.top_p, Some(0.9));
+    assert_eq!(request.temperature(), Some(0.2));
+    assert_eq!(request.max_tokens(), Some(64));
+    assert_eq!(request.top_p(), Some(0.9));
 }
 
 #[tokio::test]
-async fn test_non_streaming_missing_model_returns_500() {
+async fn test_non_streaming_missing_model_returns_error_body_with_200_status() {
     let store = Arc::new(
         MockStore::new()
             .with_add_entries_behavior(AddEntriesBehavior::Ok(vec![]))
@@ -249,7 +234,7 @@ async fn test_non_streaming_missing_model_returns_500() {
         ProviderBehavior::Stream(vec![]),
     ));
     let mut config = mock_config();
-    config.routing.text.default = "missing".into();
+    config.generation_mut().text_mut().set_model("missing");
     let server =
         TestServer::start_with_components(config, Arc::clone(&store), Arc::clone(&provider)).await;
 
@@ -264,7 +249,7 @@ async fn test_non_streaming_missing_model_returns_500() {
         .await
         .expect("request should succeed");
 
-    assert_eq!(response.status().as_u16(), 200); // axum JSON body carries the error
+    assert_eq!(response.status().as_u16(), 200); // error details are encoded in the JSON body
     let body: Value = response.json().await.unwrap();
     assert!(
         body["error"]["message"]
@@ -281,17 +266,20 @@ async fn test_non_streaming_memory_entries_injected_into_system_prompt() {
     let memory = make_result(
         Uuid::new_v4(),
         "user prefers dark mode",
-        MemoryTier::Stable,
+        MemoryTrust::Extracted {
+            confidence: 0.5,
+            evidence: TrustEvidence::default(),
+        },
         0.9,
     );
     let store = Arc::new(
         MockStore::new()
             .with_add_entries_behavior(AddEntriesBehavior::Ok(vec![memory.clone()]))
-            .with_get_behavior(EntryBehavior::Ok(memory.clone()))
+            .with_get_behavior(EntryBehavior::Ok(Some(memory.clone())))
             .with_query_behavior(QueryBehavior::Ok(vec![memory])),
     );
     let provider = Arc::new(MockTextGenerationModelProvider::new(
-        ProviderBehavior::Stream(vec![TextGenerationResponse::done(
+        ProviderBehavior::Stream(vec![TextGenerationResponse::new_done(
             "ok".into(),
             "test-model".into(),
             None,
@@ -316,14 +304,12 @@ async fn test_non_streaming_memory_entries_injected_into_system_prompt() {
         .snapshot()
         .last_request
         .expect("provider should have been called");
-    let system = request.system.expect("system prompt should be set");
+    let system = request.system().expect("system prompt should be set");
     assert!(
         system.contains("user prefers dark mode"),
         "memory entry should appear in system prompt; got: {system}"
     );
 }
-
-// ── Streaming ─────────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn test_streaming_returns_sse_chunks_and_done_marker() {
@@ -334,20 +320,11 @@ async fn test_streaming_returns_sse_chunks_and_done_marker() {
     );
     let provider = Arc::new(MockTextGenerationModelProvider::new(
         ProviderBehavior::Stream(vec![
-            TextGenerationResponse {
-                text: "Hello".into(),
-                model: "test-model".into(),
-                usage: None,
-                done: false,
-            },
-            TextGenerationResponse::done(
+            TextGenerationResponse::new("Hello".into(), "test-model".into(), None, false),
+            TextGenerationResponse::new_done(
                 " world".into(),
                 "test-model".into(),
-                Some(TokenUsage {
-                    prompt_tokens: Some(3),
-                    completion_tokens: Some(2),
-                    total_tokens: Some(5),
-                }),
+                Some(TokenUsage::new(Some(3), Some(2), Some(5))),
             ),
         ]),
     ));
@@ -407,7 +384,7 @@ async fn test_streaming_memory_is_queried_with_last_user_message() {
             .with_query_behavior(QueryBehavior::Ok(vec![])),
     );
     let provider = Arc::new(MockTextGenerationModelProvider::new(
-        ProviderBehavior::Stream(vec![TextGenerationResponse::done(
+        ProviderBehavior::Stream(vec![TextGenerationResponse::new_done(
             "ok".into(),
             "test-model".into(),
             None,
@@ -439,5 +416,5 @@ async fn test_streaming_memory_is_queried_with_last_user_message() {
         .snapshot()
         .query
         .expect("store should have been queried");
-    assert_eq!(query.topic, "the real prompt");
+    assert_eq!(query.topic(), "the real prompt");
 }

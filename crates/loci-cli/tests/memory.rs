@@ -9,30 +9,42 @@ mod common;
 use pretty_assertions::assert_eq;
 use uuid::Uuid;
 
-use loci_core::memory::MemoryTier;
+use loci_core::memory::{MemoryTrust, TrustEvidence};
 use loci_core::model_provider::text_generation::TextGenerationResponse;
+use loci_core::testing::AddEntriesBehavior;
 
 use loci_cli::commands::memory::MemoryCommand;
 
-use common::{MockStore, MockTextGenerationModelProvider, ProviderBehavior, TestCli, make_result};
+use common::{
+    EntryBehavior, MockStore, MockTextGenerationModelProvider, ProviderBehavior, TestCli,
+    make_result,
+};
 
 fn default_provider() -> MockTextGenerationModelProvider {
     MockTextGenerationModelProvider::new(ProviderBehavior::Stream(vec![
-        TextGenerationResponse::done("unused".to_string(), "mock".to_string(), None),
+        TextGenerationResponse::new_done("unused".to_string(), "mock".to_string(), None),
     ]))
 }
 
 #[tokio::test]
 async fn test_memory_add_outputs_json_with_entry_fields() {
     let id = Uuid::new_v4();
-    let entry = make_result(id, "hello world", MemoryTier::Candidate, 0.0);
+    let entry = make_result(
+        id,
+        "hello world",
+        MemoryTrust::Extracted {
+            confidence: 0.5,
+            evidence: TrustEvidence::default(),
+        },
+        0.0,
+    );
     let cli = TestCli::new(MockStore::new().with_add(entry), default_provider());
 
     let output = cli
         .memory(MemoryCommand::Add {
             content: "hello world".to_string(),
             metadata: vec![],
-            tier: None,
+            kind: None,
         })
         .await
         .expect("add should succeed");
@@ -40,12 +52,20 @@ async fn test_memory_add_outputs_json_with_entry_fields() {
     let v: serde_json::Value = serde_json::from_str(&output).expect("output should be valid JSON");
     assert_eq!(v["id"].as_str().unwrap(), id.to_string());
     assert_eq!(v["content"].as_str().unwrap(), "hello world");
-    assert_eq!(v["tier"].as_str().unwrap(), "candidate");
+    assert_eq!(v["kind"].as_str().unwrap(), "extracted_memory");
 }
 
 #[tokio::test]
 async fn test_memory_query_outputs_json_array() {
-    let result = make_result(Uuid::new_v4(), "remembered fact", MemoryTier::Stable, 0.88);
+    let result = make_result(
+        Uuid::new_v4(),
+        "remembered fact",
+        MemoryTrust::Extracted {
+            confidence: 0.5,
+            evidence: TrustEvidence::default(),
+        },
+        0.88,
+    );
     let cli = TestCli::new(
         MockStore::new().with_query(vec![result]),
         default_provider(),
@@ -65,14 +85,14 @@ async fn test_memory_query_outputs_json_array() {
     let arr = v.as_array().expect("output should be a JSON array");
     assert_eq!(arr.len(), 1);
     assert_eq!(arr[0]["content"].as_str().unwrap(), "remembered fact");
-    assert_eq!(arr[0]["tier"].as_str().unwrap(), "stable");
+    assert_eq!(arr[0]["kind"].as_str().unwrap(), "extracted_memory");
 }
 
 #[tokio::test]
 async fn test_memory_get_outputs_json() {
     let id = Uuid::new_v4();
-    let entry = make_result(id, "found entry", MemoryTier::Core, 0.95);
-    let cli = TestCli::new(MockStore::new().with_get(entry), default_provider());
+    let entry = make_result(id, "found entry", MemoryTrust::Fact, 0.95);
+    let cli = TestCli::new(MockStore::new().with_get(Some(entry)), default_provider());
 
     let output = cli
         .memory(MemoryCommand::Get { id })
@@ -82,33 +102,27 @@ async fn test_memory_get_outputs_json() {
     let v: serde_json::Value = serde_json::from_str(&output).expect("output should be valid JSON");
     assert_eq!(v["id"].as_str().unwrap(), id.to_string());
     assert_eq!(v["content"].as_str().unwrap(), "found entry");
-    assert_eq!(v["tier"].as_str().unwrap(), "core");
+    assert_eq!(v["kind"].as_str().unwrap(), "fact");
 }
 
 #[tokio::test]
-async fn test_memory_update_outputs_json() {
+async fn test_memory_promote_outputs_json() {
     let id = Uuid::new_v4();
-    let updated = make_result(id, "updated content", MemoryTier::Stable, 0.85);
+    let promoted = make_result(id, "important fact", MemoryTrust::Fact, 1.0);
     let cli = TestCli::new(
-        MockStore::new()
-            .with_get(updated.clone())
-            .with_update(updated),
+        MockStore::new().with_promote_behavior(EntryBehavior::Ok(Some(promoted))),
         default_provider(),
     );
 
     let output = cli
-        .memory(MemoryCommand::Update {
-            id,
-            content: Some("updated content".to_string()),
-            metadata: vec![],
-            tier: None,
-        })
+        .memory(MemoryCommand::Promote { id })
         .await
-        .expect("update should succeed");
+        .expect("promote should succeed");
 
     let v: serde_json::Value = serde_json::from_str(&output).expect("output should be valid JSON");
     assert_eq!(v["id"].as_str().unwrap(), id.to_string());
-    assert_eq!(v["content"].as_str().unwrap(), "updated content");
+    assert_eq!(v["content"].as_str().unwrap(), "important fact");
+    assert_eq!(v["kind"].as_str().unwrap(), "fact");
 }
 
 #[tokio::test]
@@ -153,9 +167,95 @@ async fn test_memory_add_propagates_store_errors() {
         .memory(MemoryCommand::Add {
             content: "will fail".to_string(),
             metadata: vec![],
-            tier: None,
+            kind: None,
         })
         .await;
 
     assert!(result.is_err(), "add should propagate store error");
+}
+
+fn extraction_provider(response_json: &str) -> MockTextGenerationModelProvider {
+    MockTextGenerationModelProvider::new(ProviderBehavior::Stream(vec![
+        TextGenerationResponse::new_done(response_json.to_string(), "mock".to_string(), None),
+    ]))
+}
+
+#[tokio::test]
+async fn test_memory_extract_persists_and_outputs_added_result() {
+    let id = uuid::Uuid::new_v4();
+    let stored = vec![make_result(
+        id,
+        "a fact",
+        MemoryTrust::Extracted {
+            confidence: 0.5,
+            evidence: TrustEvidence::default(),
+        },
+        0.0,
+    )];
+    let store = MockStore::new().with_add_entries_behavior(AddEntriesBehavior::Ok(stored));
+    let provider = extraction_provider(r#"[{"content": "a fact", "confidence": 0.9}]"#);
+    let cli = TestCli::new(store, provider);
+
+    let output = cli
+        .memory(MemoryCommand::Extract {
+            text: Some("text containing a fact".to_string()),
+            files: vec![],
+            metadata: vec![],
+            max_entries: None,
+            min_confidence: None,
+            guidelines: None,
+        })
+        .await
+        .expect("extract should succeed");
+
+    let v: serde_json::Value = serde_json::from_str(&output).expect("output should be valid JSON");
+    assert!(
+        v.get("inserted").is_some(),
+        "output should have 'inserted' key"
+    );
+    assert!(v.get("merged").is_some(), "output should have 'merged' key");
+    assert!(
+        v.get("promoted").is_none(),
+        "output should not have 'promoted' key"
+    );
+    assert!(
+        v.get("discarded").is_some(),
+        "output should have 'discarded' key"
+    );
+}
+
+#[tokio::test]
+async fn test_memory_extract_empty_text_returns_error() {
+    let cli = TestCli::new(MockStore::new(), default_provider());
+
+    let result = cli
+        .memory(MemoryCommand::Extract {
+            text: Some("   ".to_string()),
+            files: vec![],
+            metadata: vec![],
+            max_entries: None,
+            min_confidence: None,
+            guidelines: None,
+        })
+        .await;
+
+    assert!(result.is_err(), "empty text should return an error");
+}
+
+#[tokio::test]
+async fn test_memory_extract_conflicting_input_returns_error() {
+    let cli = TestCli::new(MockStore::new(), default_provider());
+
+    let result = cli
+        .memory(MemoryCommand::Extract {
+            text: Some("positional text".to_string()),
+            files: vec![std::path::PathBuf::from("some_file.txt")],
+            metadata: vec![],
+            max_entries: None,
+            min_confidence: None,
+            guidelines: None,
+        })
+        .await;
+
+    assert!(result.is_err(), "conflicting input should return an error");
 }
