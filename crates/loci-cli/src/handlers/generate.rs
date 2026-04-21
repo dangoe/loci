@@ -72,13 +72,14 @@ impl<'a, S: CoreMemoryStore, T: CoreTextGenerationModelProvider + 'static, W: Wr
     async fn handle(&self, command: GenerateCommand, out: &mut W) -> Result<(), Box<dyn StdError>> {
         let GenerateCommand::Execute(command) = command;
         let model = {
-            let model_key = self.config.routing().text().default();
+            let model_key = self.config.generation().text().model();
             self.config
+                .resources()
                 .models()
                 .text()
                 .get(model_key)
                 .ok_or_else(|| ConfigError::MissingKey {
-                    section: "models.text".into(),
+                    section: "resources.models.text".into(),
                     key: model_key.to_owned(),
                 })?
                 .clone()
@@ -492,7 +493,7 @@ mod tests {
         let store = MockStore::new();
         let provider = MockTextGenerationModelProvider::ok();
         let mut config = testing::minimal_ollama_config();
-        config.routing_mut().text_mut().set_default("nonexistent");
+        config.generation_mut().text_mut().set_model("nonexistent");
         let mut out = Vec::new();
 
         let handler = GenerateCommandHandler::new(Arc::new(store), Arc::new(provider), &config);

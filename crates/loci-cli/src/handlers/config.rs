@@ -46,16 +46,16 @@ mod tests {
 
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(
-            content.contains("[providers.ollama]"),
-            "expected provider section"
+            content.contains("[resources.model_providers.ollama]"),
+            "expected model_providers section"
         );
         assert!(
-            content.contains("[memory.backends.qdrant]"),
-            "expected memory backend section"
+            content.contains("[resources.memory_stores.qdrant]"),
+            "expected memory_stores section"
         );
         assert!(
-            content.contains("[routing.text]"),
-            "expected routing section"
+            content.contains("[generation.text]"),
+            "expected generation.text section"
         );
     }
 

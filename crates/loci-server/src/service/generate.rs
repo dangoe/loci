@@ -102,16 +102,17 @@ where
     M: MemoryStore,
     E: TextGenerationModelProvider + 'static,
 {
-    let model_key = state.config().routing().text().default();
+    let model_key = state.config().generation().text().model();
     let model = state
         .config()
+        .resources()
         .models()
         .text()
         .get(model_key)
         .ok_or_else(|| {
             ConnectError::internal(
                 ConfigError::MissingKey {
-                    section: "models.text".into(),
+                    section: "resources.models.text".into(),
                     key: model_key.to_owned(),
                 }
                 .to_string(),

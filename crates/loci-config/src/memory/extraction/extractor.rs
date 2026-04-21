@@ -167,22 +167,19 @@ mod tests {
     use crate::{AppConfig, load_config};
 
     const BASE: &str = r#"
-[memory.backends.qdrant]
+[resources.memory_stores.qdrant]
 kind = "qdrant"
 url  = "http://localhost:6334"
 collection = "mem"
 
-[memory.config]
-backend = "qdrant"
+[generation.text]
+model = "x"
 
-[routing.text]
-default = "x"
+[embedding]
+model = "x"
 
-[routing.embedding]
-default = "x"
-
-[routing.memory]
-default = "qdrant"
+[memory]
+store = "qdrant"
 "#;
 
     fn config_with_extraction(extraction_toml: &str) -> AppConfig {

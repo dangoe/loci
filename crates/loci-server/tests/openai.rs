@@ -234,7 +234,7 @@ async fn test_non_streaming_missing_model_returns_error_body_with_200_status() {
         ProviderBehavior::Stream(vec![]),
     ));
     let mut config = mock_config();
-    config.routing_mut().text_mut().set_default("missing");
+    config.generation_mut().text_mut().set_model("missing");
     let server =
         TestServer::start_with_components(config, Arc::clone(&store), Arc::clone(&provider)).await;
 

@@ -98,41 +98,38 @@ impl<S: MemoryStore + 'static, T: TextGenerationModelProvider + 'static> TestCli
 pub fn minimal_ollama_config() -> AppConfig {
     loci_config::load_config_from_str(
         r#"
-[providers.ollama]
+[resources.model_providers.ollama]
 kind = "ollama"
 endpoint = "http://localhost:11434"
 
-[models.text.default]
+[resources.models.text.default]
 provider = "ollama"
 model = "qwen3:0.6b"
 
-[models.embedding.default]
+[resources.models.embedding.default]
 provider = "ollama"
 model = "qwen3-embedding:0.6b"
 dimension = 768
 
-[memory.backends.qdrant]
+[resources.memory_stores.qdrant]
 kind = "qdrant"
 url = "http://localhost:6333"
 collection = "memory_entries"
 
-[memory.config]
-backend = "qdrant"
+[generation.text]
+model = "default"
+
+[embedding]
+model = "default"
+
+[memory]
+store = "qdrant"
 
 [memory.extraction]
 model = "default"
 
 [memory.extraction.extractor]
 classification_model = "test-classification-model"
-
-[routing.text]
-default = "default"
-
-[routing.embedding]
-default = "default"
-
-[routing.memory]
-default = "qdrant"
 "#,
     )
     .expect("failed to parse minimal_ollama_config")
@@ -143,41 +140,38 @@ default = "qdrant"
 pub fn mock_config() -> AppConfig {
     loci_config::load_config_from_str(
         r#"
-[providers.ollama]
+[resources.model_providers.ollama]
 kind = "ollama"
 endpoint = "http://unused-ollama"
 
-[models.text.default]
+[resources.models.text.default]
 provider = "ollama"
 model = "test-text-model"
 
-[models.embedding.default]
+[resources.models.embedding.default]
 provider = "ollama"
 model = "test-embedding-model"
 dimension = 384
 
-[memory.backends.qdrant]
+[resources.memory_stores.qdrant]
 kind = "qdrant"
 url = "http://unused-qdrant"
 collection = "memory_entries"
 
-[memory.config]
-backend = "qdrant"
+[generation.text]
+model = "default"
+
+[embedding]
+model = "default"
+
+[memory]
+store = "qdrant"
 
 [memory.extraction]
 model = "default"
 
 [memory.extraction.extractor]
 classification_model = "test-classification-model"
-
-[routing.text]
-default = "default"
-
-[routing.embedding]
-default = "default"
-
-[routing.memory]
-default = "qdrant"
 "#,
     )
     .expect("failed to parse mock_config")

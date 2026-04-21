@@ -23,14 +23,14 @@ pub async fn build_store(
     config: &AppConfig,
 ) -> Result<QdrantMemoryStore<DefaultTextEmbedder<OllamaModelProvider>>, Box<dyn std::error::Error>>
 {
-    let backend_name = config.memory().config().backend();
+    let store_name = config.memory().store();
     let store_cfg = config
-        .memory()
-        .backends()
-        .get(backend_name)
+        .resources()
+        .memory_stores()
+        .get(store_name)
         .ok_or_else(|| ConfigError::MissingKey {
-            section: "memory.backends".into(),
-            key: backend_name.to_owned(),
+            section: "resources.memory_stores".into(),
+            key: store_name.to_owned(),
         })?;
 
     match store_cfg {
@@ -39,13 +39,14 @@ pub async fn build_store(
         } => {
             let embed_provider = resolve_embedding_provider(config)?;
             let embed_provider_instance = build_ollama_provider(embed_provider)?;
-            let embed_profile_name = config.routing().embedding().default();
+            let embed_profile_name = config.embedding().model();
             let embed_profile = config
+                .resources()
                 .models()
                 .embedding()
                 .get(embed_profile_name)
                 .ok_or_else(|| ConfigError::MissingKey {
-                    section: "models.embedding".into(),
+                    section: "resources.models.embedding".into(),
                     key: embed_profile_name.to_owned(),
                 })?;
 
@@ -56,7 +57,7 @@ pub async fn build_store(
             );
 
             let mut qdrant_config = QdrantConfig::new(collection.clone());
-            if let Some(threshold) = config.memory().config().similarity_threshold() {
+            if let Some(threshold) = config.memory().similarity_threshold() {
                 qdrant_config = qdrant_config.with_similarity_threshold(threshold);
             }
 
@@ -85,42 +86,52 @@ pub fn build_llm_provider(
 pub fn resolve_embedding_provider(
     config: &AppConfig,
 ) -> Result<&ModelProviderConfig, Box<dyn std::error::Error>> {
-    let profile_name = config.routing().embedding().default();
+    let profile_name = config.embedding().model();
     let profile = config
+        .resources()
         .models()
         .embedding()
         .get(profile_name)
         .ok_or_else(|| ConfigError::MissingKey {
-            section: "models.embedding".into(),
+            section: "resources.models.embedding".into(),
             key: profile_name.to_owned(),
         })?;
-    config.providers().get(profile.provider()).ok_or_else(|| {
-        Box::new(ConfigError::MissingKey {
-            section: "providers".into(),
-            key: profile.provider().to_owned(),
-        }) as Box<dyn std::error::Error>
-    })
+    config
+        .resources()
+        .model_providers()
+        .get(profile.provider())
+        .ok_or_else(|| {
+            Box::new(ConfigError::MissingKey {
+                section: "resources.model_providers".into(),
+                key: profile.provider().to_owned(),
+            }) as Box<dyn std::error::Error>
+        })
 }
 
 /// Resolves the [`ModelProviderConfig`] for the default LLM model.
 pub fn resolve_llm_provider(
     config: &AppConfig,
 ) -> Result<&ModelProviderConfig, Box<dyn std::error::Error>> {
-    let model_name = config.routing().text().default();
+    let model_name = config.generation().text().model();
     let model = config
+        .resources()
         .models()
         .text()
         .get(model_name)
         .ok_or_else(|| ConfigError::MissingKey {
-            section: "models.text".into(),
+            section: "resources.models.text".into(),
             key: model_name.to_owned(),
         })?;
-    config.providers().get(model.provider()).ok_or_else(|| {
-        Box::new(ConfigError::MissingKey {
-            section: "providers".into(),
-            key: model.provider().to_owned(),
-        }) as Box<dyn std::error::Error>
-    })
+    config
+        .resources()
+        .model_providers()
+        .get(model.provider())
+        .ok_or_else(|| {
+            Box::new(ConfigError::MissingKey {
+                section: "resources.model_providers".into(),
+                key: model.provider().to_owned(),
+            }) as Box<dyn std::error::Error>
+        })
 }
 
 /// Constructs an [`OllamaModelProvider`] from a provider config, failing if the
@@ -163,10 +174,7 @@ mod tests {
     #[test]
     fn test_resolve_embedding_provider_missing_embedding_key_returns_err() {
         let mut config = minimal_ollama_config();
-        config
-            .routing_mut()
-            .embedding_mut()
-            .set_default("nonexistent");
+        config.embedding_mut().set_model("nonexistent");
 
         let err = resolve_embedding_provider(&config).unwrap_err();
         assert!(
@@ -179,6 +187,7 @@ mod tests {
     fn test_resolve_embedding_provider_missing_provider_key_returns_err() {
         let mut config = minimal_ollama_config();
         config
+            .resources_mut()
             .models_mut()
             .embedding_entries_mut()
             .get_mut("default")
@@ -202,7 +211,7 @@ mod tests {
     #[test]
     fn test_resolve_llm_provider_missing_model_returns_err() {
         let mut config = minimal_ollama_config();
-        config.routing_mut().text_mut().set_default("nonexistent");
+        config.generation_mut().text_mut().set_model("nonexistent");
 
         let err = resolve_llm_provider(&config).unwrap_err();
         assert!(
@@ -215,6 +224,7 @@ mod tests {
     fn test_resolve_llm_provider_missing_provider_returns_err() {
         let mut config = minimal_ollama_config();
         config
+            .resources_mut()
             .models_mut()
             .text_entries_mut()
             .get_mut("default")

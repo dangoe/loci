@@ -4,7 +4,10 @@
 
 use serde::Deserialize;
 
-/// An embedding model config entry, nested under `[models.embedding.<name>]`.
+use super::text::ModelTuningConfig;
+
+/// An embedding model config entry, nested under
+/// `[resources.models.embedding.<name>]`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct EmbeddingModelConfig {
     /// The provider name that serves the embedding model.
@@ -15,18 +18,13 @@ pub struct EmbeddingModelConfig {
 
     /// The output embedding dimension.
     dimension: usize,
+
+    /// Optional generation tuning parameters for this model.
+    #[serde(default)]
+    tuning: Option<ModelTuningConfig>,
 }
 
 impl EmbeddingModelConfig {
-    /// Constructs a new `EmbeddingModelConfig`.
-    pub fn new(provider: impl Into<String>, model: impl Into<String>, dimension: usize) -> Self {
-        Self {
-            provider: provider.into(),
-            model: model.into(),
-            dimension,
-        }
-    }
-
     /// Returns the provider name.
     pub fn provider(&self) -> &str {
         &self.provider
@@ -40,6 +38,11 @@ impl EmbeddingModelConfig {
     /// Returns the embedding dimension.
     pub fn dimension(&self) -> usize {
         self.dimension
+    }
+
+    /// Returns the optional tuning parameters.
+    pub fn tuning(&self) -> Option<&ModelTuningConfig> {
+        self.tuning.as_ref()
     }
 
     /// Sets the provider name.

@@ -118,41 +118,38 @@ pub fn minimal_app_config(
 ) -> AppConfig {
     let content = format!(
         r#"
-[providers.ollama]
+[resources.model_providers.ollama]
 kind = "ollama"
 endpoint = "{ollama_url}"
 
-[models.text.default]
+[resources.models.text.default]
 provider = "ollama"
 model = "{text_model}"
 
-[models.embedding.default]
+[resources.models.embedding.default]
 provider = "ollama"
 model = "{embedding_model}"
 dimension = {embedding_dim}
 
-[memory.backends.qdrant]
+[resources.memory_stores.qdrant]
 kind = "qdrant"
 url = "{qdrant_url}"
 collection = "memory_entries"
 
-[memory.config]
-backend = "qdrant"
+[generation.text]
+model = "default"
+
+[embedding]
+model = "default"
+
+[memory]
+store = "qdrant"
 
 [memory.extraction]
 model = "default"
 
 [memory.extraction.extractor]
 classification_model = "test-classification-model"
-
-[routing.text]
-default = "default"
-
-[routing.embedding]
-default = "default"
-
-[routing.memory]
-default = "qdrant"
 "#
     );
     loci_config::load_config_from_str(&content).expect("failed to parse test config")

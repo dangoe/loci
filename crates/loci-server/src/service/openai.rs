@@ -125,10 +125,11 @@ where
         &self,
         input: &ChatCompletionInput,
     ) -> Result<ContextualizerConfig, OpenAIServiceError> {
-        let model_key = self.state.config().routing().text().default();
+        let model_key = self.state.config().generation().text().model();
         let model = self
             .state
             .config()
+            .resources()
             .models()
             .text()
             .get(model_key)
@@ -212,7 +213,7 @@ mod tests {
     #[test]
     fn test_build_config_returns_error_when_model_key_missing() {
         let mut cfg = mock_config();
-        cfg.routing_mut().text_mut().set_default("nonexistent");
+        cfg.generation_mut().text_mut().set_model("nonexistent");
         let store = Arc::new(
             MockStore::new()
                 .with_add_entries_behavior(AddEntriesBehavior::Ok(vec![]))

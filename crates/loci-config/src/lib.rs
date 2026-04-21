@@ -9,95 +9,86 @@
 //! the TOML file; they are resolved from the process environment by
 //! [`load_config`].
 
-use std::collections::HashMap;
 use std::path::Path;
 
+pub use embedding_capability::EmbeddingCapabilityConfig;
 pub use error::ConfigError;
+pub use generation::{GenerationConfig, TextGenerationConfig};
 pub use init::{ConfigInitError, DEFAULT_CONFIG_TEMPLATE, init_config};
+pub use memory::MemorySection;
 pub use memory::extraction::{ChunkingConfig, MemoryExtractionConfig};
 pub use memory::extraction::{
     MemoryExtractorConfig, MemoryExtractorSearchResultsConfig, MergeStrategyConfig,
 };
 pub use memory::store::StoreConfig;
-pub use memory::{MemoryConfig, MemorySection};
 pub use models::ModelsConfig;
 pub use models::embedding::EmbeddingModelConfig;
 pub use models::text::{
     ModelThinkingConfig, ModelThinkingEffortLevel, ModelTuningConfig, TextModelConfig,
 };
-pub use providers::{ModelProviderConfig, ModelProviderKind};
-pub use routing::{EmbeddingRoutingConfig, MemoryRoutingConfig, RoutingConfig, TextRoutingConfig};
+pub use resources::{ModelProviderConfig, ModelProviderKind, ResourcesConfig};
 
+mod embedding_capability;
 mod error;
+mod generation;
 mod init;
 mod memory;
 mod models;
 mod providers;
 mod resolve;
-mod routing;
+mod resources;
 
 /// Top-level application configuration.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct AppConfig {
-    /// Named model provider definitions.
+    /// All infrastructure registries (model providers, models, memory stores).
     #[serde(default)]
-    providers: HashMap<String, ModelProviderConfig>,
+    resources: ResourcesConfig,
 
-    /// Text-generation and embedding model registries.
-    #[serde(default)]
-    models: ModelsConfig,
+    /// Text-generation capability configuration, under `[generation]`.
+    generation: GenerationConfig,
 
-    /// Memory backend definitions and active backend config.
+    /// Embedding capability configuration, under `[embedding]`.
+    embedding: EmbeddingCapabilityConfig,
+
+    /// Memory backend selection and extraction config, under `[memory]`.
     memory: MemorySection,
-
-    /// Routing and default selection settings.
-    routing: RoutingConfig,
 }
 
 impl AppConfig {
-    /// Constructs a new `AppConfig`.
-    pub fn new(
-        providers: HashMap<String, ModelProviderConfig>,
-        models: ModelsConfig,
-        memory: MemorySection,
-        routing: RoutingConfig,
-    ) -> Self {
-        Self {
-            providers,
-            models,
-            memory,
-            routing,
-        }
+    /// Returns the resource registries.
+    pub fn resources(&self) -> &ResourcesConfig {
+        &self.resources
     }
 
-    /// Returns the named provider definitions.
-    pub fn providers(&self) -> &HashMap<String, ModelProviderConfig> {
-        &self.providers
+    /// Returns a mutable reference to the resource registries.
+    pub fn resources_mut(&mut self) -> &mut ResourcesConfig {
+        &mut self.resources
     }
 
-    /// Returns the model registries.
-    pub fn models(&self) -> &ModelsConfig {
-        &self.models
+    /// Returns the generation capability configuration.
+    pub fn generation(&self) -> &GenerationConfig {
+        &self.generation
+    }
+
+    /// Returns a mutable reference to the generation capability configuration.
+    pub fn generation_mut(&mut self) -> &mut GenerationConfig {
+        &mut self.generation
+    }
+
+    /// Returns the embedding capability configuration.
+    pub fn embedding(&self) -> &EmbeddingCapabilityConfig {
+        &self.embedding
+    }
+
+    /// Returns a mutable reference to the embedding capability configuration.
+    pub fn embedding_mut(&mut self) -> &mut EmbeddingCapabilityConfig {
+        &mut self.embedding
     }
 
     /// Returns the memory section.
     pub fn memory(&self) -> &MemorySection {
         &self.memory
-    }
-
-    /// Returns the routing configuration.
-    pub fn routing(&self) -> &RoutingConfig {
-        &self.routing
-    }
-
-    /// Returns a mutable reference to the routing configuration.
-    pub fn routing_mut(&mut self) -> &mut RoutingConfig {
-        &mut self.routing
-    }
-
-    /// Returns a mutable reference to the model registries.
-    pub fn models_mut(&mut self) -> &mut ModelsConfig {
-        &mut self.models
     }
 }
 
@@ -132,10 +123,12 @@ pub fn load_config_from_str(raw: &str) -> Result<AppConfig, ConfigError> {
 
 /// Walks the config and resolves all `env:` prefixed secret values in-place.
 fn resolve_secrets(config: &mut AppConfig) -> Result<(), ConfigError> {
-    for provider in config.providers.values_mut() {
+    for provider in config.resources.model_providers_mut().values_mut() {
         provider.resolve_api_key()?;
     }
-    config.memory.resolve_secrets()?;
+    for store in config.resources.memory_stores_mut().values_mut() {
+        store.resolve_api_key()?;
+    }
     Ok(())
 }
 
@@ -152,43 +145,38 @@ mod tests {
     }
 
     const MINIMAL_CONFIG: &str = r#"
-[providers.ollama]
+[resources.model_providers.ollama]
 kind = "ollama"
 endpoint = "http://localhost:11434"
 
-[models.text.default]
+[resources.models.text.default]
 provider = "ollama"
 model = "qwen3:0.6b"
 
-[models.embedding.default]
+[resources.models.embedding.default]
 provider = "ollama"
 model = "qwen3-embedding:0.6b"
 dimension = 768
 
-[memory.backends.qdrant]
+[resources.memory_stores.qdrant]
 kind = "qdrant"
 url = "http://localhost:6334"
 collection = "memory_entries"
 
-[memory.config]
-backend = "qdrant"
+[generation.text]
+model = "default"
 
+[embedding]
+model = "default"
+
+[memory]
+store = "qdrant"
 
 [memory.extraction]
 model = "default"
 
 [memory.extraction.extractor]
 classification_model = "x"
-
-
-[routing.text]
-default = "default"
-
-[routing.embedding]
-default = "default"
-
-[routing.memory]
-default = "qdrant"
 "#;
 
     #[test]
@@ -196,54 +184,62 @@ default = "qdrant"
         let f = write_temp_config(MINIMAL_CONFIG);
         let config = load_config(f.path()).unwrap();
 
-        assert_eq!(config.providers().len(), 1);
-        assert!(config.providers().contains_key("ollama"));
-        assert_eq!(config.models().text()["default"].provider(), "ollama");
-        assert_eq!(config.models().text()["default"].model(), "qwen3:0.6b");
-        assert!(config.models().text()["default"].tuning().is_none());
-        assert_eq!(config.models().embedding()["default"].dimension(), 768);
-        assert_eq!(config.memory().config().backend(), "qdrant");
-        assert_eq!(config.routing().text().default(), "default");
-        assert_eq!(config.routing().embedding().default(), "default");
-        assert_eq!(config.routing().memory().default(), "qdrant");
+        assert_eq!(config.resources().model_providers().len(), 1);
+        assert!(config.resources().model_providers().contains_key("ollama"));
+        assert_eq!(
+            config.resources().models().text()["default"].provider(),
+            "ollama"
+        );
+        assert_eq!(
+            config.resources().models().text()["default"].model(),
+            "qwen3:0.6b"
+        );
+        assert!(
+            config.resources().models().text()["default"]
+                .tuning()
+                .is_none()
+        );
+        assert_eq!(
+            config.resources().models().embedding()["default"].dimension(),
+            768
+        );
+        assert_eq!(config.memory().store(), "qdrant");
+        assert_eq!(config.generation().text().model(), "default");
+        assert_eq!(config.embedding().model(), "default");
     }
 
     #[test]
     fn test_resolves_literal_api_key() {
         let cfg = r#"
-[providers.openai]
+[resources.model_providers.openai]
 kind = "openai"
 endpoint = "https://api.openai.com/v1"
 api_key = "sk-literal-key"
 
-[memory.backends.qdrant]
+[resources.memory_stores.qdrant]
 kind = "qdrant"
 url = "http://localhost:6334"
 collection = "mem"
 
-[memory.config]
-backend = "qdrant"
+[generation.text]
+model = "default"
+
+[embedding]
+model = "default"
+
+[memory]
+store = "qdrant"
 
 [memory.extraction]
 model = "default"
 
 [memory.extraction.extractor]
 classification_model = "x"
-
-
-[routing.text]
-default = "x"
-
-[routing.embedding]
-default = "x"
-
-[routing.memory]
-default = "qdrant"
 "#;
         let f = write_temp_config(cfg);
         let config = load_config(f.path()).unwrap();
         assert_eq!(
-            config.providers()["openai"].api_key(),
+            config.resources().model_providers()["openai"].api_key(),
             Some("sk-literal-key")
         );
     }
@@ -253,39 +249,35 @@ default = "qdrant"
         // SAFETY: single-threaded test process; no other threads read this var.
         unsafe { std::env::set_var("LOCI_TEST_SECRET", "resolved-value") };
         let cfg = r#"
-[providers.openai]
+[resources.model_providers.openai]
 kind = "openai"
 endpoint = "https://api.openai.com/v1"
 api_key = "env:LOCI_TEST_SECRET"
 
-[memory.backends.qdrant]
+[resources.memory_stores.qdrant]
 kind = "qdrant"
 url = "http://localhost:6334"
 collection = "mem"
 
-[memory.config]
-backend = "qdrant"
+[generation.text]
+model = "default"
+
+[embedding]
+model = "default"
+
+[memory]
+store = "qdrant"
 
 [memory.extraction]
 model = "default"
 
 [memory.extraction.extractor]
 classification_model = "x"
-
-
-[routing.text]
-default = "x"
-
-[routing.embedding]
-default = "x"
-
-[routing.memory]
-default = "qdrant"
 "#;
         let f = write_temp_config(cfg);
         let config = load_config(f.path()).unwrap();
         assert_eq!(
-            config.providers()["openai"].api_key(),
+            config.resources().model_providers()["openai"].api_key(),
             Some("resolved-value")
         );
         // SAFETY: single-threaded test process; no other threads read this var.
@@ -297,34 +289,30 @@ default = "qdrant"
         // SAFETY: single-threaded test process; no other threads read this var.
         unsafe { std::env::remove_var("LOCI_TEST_MISSING_VAR") };
         let cfg = r#"
-[providers.openai]
+[resources.model_providers.openai]
 kind = "openai"
 endpoint = "https://api.openai.com/v1"
 api_key = "env:LOCI_TEST_MISSING_VAR"
 
-[memory.backends.qdrant]
+[resources.memory_stores.qdrant]
 kind = "qdrant"
 url = "http://localhost:6334"
 collection = "mem"
 
-[memory.config]
-backend = "qdrant"
+[generation.text]
+model = "default"
+
+[embedding]
+model = "default"
+
+[memory]
+store = "qdrant"
 
 [memory.extraction]
 model = "default"
 
 [memory.extraction.extractor]
 classification_model = "x"
-
-
-[routing.text]
-default = "x"
-
-[routing.embedding]
-default = "x"
-
-[routing.memory]
-default = "qdrant"
 "#;
         let f = write_temp_config(cfg);
         let err = load_config(f.path()).unwrap_err();
@@ -348,24 +336,29 @@ default = "qdrant"
     fn test_similarity_threshold_is_optional() {
         let f = write_temp_config(MINIMAL_CONFIG);
         let config = load_config(f.path()).unwrap();
-        assert!(config.memory().config().similarity_threshold().is_none());
+        assert!(config.memory().similarity_threshold().is_none());
     }
 
     #[test]
     fn test_similarity_threshold_parsed_when_set() {
         let cfg = r#"
-[providers.ollama]
+[resources.model_providers.ollama]
 kind = "ollama"
 endpoint = "http://localhost:11434"
 
-[memory.backends.qdrant]
+[resources.memory_stores.qdrant]
 kind = "qdrant"
 url = "http://localhost:6334"
 collection = "memory_entries"
 
-[memory.config]
-backend = "qdrant"
+[generation.text]
+model = "default"
 
+[embedding]
+model = "default"
+
+[memory]
+store = "qdrant"
 similarity_threshold = 0.92
 
 [memory.extraction]
@@ -373,20 +366,10 @@ model = "default"
 
 [memory.extraction.extractor]
 classification_model = "x"
-
-
-[routing.text]
-default = "default"
-
-[routing.embedding]
-default = "default"
-
-[routing.memory]
-default = "qdrant"
 "#;
         let f = write_temp_config(cfg);
         let config = load_config(f.path()).unwrap();
-        assert_eq!(config.memory().config().similarity_threshold(), Some(0.92));
+        assert_eq!(config.memory().similarity_threshold(), Some(0.92));
     }
 
     #[test]
@@ -394,34 +377,30 @@ default = "qdrant"
         // SAFETY: single-threaded test process; no other threads read this var.
         unsafe { std::env::set_var("LOCI_QDRANT_KEY", "qdrant-secret") };
         let cfg = r#"
-[memory.backends.qdrant]
+[resources.memory_stores.qdrant]
 kind = "qdrant"
 url = "http://localhost:6334"
 collection = "mem"
 api_key = "env:LOCI_QDRANT_KEY"
 
-[memory.config]
-backend = "qdrant"
+[generation.text]
+model = "default"
+
+[embedding]
+model = "default"
+
+[memory]
+store = "qdrant"
 
 [memory.extraction]
 model = "default"
 
 [memory.extraction.extractor]
 classification_model = "x"
-
-
-[routing.text]
-default = "x"
-
-[routing.embedding]
-default = "x"
-
-[routing.memory]
-default = "qdrant"
 "#;
         let f = write_temp_config(cfg);
         let config = load_config(f.path()).unwrap();
-        if let StoreConfig::Qdrant { api_key, .. } = &config.memory().backends()["qdrant"] {
+        if let StoreConfig::Qdrant { api_key, .. } = &config.resources().memory_stores()["qdrant"] {
             assert_eq!(api_key.as_deref(), Some("qdrant-secret"));
         } else {
             panic!("expected Qdrant backend");
@@ -431,119 +410,62 @@ default = "qdrant"
     }
 
     #[test]
-    fn test_fallback_defaults_to_empty_vec() {
-        let f = write_temp_config(MINIMAL_CONFIG);
-        let config = load_config(f.path()).unwrap();
-        assert!(config.routing().text().fallback().is_empty());
-    }
-
-    #[test]
-    fn test_fallback_is_parsed_when_set() {
+    fn test_missing_model_providers_section_is_accepted_with_empty_map() {
         let cfg = r#"
-[providers.ollama]
-kind = "ollama"
-endpoint = "http://localhost:11434"
-
-[memory.backends.qdrant]
+[resources.memory_stores.qdrant]
 kind = "qdrant"
 url = "http://localhost:6334"
 collection = "mem"
 
-[memory.config]
-backend = "qdrant"
+[generation.text]
+model = "default"
+
+[embedding]
+model = "default"
+
+[memory]
+store = "qdrant"
 
 [memory.extraction]
 model = "default"
 
 [memory.extraction.extractor]
 classification_model = "x"
-
-
-[routing.text]
-default = "primary"
-fallback = ["secondary", "tertiary"]
-
-[routing.embedding]
-default = "default"
-
-[routing.memory]
-default = "qdrant"
-"#;
-        let f = write_temp_config(cfg);
-        let config = load_config(f.path()).unwrap();
-        assert_eq!(
-            config.routing().text().fallback(),
-            &["secondary", "tertiary"]
-        );
-    }
-
-    /// `[providers]` is `#[serde(default)]`, so an absent section is valid and
-    /// results in an empty providers map rather than a parse error.
-    #[test]
-    fn test_missing_providers_section_is_accepted_with_empty_map() {
-        let cfg = r#"
-[memory.backends.qdrant]
-kind = "qdrant"
-url = "http://localhost:6334"
-collection = "mem"
-
-[memory.config]
-backend = "qdrant"
-
-[memory.extraction]
-model = "default"
-
-[memory.extraction.extractor]
-classification_model = "x"
-
-
-[routing.text]
-default = "x"
-
-[routing.embedding]
-default = "x"
-
-[routing.memory]
-default = "qdrant"
 "#;
         let f = write_temp_config(cfg);
         let config = load_config(f.path()).unwrap();
         assert!(
-            config.providers().is_empty(),
-            "providers should be empty when the section is absent"
+            config.resources().model_providers().is_empty(),
+            "model_providers should be empty when the section is absent"
         );
     }
 
     #[test]
     fn test_invalid_provider_kind_returns_parse_error() {
         let cfg = r#"
-[providers.bad]
+[resources.model_providers.bad]
 kind = "invalid_kind"
 endpoint = "http://localhost:11434"
 
-[memory.backends.qdrant]
+[resources.memory_stores.qdrant]
 kind = "qdrant"
 url = "http://localhost:6334"
 collection = "mem"
 
-[memory.config]
-backend = "qdrant"
+[generation.text]
+model = "default"
+
+[embedding]
+model = "default"
+
+[memory]
+store = "qdrant"
 
 [memory.extraction]
 model = "default"
 
 [memory.extraction.extractor]
 classification_model = "x"
-
-
-[routing.text]
-default = "x"
-
-[routing.embedding]
-default = "x"
-
-[routing.memory]
-default = "qdrant"
 "#;
         let f = write_temp_config(cfg);
         let err = load_config(f.path()).unwrap_err();
@@ -555,34 +477,29 @@ default = "qdrant"
 
     #[test]
     fn test_text_model_without_provider_returns_parse_error() {
-        // `provider` is a required field on `TextModelConfig` (no `#[serde(default)]`).
         let cfg = r#"
-[models.text.default]
+[resources.models.text.default]
 model = "qwen3:0.6b"
 
-[memory.backends.qdrant]
+[resources.memory_stores.qdrant]
 kind = "qdrant"
 url = "http://localhost:6334"
 collection = "mem"
 
-[memory.config]
-backend = "qdrant"
+[generation.text]
+model = "default"
+
+[embedding]
+model = "default"
+
+[memory]
+store = "qdrant"
 
 [memory.extraction]
 model = "default"
 
 [memory.extraction.extractor]
 classification_model = "x"
-
-
-[routing.text]
-default = "default"
-
-[routing.embedding]
-default = "x"
-
-[routing.memory]
-default = "qdrant"
 "#;
         let f = write_temp_config(cfg);
         let err = load_config(f.path()).unwrap_err();
@@ -594,34 +511,29 @@ default = "qdrant"
 
     #[test]
     fn test_text_model_without_model_field_returns_parse_error() {
-        // `model` is a required field on `TextModelConfig` (no `#[serde(default)]`).
         let cfg = r#"
-[models.text.default]
+[resources.models.text.default]
 provider = "ollama"
 
-[memory.backends.qdrant]
+[resources.memory_stores.qdrant]
 kind = "qdrant"
 url = "http://localhost:6334"
 collection = "mem"
 
-[memory.config]
-backend = "qdrant"
+[generation.text]
+model = "default"
+
+[embedding]
+model = "default"
+
+[memory]
+store = "qdrant"
 
 [memory.extraction]
 model = "default"
 
 [memory.extraction.extractor]
 classification_model = "x"
-
-
-[routing.text]
-default = "default"
-
-[routing.embedding]
-default = "x"
-
-[routing.memory]
-default = "qdrant"
 "#;
         let f = write_temp_config(cfg);
         let err = load_config(f.path()).unwrap_err();
@@ -633,42 +545,37 @@ default = "qdrant"
 
     #[test]
     fn test_temperature_as_string_returns_parse_error() {
-        // `temperature` is typed as `Option<f32>`; a string value is a type mismatch.
         let cfg = r#"
-[providers.ollama]
+[resources.model_providers.ollama]
 kind = "ollama"
 endpoint = "http://localhost:11434"
 
-[models.text.default]
+[resources.models.text.default]
 provider = "ollama"
 model = "qwen3:0.6b"
 
-[models.text.default.tuning]
+[resources.models.text.default.tuning]
 temperature = "not_a_number"
 
-[memory.backends.qdrant]
+[resources.memory_stores.qdrant]
 kind = "qdrant"
 url = "http://localhost:6334"
 collection = "mem"
 
-[memory.config]
-backend = "qdrant"
+[generation.text]
+model = "default"
+
+[embedding]
+model = "default"
+
+[memory]
+store = "qdrant"
 
 [memory.extraction]
 model = "default"
 
 [memory.extraction.extractor]
 classification_model = "x"
-
-
-[routing.text]
-default = "default"
-
-[routing.embedding]
-default = "x"
-
-[routing.memory]
-default = "qdrant"
 "#;
         let f = write_temp_config(cfg);
         let err = load_config(f.path()).unwrap_err();
@@ -681,32 +588,28 @@ default = "qdrant"
     #[test]
     fn test_markdown_backend_is_parsed_correctly() {
         let cfg = r#"
-[memory.backends.local]
+[resources.memory_stores.local]
 kind = "markdown"
 path = "./memory"
 
-[memory.config]
-backend = "local"
+[generation.text]
+model = "default"
+
+[embedding]
+model = "default"
+
+[memory]
+store = "local"
 
 [memory.extraction]
 model = "default"
 
 [memory.extraction.extractor]
 classification_model = "x"
-
-
-[routing.text]
-default = "x"
-
-[routing.embedding]
-default = "x"
-
-[routing.memory]
-default = "local"
 "#;
         let f = write_temp_config(cfg);
         let config = load_config(f.path()).unwrap();
-        if let StoreConfig::Markdown { path } = &config.memory().backends()["local"] {
+        if let StoreConfig::Markdown { path } = &config.resources().memory_stores()["local"] {
             assert_eq!(path, "./memory");
         } else {
             panic!("expected Markdown backend");
@@ -716,15 +619,15 @@ default = "local"
     #[test]
     fn test_model_tuning_is_parsed_when_set() {
         let cfg = r#"
-[providers.ollama]
+[resources.model_providers.ollama]
 kind = "ollama"
 endpoint = "http://localhost:11434"
 
-[models.text.default]
+[resources.models.text.default]
 provider = "ollama"
 model = "qwen3:0.6b"
 
-[models.text.default.tuning]
+[resources.models.text.default.tuning]
 temperature = 0.2
 max_tokens = 512
 top_p = 0.95
@@ -733,41 +636,38 @@ repeat_last_n = 64
 keep_alive_secs = 300
 stop = ["<END>"]
 
-[models.text.default.tuning.thinking]
+[resources.models.text.default.tuning.thinking]
 mode = "effort"
 level = "low"
 
-[models.text.default.tuning.extra]
+[resources.models.text.default.tuning.extra]
 seed = 42
 
-[memory.backends.qdrant]
+[resources.memory_stores.qdrant]
 kind = "qdrant"
 url = "http://localhost:6334"
 collection = "memory_entries"
 
-[memory.config]
-backend = "qdrant"
+[generation.text]
+model = "default"
 
+[embedding]
+model = "default"
+
+[memory]
+store = "qdrant"
 
 [memory.extraction]
 model = "default"
 
 [memory.extraction.extractor]
 classification_model = "x"
-
-
-[routing.text]
-default = "default"
-
-[routing.embedding]
-default = "default"
-
-[routing.memory]
-default = "qdrant"
 "#;
         let f = write_temp_config(cfg);
         let config = load_config(f.path()).unwrap();
-        let tuning = config.models().text()["default"].tuning().unwrap();
+        let tuning = config.resources().models().text()["default"]
+            .tuning()
+            .unwrap();
         assert_eq!(tuning.temperature(), Some(0.2));
         assert_eq!(tuning.max_tokens(), Some(512));
         assert_eq!(tuning.top_p(), Some(0.95));

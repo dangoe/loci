@@ -325,23 +325,20 @@ mod tests {
     fn test_extraction_config() -> MemoryExtractionConfig {
         loci_config::load_config_from_str(
             r#"
-[memory.config]
-backend = "x"
+[generation.text]
+model = "x"
+
+[embedding]
+model = "x"
+
+[memory]
+store = "x"
 
 [memory.extraction]
 model = "test-model"
 
 [memory.extraction.extractor]
 classification_model = "test-classification-model"
-
-[routing.text]
-default = "x"
-
-[routing.embedding]
-default = "x"
-
-[routing.memory]
-default = "x"
 "#,
         )
         .expect("failed to parse test config")
