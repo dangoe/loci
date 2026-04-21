@@ -215,8 +215,8 @@ async fn test_memory_extract_persists_and_outputs_added_result() {
     );
     assert!(v.get("merged").is_some(), "output should have 'merged' key");
     assert!(
-        v.get("promoted").is_some(),
-        "output should have 'promoted' key"
+        v.get("promoted").is_none(),
+        "output should not have 'promoted' key"
     );
     assert!(
         v.get("discarded").is_some(),

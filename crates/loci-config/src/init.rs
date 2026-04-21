@@ -97,9 +97,10 @@ classification_model = "default"  # key in [models.text] for hit-classification 
 # max_counter_increment       = 5.0
 # max_counter                 = 100.0
 # auto_discard_threshold      = 0.1
-# auto_promotion_threshold    = 0.9
-# min_alpha_for_promotion     = 12.0
-# decay_rate                  = 0.99
+#
+# [memory.extraction.extractor.merge_strategy]
+# kind  = "best_score"   # or "llm"
+# model = "default"      # (llm only) key in [models.text] for the merge call
 
 ########################################
 # Routing — default selections

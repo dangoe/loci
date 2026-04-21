@@ -15,7 +15,9 @@ use std::path::Path;
 pub use error::ConfigError;
 pub use init::{ConfigInitError, DEFAULT_CONFIG_TEMPLATE, init_config};
 pub use memory::extraction::{ChunkingConfig, MemoryExtractionConfig};
-pub use memory::extraction::{MemoryExtractorConfig, MemoryExtractorSearchResultsConfig};
+pub use memory::extraction::{
+    MemoryExtractorConfig, MemoryExtractorSearchResultsConfig, MergeStrategyConfig,
+};
 pub use memory::store::StoreConfig;
 pub use memory::{MemoryConfig, MemorySection};
 pub use models::ModelsConfig;

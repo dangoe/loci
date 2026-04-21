@@ -11,7 +11,7 @@ use std::{
     sync::Arc,
 };
 
-use loci_config::MemoryExtractionConfig;
+use loci_config::{MemoryExtractionConfig, MergeStrategyConfig};
 use loci_core::{
     memory::{
         MemoryTrust, Score as CoreScore,
@@ -21,8 +21,9 @@ use loci_core::{
         },
     },
     memory_extraction::{
-        LlmMemoryExtractionStrategy, LlmMemoryExtractionStrategyParams, MemoryExtractor,
-        MemoryExtractorConfig, MemoryQueryOptions, llm::ChunkingStrategy,
+        BestScoreMergeStrategy, LlmMemoryExtractionStrategy, LlmMemoryExtractionStrategyParams,
+        LlmMemoryMergeStrategy, MemoryExtractor, MemoryExtractorConfig, MemoryQueryOptions,
+        llm::ChunkingStrategy,
     },
     model_provider::text_generation::TextGenerationModelProvider,
 };
@@ -225,23 +226,41 @@ where
                     Arc::clone(&self.provider),
                     extractor_cfg.classification_model().to_owned(),
                 ));
-                let extractor = MemoryExtractor::new(
-                    Arc::clone(&self.store),
-                    Arc::new(strategy),
-                    classification_provider,
-                    config_extractor_config_to_core(extractor_cfg),
-                );
-                let result = extractor
-                    .extract_memory_entries(&input, &params)
-                    .await
-                    .map_err(|e| Box::new(e) as Box<dyn StdError>)?;
+                let core_cfg = config_extractor_config_to_core(extractor_cfg);
+                let result = match extractor_cfg.merge_strategy() {
+                    MergeStrategyConfig::BestScore => {
+                        MemoryExtractor::new(
+                            Arc::clone(&self.store),
+                            Arc::new(strategy),
+                            Arc::new(BestScoreMergeStrategy),
+                            Arc::clone(&classification_provider),
+                            core_cfg,
+                        )
+                        .extract_memory_entries(&input, &params)
+                        .await
+                    }
+                    MergeStrategyConfig::Llm { model } => {
+                        MemoryExtractor::new(
+                            Arc::clone(&self.store),
+                            Arc::new(strategy),
+                            Arc::new(LlmMemoryMergeStrategy::new(
+                                Arc::clone(&self.provider),
+                                model.clone(),
+                            )),
+                            Arc::clone(&classification_provider),
+                            core_cfg,
+                        )
+                        .extract_memory_entries(&input, &params)
+                        .await
+                    }
+                };
+                let result = result.map_err(|e| Box::new(e) as Box<dyn StdError>)?;
                 writeln!(
                     out,
                     "{}",
                     serde_json::to_string_pretty(&serde_json::json!({
                         "inserted": result.inserted().len(),
                         "merged": result.merged().len(),
-                        "promoted": result.promoted().len(),
                         "discarded": result.discarded().len(),
                     }))?
                 )?;
@@ -269,8 +288,6 @@ fn config_extractor_config_to_core(
         cfg.max_counter_increment(),
         cfg.max_counter(),
         cfg.auto_discard_threshold(),
-        cfg.auto_promotion_threshold(),
-        cfg.min_alpha_for_promotion(),
     )
 }
 
@@ -651,10 +668,6 @@ default = "x"
         assert!(
             v.get("merged").is_some(),
             "output should have 'merged' field"
-        );
-        assert!(
-            v.get("promoted").is_some(),
-            "output should have 'promoted' field"
         );
         assert!(
             v.get("discarded").is_some(),

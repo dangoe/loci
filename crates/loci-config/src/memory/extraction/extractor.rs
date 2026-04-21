@@ -4,6 +4,26 @@
 
 use serde::Deserialize;
 
+/// Selects the strategy used to merge a new candidate with existing matching
+/// memory entries, deserialized from
+/// `[memory.extraction.extractor.merge_strategy]`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MergeStrategyConfig {
+    /// Pick the entry with the highest effective score — no LLM call.
+    BestScore,
+    /// Synthesise the candidate and all matching entries into a single
+    /// statement via an LLM call.
+    Llm {
+        /// Text model (key in `[models.text]`) used for the merge call.
+        model: String,
+    },
+}
+
+fn default_merge_strategy() -> MergeStrategyConfig {
+    MergeStrategyConfig::BestScore
+}
+
 /// Configuration for the memory extractor search stages,
 /// deserialized from `[memory.extraction.extractor]`.
 #[derive(Debug, Clone, Deserialize)]
@@ -66,51 +86,13 @@ pub struct MemoryExtractorConfig {
     #[serde(default = "default_auto_discard_threshold")]
     auto_discard_threshold: f64,
 
-    /// Score at or above which an entry is automatically promoted to Fact. Default: 0.9
-    #[serde(default = "default_auto_promotion_threshold")]
-    auto_promotion_threshold: f64,
-
-    /// Minimum accumulated `α` (evidence weight) required for auto-promotion
-    /// to Fact — even when the Bayesian score clears `auto_promotion_threshold`.
-    /// Prevents a single high-confidence observation from being promoted in
-    /// isolation. Default: 12.0 (seed weight + one strong corroborating observation).
-    #[serde(default = "default_min_alpha_for_promotion")]
-    min_alpha_for_promotion: f64,
-
-    /// Per-day exponential decay rate for alpha. Default: 0.99
-    #[serde(default = "default_decay_rate")]
-    decay_rate: f64,
+    /// Strategy used to merge a candidate with existing matching entries.
+    /// Defaults to `BestScore` (no LLM call).
+    #[serde(default = "default_merge_strategy")]
+    merge_strategy: MergeStrategyConfig,
 }
 
 impl MemoryExtractorConfig {
-    /// Constructs a new config with all values specified explicitly.
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        classification_model: impl Into<String>,
-        direct_search: MemoryExtractorSearchResultsConfig,
-        inverted_search: MemoryExtractorSearchResultsConfig,
-        bayesian_seed_weight: f64,
-        max_counter_increment: f64,
-        max_counter: f64,
-        auto_discard_threshold: f64,
-        auto_promotion_threshold: f64,
-        min_alpha_for_promotion: f64,
-        decay_rate: f64,
-    ) -> Self {
-        Self {
-            classification_model: classification_model.into(),
-            direct_search,
-            inverted_search,
-            bayesian_seed_weight,
-            max_counter_increment,
-            max_counter,
-            auto_discard_threshold,
-            auto_promotion_threshold,
-            min_alpha_for_promotion,
-            decay_rate,
-        }
-    }
-
     /// Returns the classification model name.
     pub fn classification_model(&self) -> &str {
         &self.classification_model
@@ -146,19 +128,9 @@ impl MemoryExtractorConfig {
         self.auto_discard_threshold
     }
 
-    /// Returns the auto-promotion threshold.
-    pub fn auto_promotion_threshold(&self) -> f64 {
-        self.auto_promotion_threshold
-    }
-
-    /// Returns the minimum alpha required for promotion.
-    pub fn min_alpha_for_promotion(&self) -> f64 {
-        self.min_alpha_for_promotion
-    }
-
-    /// Returns the per-day decay rate.
-    pub fn decay_rate(&self) -> f64 {
-        self.decay_rate
+    /// Returns the merge strategy configuration.
+    pub fn merge_strategy(&self) -> &MergeStrategyConfig {
+        &self.merge_strategy
     }
 }
 
@@ -186,15 +158,6 @@ fn default_max_counter() -> f64 {
 }
 fn default_auto_discard_threshold() -> f64 {
     0.1
-}
-fn default_auto_promotion_threshold() -> f64 {
-    0.9
-}
-fn default_min_alpha_for_promotion() -> f64 {
-    12.0
-}
-fn default_decay_rate() -> f64 {
-    0.99
 }
 
 #[cfg(test)]
@@ -264,9 +227,10 @@ classification_model = "qwen2.5:0.5b"
         assert_eq!(extractor.max_counter_increment(), 5.0);
         assert_eq!(extractor.max_counter(), 100.0);
         assert_eq!(extractor.auto_discard_threshold(), 0.1);
-        assert_eq!(extractor.auto_promotion_threshold(), 0.9);
-        assert_eq!(extractor.min_alpha_for_promotion(), 12.0);
-        assert_eq!(extractor.decay_rate(), 0.99);
+        assert!(matches!(
+            extractor.merge_strategy(),
+            crate::MergeStrategyConfig::BestScore
+        ));
     }
 
     #[test]
@@ -282,9 +246,6 @@ bayesian_seed_weight      = 20.0
 max_counter_increment     = 3.0
 max_counter               = 50.0
 auto_discard_threshold    = 0.05
-auto_promotion_threshold  = 0.95
-min_alpha_for_promotion   = 25.0
-decay_rate                = 0.95
 
 [memory.extraction.extractor.direct_search]
 max_results = 10
@@ -305,9 +266,6 @@ min_score   = 0.55
         assert_eq!(extractor.max_counter_increment(), 3.0);
         assert_eq!(extractor.max_counter(), 50.0);
         assert_eq!(extractor.auto_discard_threshold(), 0.05);
-        assert_eq!(extractor.auto_promotion_threshold(), 0.95);
-        assert_eq!(extractor.min_alpha_for_promotion(), 25.0);
-        assert_eq!(extractor.decay_rate(), 0.95);
     }
 
     #[test]
@@ -331,9 +289,10 @@ classification_model = "x"
         assert_eq!(extractor.max_counter_increment(), 5.0);
         assert_eq!(extractor.max_counter(), 100.0);
         assert_eq!(extractor.auto_discard_threshold(), 0.1);
-        assert_eq!(extractor.auto_promotion_threshold(), 0.9);
-        assert_eq!(extractor.min_alpha_for_promotion(), 12.0);
-        assert_eq!(extractor.decay_rate(), 0.99);
+        assert!(matches!(
+            extractor.merge_strategy(),
+            crate::MergeStrategyConfig::BestScore
+        ));
 
         // Smoke-check the file round-trip produces a valid config overall.
         let f = {
@@ -346,6 +305,73 @@ classification_model = "x"
             tmp
         };
         let cfg2 = load_config(f.path()).unwrap();
-        assert_eq!(cfg2.memory().extraction().extractor().decay_rate(), 0.99);
+        assert_eq!(
+            cfg2.memory()
+                .extraction()
+                .extractor()
+                .auto_discard_threshold(),
+            0.1
+        );
+    }
+
+    #[test]
+    fn test_merge_strategy_best_score_is_default() {
+        let cfg = config_with_extraction(
+            r#"
+[memory.extraction]
+model = "default"
+
+[memory.extraction.extractor]
+classification_model = "x"
+"#,
+        );
+        assert!(matches!(
+            cfg.memory().extraction().extractor().merge_strategy(),
+            crate::MergeStrategyConfig::BestScore
+        ));
+    }
+
+    #[test]
+    fn test_merge_strategy_llm_is_parsed() {
+        let cfg = config_with_extraction(
+            r#"
+[memory.extraction]
+model = "default"
+
+[memory.extraction.extractor]
+classification_model = "x"
+
+[memory.extraction.extractor.merge_strategy]
+kind  = "llm"
+model = "llama3.2"
+"#,
+        );
+        let strategy = cfg.memory().extraction().extractor().merge_strategy();
+        match strategy {
+            crate::MergeStrategyConfig::Llm { model } => {
+                assert_eq!(model, "llama3.2");
+            }
+            other => panic!("expected Llm variant, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_merge_strategy_best_score_explicit_is_parsed() {
+        let cfg = config_with_extraction(
+            r#"
+[memory.extraction]
+model = "default"
+
+[memory.extraction.extractor]
+classification_model = "x"
+
+[memory.extraction.extractor.merge_strategy]
+kind = "best_score"
+"#,
+        );
+        assert!(matches!(
+            cfg.memory().extraction().extractor().merge_strategy(),
+            crate::MergeStrategyConfig::BestScore
+        ));
     }
 }

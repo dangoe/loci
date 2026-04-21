@@ -14,8 +14,8 @@ use loci_core::memory::MemoryTrust;
 use loci_core::memory::store::{MemoryQuery, MemoryQueryMode, MemoryStore};
 use loci_core::memory_extraction::llm::ChunkingStrategy;
 use loci_core::memory_extraction::{
-    LlmMemoryExtractionStrategy, LlmMemoryExtractionStrategyParams, MemoryExtractionStrategy,
-    MemoryExtractor, MemoryExtractorConfig,
+    BestScoreMergeStrategy, LlmMemoryExtractionStrategy, LlmMemoryExtractionStrategyParams,
+    MemoryExtractionStrategy, MemoryExtractor, MemoryExtractorConfig,
 };
 use loci_model_provider_ollama::classification::LlmClassificationModelProvider;
 use loci_model_provider_ollama::testing::{
@@ -217,6 +217,7 @@ async fn test_extract_and_store_persists_entries() {
     let extractor = MemoryExtractor::new(
         Arc::clone(&store),
         Arc::new(strategy),
+        Arc::new(BestScoreMergeStrategy),
         classifier,
         MemoryExtractorConfig::default(),
     );
@@ -230,7 +231,6 @@ async fn test_extract_and_store_persists_entries() {
         .inserted()
         .iter()
         .chain(result.merged().iter())
-        .chain(result.promoted().iter())
         .collect();
 
     assert!(
@@ -272,6 +272,7 @@ async fn test_extracted_entries_are_semantically_retrievable() {
     let extractor = MemoryExtractor::new(
         Arc::clone(&store),
         Arc::new(strategy),
+        Arc::new(BestScoreMergeStrategy),
         classifier,
         MemoryExtractorConfig::default(),
     );
@@ -330,6 +331,7 @@ async fn test_stored_entries_have_configured_metadata() {
     let extractor = MemoryExtractor::new(
         Arc::clone(&store),
         Arc::new(strategy),
+        Arc::new(BestScoreMergeStrategy),
         classifier,
         MemoryExtractorConfig::default(),
     );
@@ -348,7 +350,6 @@ async fn test_stored_entries_have_configured_metadata() {
         .inserted()
         .iter()
         .chain(result.merged().iter())
-        .chain(result.promoted().iter())
         .collect();
 
     assert!(
@@ -382,6 +383,7 @@ async fn test_stored_entries_have_extracted_memory_kind() {
     let extractor = MemoryExtractor::new(
         Arc::clone(&store),
         Arc::new(strategy),
+        Arc::new(BestScoreMergeStrategy),
         classifier,
         MemoryExtractorConfig::default(),
     );

@@ -4,10 +4,12 @@
 
 mod chunker;
 pub mod llm;
+mod merge;
 
 use futures::future::BoxFuture;
 pub use llm::{LlmMemoryExtractionStrategy, LlmMemoryExtractionStrategyParams};
 use log::{debug, info};
+pub use merge::{BestScoreMergeStrategy, LlmMemoryMergeStrategy, MemoryMergeStrategy};
 
 use std::{collections::HashSet, marker::PhantomData, num::NonZeroUsize, sync::Arc};
 
@@ -95,19 +97,10 @@ pub struct MemoryExtractorConfig {
     max_counter: f64,
     /// Score at or below which an entry is automatically discarded. Default: 0.1.
     auto_discard_threshold: f64,
-    /// Score at or above which an entry is automatically promoted to Fact. Default: 0.9.
-    auto_promotion_threshold: f64,
-    /// Minimum accumulated `α` (evidence weight) required for auto-promotion
-    /// to Fact — even when the Bayesian score clears `auto_promotion_threshold`.
-    /// Prevents a single high-confidence observation from being promoted in
-    /// isolation: a Fact should be corroborated, not just asserted once.
-    /// Default: 12.0 (seed weight 10 + one strong corroborating observation).
-    min_alpha_for_promotion: f64,
 }
 
 impl MemoryExtractorConfig {
     /// Creates a new `MemoryExtractorConfig` with all fields specified explicitly.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         direct_search: MemoryQueryOptions,
         inverted_search: MemoryQueryOptions,
@@ -115,8 +108,6 @@ impl MemoryExtractorConfig {
         max_counter_increment: f64,
         max_counter: f64,
         auto_discard_threshold: f64,
-        auto_promotion_threshold: f64,
-        min_alpha_for_promotion: f64,
     ) -> Self {
         Self {
             direct_search,
@@ -125,8 +116,6 @@ impl MemoryExtractorConfig {
             max_counter_increment,
             max_counter,
             auto_discard_threshold,
-            auto_promotion_threshold,
-            min_alpha_for_promotion,
         }
     }
 }
@@ -146,8 +135,6 @@ impl Default for MemoryExtractorConfig {
             max_counter_increment: 5.0,
             max_counter: 100.0,
             auto_discard_threshold: 0.1,
-            auto_promotion_threshold: 0.9,
-            min_alpha_for_promotion: 12.0,
         }
     }
 }
@@ -189,7 +176,6 @@ pub enum DiscardReason {
 pub struct MemoryExtractionResult {
     inserted: Vec<MemoryEntry>,
     merged: Vec<MemoryEntry>,
-    promoted: Vec<MemoryEntry>,
     discarded: Vec<DiscardedEntry>,
 }
 
@@ -200,10 +186,6 @@ impl MemoryExtractionResult {
 
     pub fn merged(&self) -> &[MemoryEntry] {
         &self.merged
-    }
-
-    pub fn promoted(&self) -> &[MemoryEntry] {
-        &self.promoted
     }
 
     pub fn discarded(&self) -> &[DiscardedEntry] {
@@ -229,33 +211,40 @@ pub trait MemoryExtractionStrategy<P: Send + Sync>: Send + Sync {
 /// 5. Fact-contradiction check — discard immediately if any Fact is contradicted
 /// 6. Update Bayesian counters: α += min(c, max_increment) for same/complementary;
 ///    β += min(c, max_increment) for contradictions; each counter capped at max_counter
-/// 7. Auto-discard (score ≤ threshold) or auto-promote (score ≥ threshold) or insert/merge
+/// 7. Auto-discard (score ≤ threshold) or insert/merge via `M`
 /// 8. Persist
 /// 9. Decay (handled by a separate CLI command)
-pub struct MemoryExtractor<S, E, C, P> {
+///
+/// Facts are never written by the extraction pipeline — use [`MemoryExtractor::handle_fact_added`]
+/// when an entry is promoted to or inserted as a Fact to sweep for contradicting entries.
+pub struct MemoryExtractor<S, E, M, C, P> {
     store: Arc<S>,
     strategy: Arc<E>,
+    merge_strategy: Arc<M>,
     classifier: Arc<C>,
     config: MemoryExtractorConfig,
     _phantom: PhantomData<P>,
 }
 
-impl<S, E, C, P> MemoryExtractor<S, E, C, P>
+impl<S, E, M, C, P> MemoryExtractor<S, E, M, C, P>
 where
     S: MemoryStore,
     E: MemoryExtractionStrategy<P>,
+    M: MemoryMergeStrategy<P>,
     C: ClassificationModelProvider,
     P: Clone + Send + Sync,
 {
     pub fn new(
         store: Arc<S>,
         strategy: Arc<E>,
+        merge_strategy: Arc<M>,
         classifier: Arc<C>,
         config: MemoryExtractorConfig,
     ) -> Self {
         Self {
             store,
             strategy,
+            merge_strategy,
             classifier,
             config,
             _phantom: PhantomData,
@@ -279,7 +268,6 @@ where
         let mut result = MemoryExtractionResult {
             inserted: Vec::new(),
             merged: Vec::new(),
-            promoted: Vec::new(),
             discarded: Vec::new(),
         };
 
@@ -316,31 +304,22 @@ where
                 continue;
             }
 
-            let alpha = trust_evidence.alpha().unwrap_or(0.0);
-            let eligible_for_promotion = score >= self.config.auto_promotion_threshold
-                && alpha >= self.config.min_alpha_for_promotion;
-
-            let final_trust = if eligible_for_promotion {
-                MemoryTrust::Fact
-            } else {
-                MemoryTrust::Extracted {
-                    confidence: score,
-                    evidence: trust_evidence,
-                }
+            let final_trust = MemoryTrust::Extracted {
+                confidence: score,
+                evidence: trust_evidence,
             };
 
-            let is_promoted = matches!(final_trust, MemoryTrust::Fact);
-            let match_ids = extract_match_ids(&classified_hits);
+            let match_entries: Vec<MemoryEntry> = classified_hits
+                .iter()
+                .filter(|(_, class)| matches!(class, HitClass::Duplicate | HitClass::Complementary))
+                .map(|(entry, _)| entry.clone())
+                .collect();
 
-            if !match_ids.is_empty() {
+            if !match_entries.is_empty() {
                 let merged = self
-                    .merge_and_add(&candidate, final_trust, match_ids)
+                    .merge_and_add(&candidate, final_trust, &match_entries, params)
                     .await?;
-                if is_promoted {
-                    result.promoted.extend(merged);
-                } else {
-                    result.merged.extend(merged);
-                }
+                result.merged.extend(merged);
             } else {
                 let input = MemoryInput::new(
                     candidate.content().to_string(),
@@ -348,11 +327,7 @@ where
                     candidate.metadata().clone(),
                 );
                 let added = self.add_entries_or_fail(vec![input]).await?;
-                if is_promoted {
-                    result.promoted.extend(added);
-                } else {
-                    result.inserted.extend(added);
-                }
+                result.inserted.extend(added);
             }
         }
 
@@ -363,19 +338,20 @@ where
         &self,
         candidate: &MemoryInput,
         trust: MemoryTrust,
-        match_ids: Vec<Uuid>,
+        matches: &[MemoryEntry],
+        params: &P,
     ) -> Result<Vec<MemoryEntry>, MemoryExtractionError> {
-        let merged_input = MemoryInput::new(
-            candidate.content().to_string(),
-            trust,
-            candidate.metadata().clone(),
-        );
+        let merged_content = self
+            .merge_strategy
+            .merge(candidate, matches, params)
+            .await?;
 
+        let merged_input = MemoryInput::new(merged_content, trust, candidate.metadata().clone());
         let add_result = self.add_entries_or_fail(vec![merged_input]).await?;
 
-        for id in &match_ids {
+        for entry in matches {
             self.store
-                .delete_entry(id)
+                .delete_entry(entry.id())
                 .await
                 .map_err(MemoryExtractionError::MemoryStore)?;
         }
@@ -526,16 +502,6 @@ where
     }
 }
 
-fn extract_match_ids(classified_hits: &[(MemoryEntry, HitClass)]) -> Vec<Uuid> {
-    let mut seen_ids: HashSet<Uuid> = HashSet::new();
-    classified_hits
-        .iter()
-        .filter(|(_, class)| matches!(class, HitClass::Duplicate | HitClass::Complementary))
-        .map(|(hit, _)| *hit.id())
-        .filter(|id| seen_ids.insert(*id))
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -547,13 +513,16 @@ mod tests {
     use crate::classification::HitClass;
     use crate::error::MemoryExtractionError;
     use crate::memory::store::MemoryInput;
-    use crate::memory::{MemoryTrust, TrustEvidence};
+    use crate::memory::{MemoryEntry, MemoryTrust, TrustEvidence};
     use crate::testing::{
         AddEntriesBehavior, ClassifyBehavior, MockClassificationModelProvider, MockStore,
         QueryBehavior, make_extracted_result, make_fact_result,
     };
 
-    use super::{DiscardReason, MemoryExtractionStrategy, MemoryExtractor, MemoryExtractorConfig};
+    use super::{
+        DiscardReason, MemoryExtractionStrategy, MemoryExtractor, MemoryExtractorConfig,
+        MemoryMergeStrategy,
+    };
 
     struct FixedStrategy(Vec<MemoryInput>);
 
@@ -565,6 +534,21 @@ mod tests {
         ) -> BoxFuture<'_, Result<Vec<MemoryInput>, MemoryExtractionError>> {
             let entries = self.0.clone();
             Box::pin(async move { Ok(entries) })
+        }
+    }
+
+    /// Merge strategy used in tests: always returns the candidate's content unchanged.
+    struct FixedMergeStrategy;
+
+    impl MemoryMergeStrategy<()> for FixedMergeStrategy {
+        fn merge<'a>(
+            &'a self,
+            candidate: &'a MemoryInput,
+            _matches: &'a [MemoryEntry],
+            _params: &'a (),
+        ) -> BoxFuture<'a, Result<String, MemoryExtractionError>> {
+            let content = candidate.content().to_string();
+            Box::pin(async move { Ok(content) })
         }
     }
 
@@ -583,10 +567,17 @@ mod tests {
         store: Arc<MockStore>,
         strategy: Arc<FixedStrategy>,
         classifier: Arc<MockClassificationModelProvider>,
-    ) -> MemoryExtractor<MockStore, FixedStrategy, MockClassificationModelProvider, ()> {
+    ) -> MemoryExtractor<
+        MockStore,
+        FixedStrategy,
+        FixedMergeStrategy,
+        MockClassificationModelProvider,
+        (),
+    > {
         MemoryExtractor::new(
             store,
             strategy,
+            Arc::new(FixedMergeStrategy),
             classifier,
             MemoryExtractorConfig::default(),
         )
@@ -613,19 +604,14 @@ mod tests {
 
         assert_eq!(result.inserted.len(), 1);
         assert!(result.merged.is_empty());
-        assert!(result.promoted.is_empty());
         assert!(result.discarded.is_empty());
     }
 
     #[tokio::test]
     async fn test_extract_memory_entries_when_contradiction_lowers_score_discards_candidate() {
         // Two Contradiction hits lower the score enough to trigger auto-discard.
-        // confidence = 0.7 → alpha=7.0, beta=3.0
-        // increment = min(0.7, 5.0) = 0.7
-        // two Contradiction hits → beta += 0.7 * 2 = 4.4 → alpha=7.0, beta=7.4
-        // score ≈ 0.486 — well above auto_discard_threshold of 0.1
-        // To guarantee discard we need a very low confidence with many contradictions.
-        // Use a very tight config: auto_discard_threshold = 0.5.
+        // confidence = 0.1 → alpha=1.0, beta=9.0; increment = min(0.1, 5.0) = 0.1
+        // 1 contradiction → beta = 9.0 + 0.1 = 9.1 → score ≈ 0.099 ≤ 0.1 → discard
         let candidate = make_candidate("the sky is green", 0.1);
         let hit = make_extracted_result(uuid::Uuid::new_v4(), "the sky is blue", 0.9);
 
@@ -636,14 +622,18 @@ mod tests {
                 .with_behavior(ClassifyBehavior::Ok(HitClass::Contradiction)),
         );
 
-        // confidence = 0.1 → alpha=1.0, beta=9.0; increment = min(0.1, 5.0) = 0.1
-        // 1 contradiction → beta = 9.0 + 0.1 = 9.1 → score ≈ 0.099 ≤ 0.1 → discard
         let config = MemoryExtractorConfig {
             auto_discard_threshold: 0.1,
             ..MemoryExtractorConfig::default()
         };
 
-        let extractor = MemoryExtractor::new(Arc::clone(&store), strategy, classifier, config);
+        let extractor = MemoryExtractor::new(
+            Arc::clone(&store),
+            strategy,
+            Arc::new(FixedMergeStrategy),
+            classifier,
+            config,
+        );
         let result = extractor
             .extract_memory_entries("ignored", &())
             .await
@@ -653,7 +643,6 @@ mod tests {
         assert_eq!(result.discarded[0].reason, DiscardReason::LowScore);
         assert!(result.inserted.is_empty());
         assert!(result.merged.is_empty());
-        assert!(result.promoted.is_empty());
     }
 
     #[tokio::test]
@@ -678,43 +667,6 @@ mod tests {
         assert_eq!(result.discarded.len(), 1);
         assert_eq!(result.discarded[0].reason, DiscardReason::ContradictsAFact);
         assert!(result.inserted.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_extract_memory_entries_with_many_duplicate_hits_promotes_to_fact() {
-        // 4 distinct Duplicate hits boost alpha enough to trigger auto-promotion to Fact.
-        // confidence = 0.9 → alpha=9.0, beta=1.0; increment = min(0.9, 5.0) = 0.9
-        // 4 unique duplicate hits → alpha = 9.0 + 0.9*4 = 12.6 ≥ min_alpha_for_promotion(12.0)
-        // score = 12.6/13.6 ≈ 0.926 ≥ 0.9 → promote
-        let candidate = make_candidate("cats have nine lives", 0.9);
-        let hits = vec![
-            make_extracted_result(uuid::Uuid::new_v4(), "cats have nine lives", 0.9),
-            make_extracted_result(uuid::Uuid::new_v4(), "cats have nine lives", 0.9),
-            make_extracted_result(uuid::Uuid::new_v4(), "cats have nine lives", 0.9),
-            make_extracted_result(uuid::Uuid::new_v4(), "cats have nine lives", 0.9),
-        ];
-        let promoted_result = make_fact_result(uuid::Uuid::new_v4(), "cats have nine lives", 1.0);
-
-        let store = Arc::new(
-            MockStore::new()
-                .with_query_behavior(QueryBehavior::Ok(hits))
-                .with_add_entries_behavior(AddEntriesBehavior::Ok(vec![promoted_result])),
-        );
-        let strategy = Arc::new(FixedStrategy(vec![candidate]));
-        let classifier = Arc::new(
-            MockClassificationModelProvider::new()
-                .with_behavior(ClassifyBehavior::Ok(HitClass::Duplicate)),
-        );
-
-        let result = extractor(Arc::clone(&store), strategy, classifier)
-            .extract_memory_entries("ignored", &())
-            .await
-            .unwrap();
-
-        assert_eq!(result.promoted.len(), 1);
-        assert!(result.inserted.is_empty());
-        assert!(result.merged.is_empty());
-        assert!(result.discarded.is_empty());
     }
 
     #[tokio::test]
@@ -781,7 +733,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_extract_memory_entries_with_single_duplicate_hit_merges_entries() {
-        // Duplicate hit → same ID deduplicated → 1 delete, 1 merged insert.
+        // Duplicate hit → merge strategy called → 1 delete, 1 merged insert.
         // confidence = 0.7 → alpha=7.0, beta=3.0; increment = min(0.7, 5.0) = 0.7
         // 1 duplicate → alpha = 7.7 → score ≈ 0.72 (between thresholds → merged)
         let hit_id = uuid::Uuid::new_v4();
@@ -809,7 +761,6 @@ mod tests {
 
         assert_eq!(result.merged.len(), 1);
         assert!(result.inserted.is_empty());
-        assert!(result.promoted.is_empty());
         assert!(result.discarded.is_empty());
 
         let state = store.snapshot();
@@ -818,6 +769,49 @@ mod tests {
             Some(hit_id),
             "old entry must have been deleted"
         );
+    }
+
+    #[tokio::test]
+    async fn test_extract_memory_entries_with_many_duplicate_hits_merges_all() {
+        // 4 Duplicate hits → all 4 existing entries deleted, 1 merged entry inserted.
+        // FixedMergeStrategy returns the candidate content; the mock store returns
+        // a pre-configured entry from add_entries_behavior.
+        let candidate = make_candidate("cats have nine lives", 0.9);
+        let hits = vec![
+            make_extracted_result(uuid::Uuid::new_v4(), "cats have nine lives", 0.9),
+            make_extracted_result(uuid::Uuid::new_v4(), "cats have nine lives", 0.9),
+            make_extracted_result(uuid::Uuid::new_v4(), "cats have nine lives", 0.9),
+            make_extracted_result(uuid::Uuid::new_v4(), "cats have nine lives", 0.9),
+        ];
+        let merged_result =
+            make_extracted_result(uuid::Uuid::new_v4(), "cats have nine lives", 0.9);
+
+        let store = Arc::new(
+            MockStore::new()
+                .with_query_behavior(QueryBehavior::Ok(hits))
+                .with_add_entries_behavior(AddEntriesBehavior::Ok(vec![merged_result])),
+        );
+        let strategy = Arc::new(FixedStrategy(vec![candidate]));
+        let classifier = Arc::new(
+            MockClassificationModelProvider::new()
+                .with_behavior(ClassifyBehavior::Ok(HitClass::Duplicate)),
+        );
+
+        let result = extractor(Arc::clone(&store), strategy, classifier)
+            .extract_memory_entries("ignored", &())
+            .await
+            .unwrap();
+
+        assert_eq!(result.merged.len(), 1);
+        assert!(result.inserted.is_empty());
+        assert!(result.discarded.is_empty());
+
+        // Verify the content submitted to the store came from the merge strategy.
+        let state = store.snapshot();
+        let inputs = state
+            .add_inputs
+            .expect("add_entries should have been called");
+        assert_eq!(inputs[0].content(), "cats have nine lives");
     }
 
     #[test]
@@ -831,8 +825,6 @@ mod tests {
         assert!((config.max_counter_increment - 5.0).abs() < f64::EPSILON);
         assert!((config.max_counter - 100.0).abs() < f64::EPSILON);
         assert!((config.auto_discard_threshold - 0.1).abs() < f64::EPSILON);
-        assert!((config.auto_promotion_threshold - 0.9).abs() < f64::EPSILON);
-        assert!((config.min_alpha_for_promotion - 12.0).abs() < f64::EPSILON);
     }
 
     #[tokio::test]
@@ -863,13 +855,17 @@ mod tests {
             bayesian_seed_weight: 10.0,
             max_counter_increment: 1.0,
             max_counter: 9.5,
-            // Below promotion threshold so we can inspect the add input
-            auto_promotion_threshold: 0.99,
             auto_discard_threshold: 0.0,
             ..MemoryExtractorConfig::default()
         };
 
-        let extractor = MemoryExtractor::new(Arc::clone(&store), strategy, classifier, config);
+        let extractor = MemoryExtractor::new(
+            Arc::clone(&store),
+            strategy,
+            Arc::new(FixedMergeStrategy),
+            classifier,
+            config,
+        );
 
         extractor
             .extract_memory_entries("ignored", &())

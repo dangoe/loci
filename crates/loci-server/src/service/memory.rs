@@ -14,13 +14,14 @@ use connectrpc::{ConnectError, Context};
 use uuid::Uuid;
 
 use loci_config::{
-    MemoryExtractorConfig as ConfigMemoryExtractorConfig, ModelThinkingConfig,
+    MemoryExtractorConfig as ConfigMemoryExtractorConfig, MergeStrategyConfig, ModelThinkingConfig,
     ModelThinkingEffortLevel,
 };
 use loci_core::error::MemoryStoreError;
 use loci_core::memory::Score;
 use loci_core::memory::extraction::{
-    DiscardReason, LlmMemoryExtractionStrategy, LlmMemoryExtractionStrategyParams, MemoryExtractor,
+    BestScoreMergeStrategy, DiscardReason, LlmMemoryExtractionStrategy,
+    LlmMemoryExtractionStrategyParams, LlmMemoryMergeStrategy, MemoryExtractor,
     MemoryExtractorConfig, MemoryQueryOptions,
 };
 use loci_core::memory::store::{MemoryInput, MemoryQuery, MemoryQueryMode, MemoryStore};
@@ -206,30 +207,46 @@ where
             Arc::clone(self.state.llm_provider()),
             extraction_config.model().to_owned(),
         );
+        let extractor_cfg = extraction_config.extractor();
         let classifier = Arc::new(LlmClassificationModelProvider::new(
             Arc::clone(self.state.llm_provider()),
-            extraction_config
-                .extractor()
-                .classification_model()
-                .to_owned(),
+            extractor_cfg.classification_model().to_owned(),
         ));
-        let extractor = MemoryExtractor::new(
-            Arc::clone(self.state.store()),
-            Arc::new(strategy),
-            classifier,
-            config_extractor_config_to_core(extraction_config.extractor()),
-        );
         let params = build_extraction_params(&request, extraction_config)?;
-        let result = extractor
-            .extract_memory_entries(request.text, &params)
-            .await
-            .map_err(|e| ConnectError::internal(e.to_string()))?;
+        let core_cfg = config_extractor_config_to_core(extractor_cfg);
+        let result = match extractor_cfg.merge_strategy() {
+            MergeStrategyConfig::BestScore => {
+                MemoryExtractor::new(
+                    Arc::clone(self.state.store()),
+                    Arc::new(strategy),
+                    Arc::new(BestScoreMergeStrategy),
+                    Arc::clone(&classifier),
+                    core_cfg,
+                )
+                .extract_memory_entries(request.text, &params)
+                .await
+            }
+            MergeStrategyConfig::Llm { model } => {
+                MemoryExtractor::new(
+                    Arc::clone(self.state.store()),
+                    Arc::new(strategy),
+                    Arc::new(LlmMemoryMergeStrategy::new(
+                        Arc::clone(self.state.llm_provider()),
+                        model.clone(),
+                    )),
+                    Arc::clone(&classifier),
+                    core_cfg,
+                )
+                .extract_memory_entries(request.text, &params)
+                .await
+            }
+        };
+        let result = result.map_err(|e| ConnectError::internal(e.to_string()))?;
 
         Ok((
             MemoryServiceExtractResponse {
                 inserted: result.inserted().iter().map(entry_to_proto).collect(),
                 merged: result.merged().iter().map(entry_to_proto).collect(),
-                promoted: result.promoted().iter().map(entry_to_proto).collect(),
                 discarded: result
                     .discarded()
                     .iter()
@@ -361,8 +378,6 @@ fn config_extractor_config_to_core(cfg: &ConfigMemoryExtractorConfig) -> MemoryE
         cfg.max_counter_increment(),
         cfg.max_counter(),
         cfg.auto_discard_threshold(),
-        cfg.auto_promotion_threshold(),
-        cfg.min_alpha_for_promotion(),
     )
 }
 
