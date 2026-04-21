@@ -5,7 +5,6 @@
 include!(concat!(env!("OUT_DIR"), "/_connectrpc.rs"));
 
 pub mod cli;
-pub(crate) mod infra;
 pub(crate) mod routes;
 pub(crate) mod service;
 pub(crate) mod state;

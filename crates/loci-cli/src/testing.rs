@@ -18,6 +18,8 @@ use crate::handlers::config::ConfigCommandHandler;
 use crate::handlers::generate::GenerateCommandHandler;
 use crate::handlers::memory::MemoryCommandHandler;
 
+pub use loci_wire::testing::{minimal_app_config, minimal_ollama_config, mock_config};
+
 /// A test harness that dispatches CLI commands to handlers with injected
 /// dependencies.
 ///
@@ -92,87 +94,4 @@ impl<S: MemoryStore + 'static, T: TextGenerationModelProvider + 'static> TestCli
     pub fn provider(&self) -> &T {
         &self.provider
     }
-}
-
-/// Builds a minimal [`AppConfig`] wired to a single Ollama provider.
-pub fn minimal_ollama_config() -> AppConfig {
-    loci_config::load_config_from_str(
-        r#"
-[resources.model_providers.ollama]
-kind = "ollama"
-endpoint = "http://localhost:11434"
-
-[resources.models.text.default]
-provider = "ollama"
-model = "qwen3:0.6b"
-
-[resources.models.embedding.default]
-provider = "ollama"
-model = "qwen3-embedding:0.6b"
-dimension = 768
-
-[resources.memory_stores.qdrant]
-kind = "qdrant"
-url = "http://localhost:6333"
-collection = "memory_entries"
-
-[generation.text]
-model = "default"
-
-[embedding]
-model = "default"
-
-[memory]
-store = "qdrant"
-
-[memory.extraction]
-model = "default"
-
-[memory.extraction.extractor]
-classification_model = "test-classification-model"
-"#,
-    )
-    .expect("failed to parse minimal_ollama_config")
-}
-
-/// Builds a minimal [`AppConfig`] with dummy URLs for tests that use mock
-/// stores and providers (no real infrastructure needed).
-pub fn mock_config() -> AppConfig {
-    loci_config::load_config_from_str(
-        r#"
-[resources.model_providers.ollama]
-kind = "ollama"
-endpoint = "http://unused-ollama"
-
-[resources.models.text.default]
-provider = "ollama"
-model = "test-text-model"
-
-[resources.models.embedding.default]
-provider = "ollama"
-model = "test-embedding-model"
-dimension = 384
-
-[resources.memory_stores.qdrant]
-kind = "qdrant"
-url = "http://unused-qdrant"
-collection = "memory_entries"
-
-[generation.text]
-model = "default"
-
-[embedding]
-model = "default"
-
-[memory]
-store = "qdrant"
-
-[memory.extraction]
-model = "default"
-
-[memory.extraction.extractor]
-classification_model = "test-classification-model"
-"#,
-    )
-    .expect("failed to parse mock_config")
 }

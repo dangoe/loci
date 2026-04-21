@@ -5,6 +5,7 @@ members = [
     "crates/loci-model-provider-openai",
     "crates/loci-memory-store-qdrant",
     "crates/loci-config",
+    "crates/loci-wire",
     "crates/loci-cli",
     "crates/loci-e2e-tests",
     "crates/loci-server",

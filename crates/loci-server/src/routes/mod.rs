@@ -18,9 +18,9 @@ use tower_http::trace::TraceLayer;
 use loci_config::load_config;
 use loci_core::memory::store::MemoryStore;
 use loci_core::model_provider::text_generation::TextGenerationModelProvider;
+use loci_wire::{build_llm_provider, build_store};
 
 use crate::cli::ServerArgs;
-use crate::infra::{build_llm_provider, build_store};
 use crate::loci::generate::v1::GenerateServiceExt as _;
 use crate::loci::memory::v1::MemoryServiceExt as _;
 use crate::service::generate::GenerateServiceImpl;

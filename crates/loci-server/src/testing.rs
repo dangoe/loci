@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Daniel Götten
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// This file is part of loci-memory-store-qdrant.
+// This file is part of loci-server.
 
 use std::{net::SocketAddr, sync::Arc};
 
@@ -11,11 +11,13 @@ use loci_core::{
 };
 
 use crate::{
-    infra::{build_llm_provider, build_store},
     loci::{generate::v1::GenerateServiceClient, memory::v1::MemoryServiceClient},
     routes::build_router,
     state::AppState,
 };
+use loci_wire::{build_llm_provider, build_store};
+
+pub use loci_wire::testing::{minimal_app_config, mock_config};
 
 /// A test server bound to a random local port.
 ///
@@ -91,66 +93,4 @@ impl TestServer {
         let uri = format!("http://{}", self.addr).parse().unwrap();
         GenerateServiceClient::new(HttpClient::plaintext(), ClientConfig::new(uri))
     }
-}
-
-/// Builds a minimal [`AppConfig`] with dummy URLs for tests that use mock
-/// stores and providers (no real infrastructure needed).
-pub fn mock_config() -> AppConfig {
-    minimal_app_config(
-        "http://unused-qdrant",
-        "http://unused-ollama",
-        "test-text-model",
-        "test-embedding-model",
-        384,
-    )
-}
-
-/// Builds a minimal [`AppConfig`] suitable for tests.
-///
-/// Points text and embedding models at the given Ollama instance, and the
-/// memory store at the given Qdrant gRPC URL.
-pub fn minimal_app_config(
-    qdrant_url: &str,
-    ollama_url: &str,
-    text_model: &str,
-    embedding_model: &str,
-    embedding_dim: usize,
-) -> AppConfig {
-    let content = format!(
-        r#"
-[resources.model_providers.ollama]
-kind = "ollama"
-endpoint = "{ollama_url}"
-
-[resources.models.text.default]
-provider = "ollama"
-model = "{text_model}"
-
-[resources.models.embedding.default]
-provider = "ollama"
-model = "{embedding_model}"
-dimension = {embedding_dim}
-
-[resources.memory_stores.qdrant]
-kind = "qdrant"
-url = "{qdrant_url}"
-collection = "memory_entries"
-
-[generation.text]
-model = "default"
-
-[embedding]
-model = "default"
-
-[memory]
-store = "qdrant"
-
-[memory.extraction]
-model = "default"
-
-[memory.extraction.extractor]
-classification_model = "test-classification-model"
-"#
-    );
-    loci_config::load_config_from_str(&content).expect("failed to parse test config")
 }

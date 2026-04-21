@@ -8,8 +8,6 @@
 //! read from a TOML config file (default: `~/.config/loci/config.toml`).
 //! The CLI itself only exposes operational flags and sub-commands.
 
-mod infra;
-
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -27,8 +25,7 @@ use loci_cli::handlers::config::ConfigCommandHandler;
 use loci_cli::handlers::generate::GenerateCommandHandler;
 use loci_cli::handlers::memory::MemoryCommandHandler;
 use loci_config::load_config;
-
-use crate::infra::{build_llm_provider, build_store};
+use loci_wire::{build_llm_provider, build_store};
 
 #[tokio::main]
 async fn main() {
