@@ -1,3 +1,12 @@
+> # This repository has moved
+> This project has moved to Codeberg:
+> 
+> https://codeberg.org/dangoe/loci
+>
+> The GitHub repository is archived and no longer maintained.
+>
+> Please open issues and pull requests on Codeberg.
+
 ![loci](.github/assets/logo.svg)
 
 > _A memory-based context proxy for LLMs — semantic memory storage, session-aware retrieval,
